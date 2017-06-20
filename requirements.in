@@ -3,3 +3,5 @@ tensorflow
 mmh3
 pytest
 h5py
+sklearn
+cffi

@@ -11,7 +11,7 @@ import re
 import xml.etree.ElementTree as ET
 import unicodedata
 import pickle
-from base import stringmatch
+import stringmatch
 import multiprocessing_generator
 import subprocess
 import io
