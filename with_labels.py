@@ -32,7 +32,7 @@ from dataprep import Token
 POTENTIAL_LABELS = [None, "title", "author"]
 
 
-def model_with_labels(model_settings: settings.ModelSettings, pdflm_model):
+def model_with_labels(model_settings: settings.ModelSettings):
     """Returns an untrained model that predicts the next token in a stream of PDF tokens."""
     PAGENO_VECTOR_SIZE = model_settings.max_page_number * 2
     pageno_input = Input(
@@ -475,7 +475,6 @@ def evaluate_model(
 
 
 def train(
-    pdflm_model,
     start_weights_filename,
     pmc_dir: str,
     glove_vector_file: str,
@@ -485,7 +484,7 @@ def train(
     output_filename: str=None
 ):
     """Returns a trained model using the data in dir as training data"""
-    model = model_with_labels(model_settings, pdflm_model)
+    model = model_with_labels(model_settings)
     model.summary()
 
     # DEBUG hack for perf testing
@@ -593,9 +592,6 @@ if __name__ == "__main__":
         help="file with glove vectors"
     )
     parser.add_argument(
-        "--pdflm-model", type=str, default="./pdflm.h5", help="pre-trained pdflm model"
-    )
-    parser.add_argument(
         "--timesteps",
         type=int,
         default=model_settings.timesteps,
@@ -640,9 +636,7 @@ if __name__ == "__main__":
     )
     print(model_settings)
 
-    pdflm_model = keras.models.load_model(args.pdflm_model)
     model = train(
-        pdflm_model,
         args.start_weights,
         args.pmc_dir,
         args.glove_vectors,
