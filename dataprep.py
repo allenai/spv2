@@ -249,14 +249,21 @@ def normalize(s: str) -> str:
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
 _word_characters_re = re.compile(r'[\w]+')
+_sha1_re = re.compile(r'^[0-9a-f]{40}$')
 
 def label_tokens_in_one_document(doc, pmc_dir):
     """Returns (labeled_doc, total_token_count, title_token_count, author_token_count), or None if 
     it could not label successfully."""
 
     # find the nxml that goes with this file
-    nxml_path = re.sub("\\.pdf$", ".nxml", doc.doc_id)
-    nxml_path = os.path.join(pmc_dir, nxml_path)
+    nxml_path = os.path.normpath(doc.doc_id).split(os.path.sep)
+    for i, path_element in enumerate(nxml_path):
+        if _sha1_re.match(path_element) is not None:
+            nxml_path = nxml_path[i:]
+            break
+    nxml_path = os.sep.join(nxml_path)
+    nxml_path = re.sub("\\.pdf$", ".nxml", nxml_path)
+    nxml_path = os.path.join(pmc_dir, nxml_path[:2], "docs", nxml_path)
     try:
         with open(nxml_path) as nxml_file:
             nxml = ET.parse(nxml_file).getroot()
