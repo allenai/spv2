@@ -246,7 +246,6 @@ def normalize(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
     return s
 
-_trailing_garbage = re.compile("[^\\w]+$")
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
 _word_characters_re = re.compile(r'[\w]+')
