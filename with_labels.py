@@ -195,6 +195,14 @@ def make_batches(model_settings: settings.ModelSettings, docs, keep_unlabeled_pa
                 slice_start += model_settings.batch_size
                 slice_start %= max_page_pool_size - model_settings.batch_size
 
+        # emit all leftover pages
+        # Actually, not all leftover pages, but enough until the number of pages left is smaller
+        # our batch size.
+        page_pool.sort(key=lambda page: len(page.tokens))
+        while len(page_pool) >= model_settings.batch_size:
+            yield page_pool[0:model_settings.batch_size]
+            del page_pool[0:model_settings.batch_size]
+
     # this works on a list of pages, an iterable of document, and on a single page
     if isinstance(docs, list) and isinstance(docs[0], Page):
         pages = [docs]
