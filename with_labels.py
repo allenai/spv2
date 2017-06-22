@@ -3,6 +3,7 @@ import itertools
 import logging
 import collections
 import re
+import time
 
 import keras
 from keras.layers import Embedding, Input, LSTM, Activation, Dense
@@ -505,19 +506,20 @@ def train(
         model.load_weights(start_weights_filename)
 
     scored_results = []
+    def print_scored_results(training_time = None):
+        print()
+        if training_time is None:
+            print("All scores from this run:")
+        else:
+            print("All scores after %.0f seconds:" % training_time)
+        print("time\tbatch_count\tauc_none\tauc_titles\tauc_authors\ttitle_p\ttitle_r\tauthor_p\tauthor_r")
+        for time_elapsed, batch_count, ev_result in scored_results:
+            print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
 
-    def fib(n: int):
-        a = 1
-        b = 1
-        while b < n:
-            yield b
-            a = b + a
-            a, b = b, a
-
-    batch_counts_for_scored_results = set([n * 1000 for n in fib(training_batches // 1000)])
-
+    start_time = time.time()
     if training_batches > 0:
         trained_batches = 0
+        time_at_last_eval = start_time
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
             train_docs = dataprep.documents_from_pmc_dir(pmc_dir, glove_vector_file, model_settings)
@@ -537,33 +539,43 @@ def train(
                     if trained_batches >= training_batches:
                         logging.info("Training done!")
                         break
+
+                    now = time.time()
                     if trained_batches % 100 == 0:
                         metric_string = ", ".join(
                             ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
                         )
-                        logging.info("Trained on %d batches. %s", trained_batches, metric_string)
-                    if output_filename is not None and trained_batches % 1000 == 0:
-                        logging.info("Writing temporary model to %s", output_filename)
-                        model.save(output_filename, overwrite=True)
-                    if trained_batches in batch_counts_for_scored_results:
+                        logging.info(
+                            "Trained on %d batches in %.0f seconds. %s",
+                            trained_batches,
+                            now - start_time,
+                            metric_string)
+                    time_since_last_eval = now - time_at_last_eval
+                    if time_since_last_eval > 60 * 60:
+                        logging.info(
+                            "It's been %.0f seconds since the last eval. Triggering another one.",
+                            time_since_last_eval)
+                        if output_filename is not None:
+                            logging.info("Writing temporary model to %s", output_filename)
+                            model.save(output_filename, overwrite=True)
                         ev_result = evaluate_model(
                             model, model_settings, pmc_dir, glove_vector_file, test_batches
                         )  # TODO: batches != docs
-                        scored_results.append((trained_batches, ev_result))
-        logging.info("Writing temporary final model to %s", output_filename)
-        model.save(output_filename, overwrite=True)
+                        scored_results.append((now - start_time, trained_batches, ev_result))
+                        print_scored_results(now - start_time)
+                        time_at_last_eval = now
+        if output_filename is not None:
+            logging.info("Writing temporary final model to %s", output_filename)
+            model.save(output_filename, overwrite=True)
 
-    if training_batches not in batch_counts_for_scored_results:
-        final_ev = evaluate_model(
-            model, model_settings, pmc_dir, glove_vector_file, test_batches
-        )  # TODO: batches != docs
-        scored_results.append((training_batches, final_ev))
+    logging.info("Triggering final evaluation")
+    now = time.time()
+    final_ev = evaluate_model(
+        model, model_settings, pmc_dir, glove_vector_file, test_batches
+    )  # TODO: batches != docs
+    scored_results.append((now - start_time, training_batches, final_ev))
 
-    print()
-    print("All scores from this run:")
-    print("batch_count\tauc_none\tauc_titles\tauc_authors\ttitle_p\ttitle_r\tauthor_p\tauthor_r")
-    for batch_count, ev_result in scored_results:
-        print("\t".join(map(str, (batch_count,) + ev_result)))
+    print_scored_results()
 
     return model
 
