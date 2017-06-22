@@ -76,15 +76,23 @@ class GloveVectors(object):
 
         self.word2index = {}
         vectors = []
-        with zcat_process(self.filename) as p:
-            with io.TextIOWrapper(p.stdout, encoding="UTF-8") as lines:
-                for index, line in enumerate(lines):
-                    line = line.split()
-                    word = normalize(line[0])
-                    self.word2index[word] = index
-                    vectors.append(np.asarray(line[1:], dtype='float32'))
-        self.vectors = np.stack(vectors)
-        self.vectors_stddev = np.std(vectors)
+        try:
+            with zcat_process(self.filename) as p:
+                with io.TextIOWrapper(p.stdout, encoding="UTF-8") as lines:
+                    for index, line in enumerate(lines):
+                        line = line.split()
+                        word = normalize(line[0])
+                        try:
+                            self.word2index[word] = index
+                            vectors.append(np.asarray(line[1:], dtype='float32'))
+                        except:
+                            logging.error("Error while loading line for '%s'", word)
+                            raise
+            self.vectors = np.stack(vectors)
+            self.vectors_stddev = np.std(vectors)
+        except:
+            logging.error("Error while loading %s", self.filename)
+            raise
 
     def get_dimensions(self) -> int:
         return self.dimensions
@@ -544,15 +552,12 @@ def documents_from_dir(dirname, reverse: bool=False):
             filenames.reverse()
         for filename in filenames:
             if filename.endswith(".json.bz2"):
-                for doc in documents_from_file(os.path.join(dirpath, filename)):
-                    yield doc
+                yield from documents_from_file(os.path.join(dirpath, filename))
 
         if reverse:
             dirnames.reverse()
         for subdir in dirnames:
-            for doc in documents_from_dir(os.path.join(dirpath, subdir)):
-                yield doc
-
+            yield from documents_from_dir(os.path.join(dirpath, subdir))
 
 def documents_from_pmc_dir(
     dirname,
@@ -677,8 +682,7 @@ def documents_from_pmc_dir(
                     temp_labeled_and_featurized_tokens_path, labeled_and_featurized_tokens_path
                 )
 
-        for doc in labeled_and_featurized_tokens():
-            yield doc
+        yield from labeled_and_featurized_tokens()
 
 
 def docs_with_normalized_features(
