@@ -175,8 +175,7 @@ class Document(object):
         max_page_number: int,
         token_hash_size: int,
         font_hash_size: int,
-        token_stats: TokenStatistics,
-        glove_vectors: GloveVectors
+        token_stats: TokenStatistics
     ):
         self.pages = self.pages[:max_page_number]
 
@@ -215,13 +214,11 @@ class Document(object):
                 space_width_in_doc_feature = \
                     get_quantile(space_widths_in_doc, float(token.space_width)) - 0.5
 
-                glove_vector = glove_vectors.get_vector_or_random(token.text)
-
                 token.normalized_features = (
                     page_number + 1,  # one for the mask
                     text_feature + 1,  # one for the mask
                     font_feature + 1,  # one for the mask
-                    np.append(glove_vector, [
+                    np.array([
                         left_feature,
                         right_feature,
                         top_feature,
@@ -230,7 +227,7 @@ class Document(object):
                         space_width_feature,
                         font_size_in_doc_feature,
                         space_width_in_doc_feature
-                    ])
+                    ], dtype='float32')
                 )
 
     @classmethod
@@ -561,21 +558,18 @@ def documents_from_dir(dirname, reverse: bool=False):
 
 def documents_from_pmc_dir(
     dirname,
-    glove_vector_file: str,
     model_settings: settings.ModelSettings,
     test=False,
     buckets=None
 ):
     token_stats = None
-    glove_vectors = None
 
     # The hash of this structure becomes part of the filename, so if it changes, we essentially
     # invalidate the cache of featurized data.
     featurizing_hash_components = (
         model_settings.max_page_number,
         model_settings.token_hash_size,
-        model_settings.font_hash_size,
-        mmh3.hash(os.path.basename(glove_vector_file))  # strings hash different in every python process, so we use mmh3 instead
+        model_settings.font_hash_size
     )
 
     if buckets is not None:
@@ -617,7 +611,7 @@ def documents_from_pmc_dir(
                             doc_count += 1
                         except EOFError:
                             break
-                    assert doc_count >= 4500, "Number of documents (%d) was less than expected (4500) from %s. File is likely incomplete" % (
+                    assert doc_count >= 400, "Number of documents (%d) was less than expected (400) from %s. File is likely incomplete" % (
                         doc_count, labeled_tokens_path
                     )
             else:
@@ -647,7 +641,7 @@ def documents_from_pmc_dir(
                             doc_count += 1
                         except EOFError:
                             break
-                    assert doc_count >= 4500, "Number of documents (%d) was less than expected (4500) from %s. File is likely incomplete" % (
+                    assert doc_count >= 400, "Number of documents (%d) was less than expected (400) from %s. File is likely incomplete" % (
                         doc_count, labeled_and_featurized_tokens_path
                     )
             else:
@@ -657,10 +651,6 @@ def documents_from_pmc_dir(
                 nonlocal token_stats
                 if token_stats is None:
                     token_stats = TokenStatistics(os.path.join(dirname, "all.tokenstats2.gz"))
-
-                nonlocal glove_vectors
-                if glove_vectors is None:
-                    glove_vectors = GloveVectors(glove_vector_file)
 
                 temp_labeled_and_featurized_tokens_path = \
                     labeled_and_featurized_tokens_path + ".%d.temp" % os.getpid()
@@ -672,7 +662,6 @@ def documents_from_pmc_dir(
                         model_settings.token_hash_size,
                         model_settings.font_hash_size,
                         token_stats,
-                        glove_vectors,
                         docs)
                     with gzip.open(temp_labeled_and_featurized_tokens_path, "wb") as f:
                         for doc in docs:
@@ -690,7 +679,6 @@ def docs_with_normalized_features(
     token_hash_size: int,
     font_hash_size: int,
     token_stats: TokenStatistics,
-    glove_vectors: GloveVectors,
     docs
 ):
     for doc in docs:
@@ -698,8 +686,7 @@ def docs_with_normalized_features(
             max_page_number,
             token_hash_size,
             font_hash_size,
-            token_stats,
-            glove_vectors
+            token_stats
         )
         yield doc
 
@@ -735,12 +722,6 @@ if __name__ == "__main__":
         help="directory with the PMC data"
     )
     parser.add_argument(
-        "--glove-vectors",
-        type=str,
-        default="/net/nfs.corp/s2-research/glove/glove.6B.50d.txt.gz",
-        help="file with glove vectors"
-    )
-    parser.add_argument(
         "--timesteps",
         type=int,
         default=model_settings.timesteps,
@@ -762,7 +743,6 @@ if __name__ == "__main__":
     docs_completed = 0
     for doc in documents_from_pmc_dir(
         args.pmc_dir,
-        args.glove_vectors,
         model_settings,
         buckets=args.bucket_number
     ):

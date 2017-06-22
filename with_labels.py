@@ -77,7 +77,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
         name='numeric_inputs', batch_shape=(
             model_settings.batch_size,
             model_settings.timesteps,
-            model_settings.glove_dimensions + 8
+            8
         )
     )
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
@@ -195,6 +195,14 @@ def make_batches(model_settings: settings.ModelSettings, docs, keep_unlabeled_pa
                 slice_start += model_settings.batch_size
                 slice_start %= max_page_pool_size - model_settings.batch_size
 
+        # emit all leftover pages
+        # Actually, not all leftover pages, but enough until the number of pages left is smaller
+        # our batch size.
+        page_pool.sort(key=lambda page: len(page.tokens))
+        while len(page_pool) >= model_settings.batch_size:
+            yield page_pool[0:model_settings.batch_size]
+            del page_pool[0:model_settings.batch_size]
+
     # this works on a list of pages, an iterable of document, and on a single page
     if isinstance(docs, list) and isinstance(docs[0], Page):
         pages = [docs]
@@ -273,12 +281,10 @@ def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
     pmc_dir: str,
-    glove_vector_file: str,
     test_doc_count: int
 ):
     # run on some other documents and produce human-readable output
-    test_docs = \
-        dataprep.documents_from_pmc_dir(pmc_dir, glove_vector_file, model_settings, test=True)
+    test_docs = dataprep.documents_from_pmc_dir(pmc_dir, model_settings, test=True)
     test_docs = list(itertools.islice(test_docs, 0, test_doc_count))
 
     # these are arrays for calculating P/R curves, in the format that scikit insists on for them
@@ -478,7 +484,6 @@ def evaluate_model(
 def train(
     start_weights_filename,
     pmc_dir: str,
-    glove_vector_file: str,
     training_batches: int=100000,
     test_batches: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings,
@@ -559,7 +564,7 @@ def train(
                             logging.info("Writing temporary model to %s", output_filename)
                             model.save(output_filename, overwrite=True)
                         ev_result = evaluate_model(
-                            model, model_settings, pmc_dir, glove_vector_file, test_batches
+                            model, model_settings, pmc_dir, test_batches
                         )  # TODO: batches != docs
                         scored_results.append((now - start_time, trained_batches, ev_result))
                         print_scored_results(now - start_time)
@@ -571,7 +576,7 @@ def train(
     logging.info("Triggering final evaluation")
     now = time.time()
     final_ev = evaluate_model(
-        model, model_settings, pmc_dir, glove_vector_file, test_batches
+        model, model_settings, pmc_dir, test_batches
     )  # TODO: batches != docs
     scored_results.append((now - start_time, training_batches, final_ev))
 
@@ -596,12 +601,6 @@ if __name__ == "__main__":
         type=str,
         default="/net/nfs.corp/s2-research/science-parse/pmc/",
         help="directory with the PMC data"
-    )
-    parser.add_argument(
-        "--glove-vectors",
-        type=str,
-        default="/net/nfs.corp/s2-research/glove/glove.42B.300d.txt.gz",
-        help="file with glove vectors"
     )
     parser.add_argument(
         "--timesteps",
@@ -643,15 +642,11 @@ if __name__ == "__main__":
     model_settings = model_settings._replace(timesteps=args.timesteps)
     model_settings = model_settings._replace(token_vector_size=args.token_vector_size)
     model_settings = model_settings._replace(batch_size=args.batch_size)
-    model_settings = model_settings._replace(
-        glove_dimensions=dataprep.GloveVectors(args.glove_vectors).get_dimensions_with_random()
-    )
     print(model_settings)
 
     model = train(
         args.start_weights,
         args.pmc_dir,
-        args.glove_vectors,
         args.training_batches,
         args.test_batches,
         model_settings,
