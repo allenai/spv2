@@ -611,7 +611,7 @@ def documents_from_pmc_dir(
                             doc_count += 1
                         except EOFError:
                             break
-                    assert doc_count >= 4500, "Number of documents (%d) was less than expected (4500) from %s. File is likely incomplete" % (
+                    assert doc_count >= 400, "Number of documents (%d) was less than expected (400) from %s. File is likely incomplete" % (
                         doc_count, labeled_tokens_path
                     )
             else:
@@ -641,7 +641,7 @@ def documents_from_pmc_dir(
                             doc_count += 1
                         except EOFError:
                             break
-                    assert doc_count >= 4500, "Number of documents (%d) was less than expected (4500) from %s. File is likely incomplete" % (
+                    assert doc_count >= 400, "Number of documents (%d) was less than expected (400) from %s. File is likely incomplete" % (
                         doc_count, labeled_and_featurized_tokens_path
                     )
             else:
