@@ -552,15 +552,12 @@ def documents_from_dir(dirname, reverse: bool=False):
             filenames.reverse()
         for filename in filenames:
             if filename.endswith(".json.bz2"):
-                for doc in documents_from_file(os.path.join(dirpath, filename)):
-                    yield doc
+                yield from documents_from_file(os.path.join(dirpath, filename))
 
         if reverse:
             dirnames.reverse()
         for subdir in dirnames:
-            for doc in documents_from_dir(os.path.join(dirpath, subdir)):
-                yield doc
-
+            yield from documents_from_dir(os.path.join(dirpath, subdir))
 
 def documents_from_pmc_dir(
     dirname,
@@ -685,8 +682,7 @@ def documents_from_pmc_dir(
                     temp_labeled_and_featurized_tokens_path, labeled_and_featurized_tokens_path
                 )
 
-        for doc in labeled_and_featurized_tokens():
-            yield doc
+        yield from labeled_and_featurized_tokens()
 
 
 def docs_with_normalized_features(
