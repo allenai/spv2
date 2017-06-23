@@ -90,7 +90,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     )([pageno_embedding, token_embedding, font_embedding, numeric_masked])
     logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
 
-    lstm = LSTM(units=100, return_sequences=True, stateful=True)(pdftokens_combined)
+    lstm = LSTM(units=1024, return_sequences=True, stateful=True)(pdftokens_combined)
     logging.info("lstm:\t%s", lstm.shape)
 
     one_hot_output = TimeDistributed(Dense(len(POTENTIAL_LABELS)))(lstm)
