@@ -26,42 +26,59 @@ object PDFRenderer {
       .action((_, c) => c.copy(command = Some("PDFToImage")))
       .text("Render and save to disk PDF pages as image files")
       .children(
-        opt[String]("format").action((x, c) => {
-          c.copy(
-            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(format = Some(x))))
-        }),
-        opt[String]("prefix").action((x, c) => {
-          c.copy(
-            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(prefix = Some(x))))
-        }),
-        opt[Int]("startPage").action((x, c) => {
-          c.copy(
-            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(startPage = Some(x))))
-        }),
-        opt[Int]("endPage").action((x, c) => {
-          c.copy(
-            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(endPage = Some(x))))
-        }),
-        opt[Int]("dpi").action((x, c) => {
-          c.copy(
-            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(dpi = Some(x))))
-        }),
-        arg[String]("inputfile").required().action((x, c) => {
-          c.copy(
-            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(inputfile = Some(x))))
-        }))
+        opt[String]("format")
+          .abbr("f")
+          .action((x, c) => {
+            c.copy(
+              pdfToImageConfig = c.pdfToImageConfig.map(_.copy(format = Some(x))))
+          }),
+        opt[String]("prefix")
+          .abbr("p")
+          .action((x, c) => {
+            c.copy(
+              pdfToImageConfig = c.pdfToImageConfig.map(_.copy(prefix = Some(x))))
+          }),
+        opt[Int]("startPage")
+          .abbr("s")
+          .action((x, c) => {
+            c.copy(
+              pdfToImageConfig = c.pdfToImageConfig.map(_.copy(startPage = Some(x))))
+          }),
+        opt[Int]("endPage")
+          .abbr("e")
+          .action((x, c) => {
+            c.copy(
+              pdfToImageConfig = c.pdfToImageConfig.map(_.copy(endPage = Some(x))))
+          }),
+        opt[Int]("dpi")
+          .abbr("d")
+          .action((x, c) => {
+            c.copy(
+              pdfToImageConfig = c.pdfToImageConfig.map(_.copy(dpi = Some(x))))
+          }),
+        arg[String]("inputfile")
+          .required()
+          .action((x, c) => {
+            c.copy(
+              pdfToImageConfig = c.pdfToImageConfig.map(_.copy(inputfile = Some(x))))
+          }))
     cmd("PreprocessPdf")
       .action((_, c) => c.copy(command = Some("PreprocessPdf")))
       .text("Extract text and other information from the PDF")
       .children(
-        opt[String]("outputFileName").required().action((x, c) => {
-          c.copy(
-            preprocessPdfConfig = c.preprocessPdfConfig.map(_.copy(outputFileName = Some(x))))
-        }),
-        opt[Seq[String]]("inputNames").required().action((x, c) => {
-          c.copy(
-            preprocessPdfConfig = c.preprocessPdfConfig.map(_.copy(inputNames = Some(x))))
-        }))
+        arg[String]("outputFileName")
+          .required()
+          .action((x, c) => {
+            c.copy(
+              preprocessPdfConfig = c.preprocessPdfConfig.map(_.copy(outputFileName = Some(x))))
+          }),
+        arg[Seq[String]]("inputNames")
+          .required()
+          .unbounded()
+          .action((x, c) => {
+            c.copy(
+              preprocessPdfConfig = c.preprocessPdfConfig.map(_.copy(inputNames = Some(x))))
+          }))
     checkConfig { c => c match {
       case PDFRendererConfig(None, _, _) => failure(
         "Please specify a command")
