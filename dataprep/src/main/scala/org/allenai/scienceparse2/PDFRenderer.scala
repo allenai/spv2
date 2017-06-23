@@ -13,7 +13,7 @@ object PDFRenderer {
     inputfile: Option[String] = None)
   case class PreprocessPdfConfig(
     outputFileName: Option[String] = None,
-    inputNames: Option[Seq[String]] = None)
+    inputNames: Option[Seq[String]] = Some(Seq()))
   case class PDFRendererConfig(
     command: Option[String] = None,
     pdfToImageConfig: Option[PDFToImageConfig] = Some(
@@ -77,7 +77,10 @@ object PDFRenderer {
           .unbounded()
           .action((x, c) => {
             c.copy(
-              preprocessPdfConfig = c.preprocessPdfConfig.map(_.copy(inputNames = Some(x))))
+              preprocessPdfConfig = c.preprocessPdfConfig.map(preprocessPdfConfig => {
+                preprocessPdfConfig.copy(
+                  inputNames = preprocessPdfConfig.inputNames.map(names => names ++ x))
+              }))
           }))
     checkConfig { c => c match {
       case PDFRendererConfig(None, _, _) => failure(
