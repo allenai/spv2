@@ -23,5 +23,5 @@ default_model_settings = ModelSettings(
     font_hash_size=1024 * 4,
     token_vector_size=1024,
     timesteps=64,
-    batch_size=16
+    batch_size=256
 )
