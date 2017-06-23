@@ -3,23 +3,87 @@ package org.allenai.scienceparse2
 import org.apache.pdfbox.tools.PDFToImage
 
 object PDFRenderer {
-  def main(args: Array[String]): Unit = {
-    if (args.length > 0) {
-      val command = args(0)
-      val arguments = args.drop(1)
+  // see org.apache.pdfbox.tools.PDFToImage for all possible arguments.
+  case class PDFToImageConfig(
+    format: Option[String] = None,
+    prefix: Option[String] = None,
+    startPage: Option[Int] = None,
+    endPage: Option[Int] = None,
+    dpi: Option[Int] = None,
+    inputfile: Option[String] = None)
+  case class PreprocessPdfConfig(
+    outputFileName: Option[String] = None,
+    inputNames: Option[Seq[String]] = None)
+  case class PDFRendererConfig(
+    command: Option[String] = None,
+    pdfToImageConfig: Option[PDFToImageConfig] = Some(
+      PDFToImageConfig()),
+    preprocessPdfConfig: Option[PreprocessPdfConfig] = Some(
+      PreprocessPdfConfig()))
 
-      if (command == "PDFToImage") {
-        PDFToImage.main(arguments)
-      } else if (command == "PreprocessPdf") {
-        PreprocessPdf.main(arguments)
-      } else {
-        usage()
-      }
-    } else {
-      usage()
-    }
+  val parser = new scopt.OptionParser[PDFRendererConfig]("PDFRenderer") {
+    cmd("PDFToImage")
+      .action((_, c) => c.copy(command = Some("PDFToImage")))
+      .text("Render and save to disk PDF pages as image files")
+      .children(
+        opt[String]("format").action((x, c) => {
+          c.copy(
+            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(format = Some(x))))
+        }),
+        opt[String]("prefix").action((x, c) => {
+          c.copy(
+            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(prefix = Some(x))))
+        }),
+        opt[Int]("startPage").action((x, c) => {
+          c.copy(
+            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(startPage = Some(x))))
+        }),
+        opt[Int]("endPage").action((x, c) => {
+          c.copy(
+            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(endPage = Some(x))))
+        }),
+        opt[Int]("dpi").action((x, c) => {
+          c.copy(
+            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(dpi = Some(x))))
+        }),
+        arg[String]("inputfile").required().action((x, c) => {
+          c.copy(
+            pdfToImageConfig = c.pdfToImageConfig.map(_.copy(inputfile = Some(x))))
+        }))
+    cmd("PreprocessPdf")
+      .action((_, c) => c.copy(command = Some("PreprocessPdf")))
+      .text("Extract text and other information from the PDF")
+      .children(
+        opt[String]("outputFileName").required().action((x, c) => {
+          c.copy(
+            preprocessPdfConfig = c.preprocessPdfConfig.map(_.copy(outputFileName = Some(x))))
+        }),
+        opt[Seq[String]]("inputNames").required().action((x, c) => {
+          c.copy(
+            preprocessPdfConfig = c.preprocessPdfConfig.map(_.copy(inputNames = Some(x))))
+        }))
+    checkConfig { c => c match {
+      case PDFRendererConfig(None, _, _) => failure(
+        "Please specify a command")
+      case _ => success
+    }}
   }
-  def usage(): Unit = {
-    print(s"Usage: ${this.getClass.getName} PDFToImage|PreprocessPdf")
+
+  def main(args: Array[String]): Unit = {
+    parser.parse(args, PDFRendererConfig()) match {
+      case Some(config) => {
+        if (config.command.get == "PDFToImage") {
+          // only use scopt for option validation, but
+          // allow PDFToImage to conduct it's own option
+          // parsing
+          PDFToImage.main(args.drop(1))
+        } else if (config.command.get == "PreprocessPdf") {
+          PreprocessPdf.extractText(
+            outputFileName = config.preprocessPdfConfig.get.outputFileName.get,
+            inputNames = config.preprocessPdfConfig.get.inputNames.get)
+        }
+      }
+      case None => System.exit(1)
+    }
   }
 }

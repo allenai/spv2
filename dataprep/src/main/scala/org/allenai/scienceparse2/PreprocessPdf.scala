@@ -244,16 +244,11 @@ object PreprocessPdf extends Logging {
     }
   }
 
-  def main(args: Array[String]): Unit = {
-    val (outputFileName, inputNames) = try {
-      (args(0), args.drop(1))
-    } catch {
-      case _: ArrayIndexOutOfBoundsException =>
-        System.err.println(s"Usage: ${this.getClass.getName} <output file> [input files or directories...]")
-        System.exit(1)
-        (null, null)  // Stub to make type inference work
-    }
-
+  /** Extract text and tokens from inputNames and save output to outputFileName.
+    *
+    * Use "-"
+    */
+  def extractText(outputFileName: String, inputNames: Seq[String]): Unit = {
     Resource.using {
       if(outputFileName == "-")
         System.out
