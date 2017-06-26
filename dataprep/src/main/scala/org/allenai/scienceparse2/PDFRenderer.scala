@@ -6,9 +6,7 @@ object PDFRenderer {
   // see org.apache.pdfbox.tools.PDFToImage for all possible arguments.
   trait CommandConfig
 
-  case class PDFRendererConfig(
-    command: String = null,
-    commandConfig: CommandConfig = null)
+  case class PDFRendererConfig(commandConfig: CommandConfig = null)
 
   case class PDFToImageConfig(
     format: Option[String] = None,
@@ -24,10 +22,9 @@ object PDFRenderer {
     inputNames: Seq[String] = Seq())
       extends CommandConfig
 
-
   val parser = new scopt.OptionParser[PDFRendererConfig]("PDFRenderer") {
     cmd("PDFToImage")
-      .action((_, c) => c.copy(command = "PDFToImage", commandConfig = PDFToImageConfig()))
+      .action((_, c) => c.copy(commandConfig = PDFToImageConfig()))
       .text("Render and save to disk PDF pages as image files")
       .children(
         opt[String]('f', "format")
@@ -62,7 +59,7 @@ object PDFRenderer {
               commandConfig = c.commandConfig.asInstanceOf[PDFToImageConfig].copy(inputfile = x))
           }))
     cmd("PreprocessPdf")
-      .action((_, c) => c.copy(command = "PreprocessPdf", commandConfig = PreprocessPdfConfig()))
+      .action((_, c) => c.copy(commandConfig = PreprocessPdfConfig()))
       .text("Extract text and other information from the PDF")
       .children(
         arg[String]("outputFileName")
@@ -79,10 +76,6 @@ object PDFRenderer {
               commandConfig = c.commandConfig.asInstanceOf[PreprocessPdfConfig].copy(
                 inputNames = c.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames ++ x))
           }))
-    checkConfig { c => c match {
-      case PDFRendererConfig(null, _) => failure("Please specify a command")
-      case _ => success
-    }}
   }
 
   def main(args: Array[String]): Unit = {
