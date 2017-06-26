@@ -76,6 +76,9 @@ object PDFRenderer {
               commandConfig = c.commandConfig.asInstanceOf[PreprocessPdfConfig].copy(
                 inputNames = c.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames ++ x))
           }))
+    checkConfig(config =>
+      if (config.commandConfig == null) failure("You must specify a subcommand")
+      else success)
   }
 
   def main(args: Array[String]): Unit = {
