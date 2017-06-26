@@ -27,27 +27,27 @@ object PDFRenderer {
       .action((_, c) => c.copy(commandConfig = PDFToImageConfig()))
       .text("Render and save to disk PDF pages as image files")
       .children(
-        opt[String]('f', "format")
+        opt[String]("format")
           .action((x, c) => {
             c.copy(
               commandConfig = c.commandConfig.asInstanceOf[PDFToImageConfig].copy(format = Some(x)))
           }),
-        opt[String]('p', "prefix")
+        opt[String]("prefix")
           .action((x, c) => {
             c.copy(
               commandConfig = c.commandConfig.asInstanceOf[PDFToImageConfig].copy(prefix = Some(x)))
           }),
-        opt[Int]('s', "startPage")
+        opt[Int]("startPage")
           .action((x, c) => {
             c.copy(
               commandConfig = c.commandConfig.asInstanceOf[PDFToImageConfig].copy(startPage = Some(x)))
           }),
-        opt[Int]('e', "endPage")
+        opt[Int]("endPage")
           .action((x, c) => {
             c.copy(
               commandConfig = c.commandConfig.asInstanceOf[PDFToImageConfig].copy(endPage = Some(x)))
           }),
-        opt[Int]('d', "dpi")
+        opt[Int]("dpi")
           .action((x, c) => {
             c.copy(
               commandConfig = c.commandConfig.asInstanceOf[PDFToImageConfig].copy(dpi = Some(x)))
@@ -88,7 +88,9 @@ object PDFRenderer {
           // only use scopt for option validation, but
           // allow PDFToImage to conduct it's own option
           // parsing
-          case c : PDFToImageConfig => PDFToImage.main(args.drop(1))
+          case c : PDFToImageConfig => {
+            PDFToImage.main(args.drop(1).map(_.replaceAll("--", "-")))
+          }
           case c : PreprocessPdfConfig => PreprocessPdf.extractText(
             outputFileName = config.commandConfig.asInstanceOf[PreprocessPdfConfig].outputFileName,
             inputNames = config.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames)
