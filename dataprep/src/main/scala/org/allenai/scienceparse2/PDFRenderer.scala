@@ -88,13 +88,12 @@ object PDFRenderer {
   def main(args: Array[String]): Unit = {
     parser.parse(args, PDFRendererConfig()) match {
       case Some(config) => {
-        if (config.command == "PDFToImage") {
+        config.commandConfig match {
           // only use scopt for option validation, but
           // allow PDFToImage to conduct it's own option
           // parsing
-          PDFToImage.main(args.drop(1))
-        } else if (config.command == "PreprocessPdf") {
-          PreprocessPdf.extractText(
+          case c : PDFToImageConfig => PDFToImage.main(args.drop(1))
+          case c : PreprocessPdfConfig => PreprocessPdf.extractText(
             outputFileName = config.commandConfig.asInstanceOf[PreprocessPdfConfig].outputFileName,
             inputNames = config.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames)
         }
