@@ -5,7 +5,6 @@ import collections
 import re
 import time
 
-import keras
 from keras.layers import Embedding, Input, LSTM, Activation, Dense
 from keras.layers.merge import Concatenate
 from keras.layers.wrappers import TimeDistributed
@@ -21,17 +20,10 @@ import dataprep
 import multiprocessing_generator
 import unicodedata
 
-# IntelliJ thinks these are unnecessary, but we actually need them to make unpickling work.
-from dataprep import Document
-from dataprep import Page
-from dataprep import Token
 
 #
 # Make Model 👯
 #
-
-POTENTIAL_LABELS = [None, "title", "author"]
-
 
 def model_with_labels(model_settings: settings.ModelSettings):
     """Returns an untrained model that predicts the next token in a stream of PDF tokens."""
@@ -93,7 +85,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     lstm = LSTM(units=1024, return_sequences=True, stateful=True)(pdftokens_combined)
     logging.info("lstm:\t%s", lstm.shape)
 
-    one_hot_output = TimeDistributed(Dense(len(POTENTIAL_LABELS)))(lstm)
+    one_hot_output = TimeDistributed(Dense(len(dataprep.POTENTIAL_LABELS)))(lstm)
     logging.info("one_hot_output:\t%s", one_hot_output.shape)
 
     softmax = TimeDistributed(Activation('softmax'))(one_hot_output)
@@ -108,88 +100,96 @@ def model_with_labels(model_settings: settings.ModelSettings):
 # Prepare the Data 🐙
 #
 
+def featurize_page(doc: dataprep.H5DocumentWithFeatures, page_number: int):
+    page_inputs = np.full(
+        (doc.token_count_for_page(page_number),),
+        page_number + 1,    # one for keras' mask
+        dtype=np.int32)
+    token_inputs = doc.token_features_for_page(page_number)
+    font_inputs = doc.font_features_for_page(page_number)
+    numeric_inputs = doc.numeric_features_for_page(page_number)
 
-def apply_timesteps(model_settings: settings.ModelSettings, docs):
-    """Makes groups of length TIMESTEPS, and masks out input if necessary."""
-    for doc in docs:
-        for page in doc.pages:
-            # featurize the whole page at a time, then emit slices
-            page_inputs = np.fromiter(
-                (t.normalized_features[0] for t in page.tokens), dtype=int, count=len(page.tokens)
-            )
-            text_inputs = np.fromiter(
-                (t.normalized_features[1] for t in page.tokens), dtype=int, count=len(page.tokens)
-            )
-            font_inputs = np.fromiter(
-                (t.normalized_features[2] for t in page.tokens), dtype=int, count=len(page.tokens)
-            )
+    labels_as_ints = doc.labels_for_page(page_number)
+    labels_one_hot = np.zeros(
+        shape=(len(labels_as_ints), len(dataprep.POTENTIAL_LABELS)),
+        dtype=np.float32)
+    labels_one_hot[np.arange(len(labels_as_ints)),labels_as_ints] = 1
 
-            numeric_inputs = \
-                np.asarray([t.normalized_features[3] for t in page.tokens], dtype=float)
+    return (page_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
 
-            labels = np.fromiter(
-                (POTENTIAL_LABELS.index(t.label) for t in page.tokens),
-                dtype=int,
-                count=len(page.tokens)
-            )
+def page_length_for_doc_page_pair(doc_page_pair) -> int:
+    doc, page_number = doc_page_pair
+    return doc.token_count_for_page(page_number)
 
-            # prepend zeros; zeros are masked
-            desired_pad = model_settings.timesteps - 1
-            page_inputs = np.pad(page_inputs, (desired_pad, 0), mode='constant')
-            text_inputs = np.pad(text_inputs, (desired_pad, 0), mode='constant')
-            font_inputs = np.pad(font_inputs, (desired_pad, 0), mode='constant')
+def make_batches_from_page_group(model_settings: settings.ModelSettings, page_group):
+    page_lengths = list(map(page_length_for_doc_page_pair, page_group))
+    min_length = min(page_lengths)
+    max_length = max(page_lengths)
+    logging.debug("Page group spans length from %d to %d", min_length, max_length)
 
-            numeric_inputs = np.pad(numeric_inputs, ((desired_pad, 0), (0, 0)), mode='constant')
+    batch_inputs = [[], [], [], []]
+    batch_outputs = []
 
-            labels = np.pad(labels, (desired_pad, 0), mode='constant')
+    def round_up_to_multiple(number, multiple):
+        num = number + (multiple - 1)
+        return num - (num % multiple)
 
-            for start_index in range(len(page.tokens)):
-                end_index = start_index + model_settings.timesteps
-                yield (
-                    page_inputs[start_index:end_index], text_inputs[start_index:end_index],
-                    font_inputs[start_index:end_index], numeric_inputs[start_index:end_index]
-                ), labels[start_index:end_index]
+    padding_length = round_up_to_multiple(max_length, model_settings.timesteps)
 
+    assert len(page_group) == model_settings.batch_size
 
-def featurize_page(page: dataprep.Page):
-    page_inputs = np.fromiter(
-        (t.normalized_features[0] for t in page.tokens), dtype=int, count=len(page.tokens)
-    )
-    text_inputs = np.fromiter(
-        (t.normalized_features[1] for t in page.tokens), dtype=int, count=len(page.tokens)
-    )
-    font_inputs = np.fromiter(
-        (t.normalized_features[2] for t in page.tokens), dtype=int, count=len(page.tokens)
-    )
+    for doc, page_number in page_group:
+        page_length = doc.token_count_for_page(page_number)
+        required_padding = padding_length - page_length
+        featurized_input, featurized_output = featurize_page(doc, page_number)
 
-    numeric_inputs = np.stack([t.normalized_features[3] for t in page.tokens])
+        def pad1D(a):
+            return np.pad(a, (0, required_padding), mode='constant')
 
-    label_indices = np.fromiter(
-        (POTENTIAL_LABELS.index(t.label) for t in page.tokens), dtype=int, count=len(page.tokens)
-    )
-    labels = np.zeros((len(page.tokens), len(POTENTIAL_LABELS)), dtype=float)
-    labels[np.arange(len(page.tokens)), label_indices] = 1
+        featurized_input = (
+            pad1D(featurized_input[0]),
+            pad1D(featurized_input[1]),
+            pad1D(featurized_input[2]),
+            np.pad(featurized_input[3], ((0, required_padding), (0, 0)), mode='constant')
+        )
+        featurized_output = np.pad(
+            featurized_output, ((0, required_padding), (0, 0)), mode='constant'
+        )
 
-    return (page_inputs, text_inputs, font_inputs, numeric_inputs), labels
+        for index, input in enumerate(featurized_input):
+            batch_inputs[index].append(input)
+        batch_outputs.append(featurized_output)
+
+    batch_inputs = list(map(np.stack, batch_inputs))
+    batch_outputs = np.stack(batch_outputs)
+
+    for start_index in range(0, padding_length, model_settings.timesteps):
+        end_index = start_index + model_settings.timesteps
+        inputs = list(map(lambda i: i[:, start_index:end_index], batch_inputs))
+        outputs = batch_outputs[:, start_index:end_index, :]
+        yield inputs, outputs
 
 
 def make_batches(model_settings: settings.ModelSettings, docs, keep_unlabeled_pages=True):
-    pages_processed = 0
-    batches_emitted = 0
-
     def get_pages_of_vaguely_the_same_length(docs):
         page_pool = []
         max_page_pool_size = model_settings.batch_size * 16
         slice_start = 0  # we rotate slice_start to get an even distribution of page lengths
 
         for doc in docs:
-            for page in doc.pages:
+            for page_number in range(min(model_settings.max_page_number, doc.page_count())):
                 # filter out pages that have no labeled tokens
-                if keep_unlabeled_pages or any((t.label for t in page.tokens)):
-                    page_pool.append(page)
+                if not keep_unlabeled_pages:
+                    if not doc.has_labels_for_page(page_number):
+                        continue
+                    labels = doc.labels_for_page(page_number)
+                    if not np.any(labels):
+                        continue
+
+                page_pool.append((doc, page_number))
 
             if len(page_pool) >= max_page_pool_size:
-                page_pool.sort(key=lambda page: len(page.tokens))
+                page_pool.sort(key=page_length_for_doc_page_pair)
                 yield page_pool[slice_start:slice_start + model_settings.batch_size]
                 del page_pool[slice_start:slice_start + model_settings.batch_size]
                 slice_start += model_settings.batch_size
@@ -198,75 +198,15 @@ def make_batches(model_settings: settings.ModelSettings, docs, keep_unlabeled_pa
         # emit all leftover pages
         # Actually, not all leftover pages, but enough until the number of pages left is smaller
         # our batch size.
-        page_pool.sort(key=lambda page: len(page.tokens))
+        page_pool.sort(key=page_length_for_doc_page_pair)
         while len(page_pool) >= model_settings.batch_size:
             yield page_pool[0:model_settings.batch_size]
             del page_pool[0:model_settings.batch_size]
 
-    # this works on a list of pages, an iterable of document, and on a single page
-    if isinstance(docs, list) and isinstance(docs[0], Page):
-        pages = [docs]
-    elif isinstance(docs, collections.Iterable):
-        pages = get_pages_of_vaguely_the_same_length(docs)
-    elif isinstance(docs, Page):
-        pages = [[docs]]
-    else:
-        raise ValueError(
-            "docs must be either a list of Page, an iterable of Document, or a single Page"
-        )
+    pages = get_pages_of_vaguely_the_same_length(docs)
 
     for page_group in pages:
-        min_length = min((len(p.tokens) for p in page_group))
-        max_length = max((len(p.tokens) for p in page_group))
-        #logging.debug("Page group spans length from %d to %d", min_length, max_length)
-
-        pages_processed += len(page_group)
-
-        batch_inputs = [[], [], [], []]
-        batch_outputs = []
-
-        def round_up_to_multiple(number, multiple):
-            num = number + (multiple - 1)
-            return num - (num % multiple)
-
-        padding_length = round_up_to_multiple(max_length, model_settings.timesteps)
-
-        assert len(page_group) == model_settings.batch_size
-
-        for page in page_group:
-            page_length = len(page.tokens)
-            required_padding = padding_length - page_length
-            featurized_input, featurized_output = featurize_page(page)
-
-            def pad1D(a):
-                return np.pad(a, (0, required_padding), mode='constant')
-
-            featurized_input = (
-                pad1D(featurized_input[0]),
-                pad1D(featurized_input[1]),
-                pad1D(featurized_input[2]),
-                np.pad(featurized_input[3], ((0, required_padding), (0, 0)), mode='constant')
-            )
-            featurized_output = np.pad(
-                featurized_output, ((0, required_padding), (0, 0)), mode='constant'
-            )
-
-            for index, input in enumerate(featurized_input):
-                batch_inputs[index].append(input)
-            batch_outputs.append(featurized_output)
-
-        batch_inputs = list(map(np.stack, batch_inputs))
-        batch_outputs = np.stack(batch_outputs)
-
-        for start_index in range(0, padding_length, model_settings.timesteps):
-            end_index = start_index + model_settings.timesteps
-            inputs = list(map(lambda i: i[:, start_index:end_index], batch_inputs))
-            outputs = batch_outputs[:, start_index:end_index, :]
-            yield inputs, outputs
-            batches_emitted += 1
-
-        #logging.debug("Processed %d pages; emitted %d batches", pages_processed, batches_emitted)
-
+        yield from make_batches_from_page_group(model_settings, page_group)
         yield None  # signals to the consumer of this generator to reset the model
 
 
@@ -288,8 +228,8 @@ def evaluate_model(
     test_docs = list(itertools.islice(test_docs, 0, test_doc_count))
 
     # these are arrays for calculating P/R curves, in the format that scikit insists on for them
-    y_score = np.empty([0, len(POTENTIAL_LABELS)], dtype="f4")
-    y_true = np.empty([0, len(POTENTIAL_LABELS)], dtype="bool")
+    y_score = np.empty([0, len(dataprep.POTENTIAL_LABELS)], dtype="f4")
+    y_true = np.empty([0, len(dataprep.POTENTIAL_LABELS)], dtype="bool")
 
     # these are arrays of tuples (precision, recall) to produce an SPV1-style metric
     title_prs = []
@@ -305,9 +245,9 @@ def evaluate_model(
 
         # process the pages
         predictions = []
-        #labels = [] # We're not actually using the labels, so this is commented out.
+        labels = []
         model.reset_states()
-        for batch in make_batches(model_settings, padded_page_group):
+        for batch in make_batches_from_page_group(model_settings, padded_page_group):
             if batch is None:
                 model.reset_states()
                 continue
@@ -316,56 +256,70 @@ def evaluate_model(
             prediction = model.predict_on_batch(x)
             predictions.append(prediction)
 
-            #labels.append(y)
+            labels.append(y)
 
-        predictions = np.concatenate(predictions, axis=1)
-        #labels = np.concatenate(labels, axis=1)
+        raw_predictions = np.concatenate(predictions, axis=1)
+        predictions = raw_predictions.argmax(axis=2)
+
+        raw_labels = np.concatenate(labels, axis=1)
+        labels = raw_labels.argmax(axis=2)
 
         # print output
-        title_label_index = POTENTIAL_LABELS.index("title")
-        author_label_index = POTENTIAL_LABELS.index("author")
         for doc, index_in_page_group in doc_to_index_in_page_group:
             print()
-            print("Document ", doc.doc_id)
+            print("Document ", doc.doc_id())
 
-            actual_title = []
-            actual_authors = []
-            label_indices = predictions.argmax(axis=2)
-            for page_index, page in enumerate(doc.pages):
-                for token_index, token in enumerate(page.tokens):
-                    max_index = label_indices[index_in_page_group + page_index, token_index]
-                    if max_index == title_label_index:
-                        actual_title.append(token)
-                    if max_index == author_label_index:
-                        actual_authors.append(token)
-
-            def get_continuous_tokens(tokens):
-                if len(tokens) <= 0:
+            def continuous_index_sequences(indices: np.array):
+                """Given an array like this: [1,2,3,5,6,7,10], this returns continuously increasing
+                subsequences, like this: [[1,2,3], [5,6,7], [10]]"""
+                if len(indices) <= 0:
                     return []
+                else:
+                    return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
 
-                token_groups = []
-                current_token_group = [tokens[0]]
-                for token in tokens[1:]:
-                    last_token = current_token_group[-1]
-                    if last_token.page != token.page or last_token.index + 1 != token.index:
-                        token_groups.append(current_token_group)
-                        current_token_group = [token]
-                    else:
-                        current_token_group.append(token)
-                token_groups.append(current_token_group)
-                return token_groups
+            def longest_continuous_index_sequence(indices):
+                """Given an array of indices, this returns the longest continuously increasing
+                subsequence in the array."""
+                return max(continuous_index_sequences(indices), key=len)
 
-            def text_for_longest_continuous_tokens(tokens):
-                if len(tokens) <= 0:
-                    return ""
-                tokens = get_continuous_tokens(tokens)
-                tokens.sort(key=lambda group: len(group), reverse=True)
-                tokens = tokens[0]
-                tokens = [t.text for t in tokens]
-                return " ".join(tokens)
+            labeled_title = np.empty(shape=(0,), dtype=np.unicode)
+            labeled_authors = []
 
-            def all_tokens():
-                return itertools.chain.from_iterable([p.tokens for p in doc.pages])
+            predicted_title = np.empty(shape=(0,), dtype=np.unicode)
+            predicted_authors = []
+
+            effective_page_count = min(doc.page_count(), model_settings.max_page_number)
+            for page_number in range(effective_page_count):
+                page_index_in_page_group = index_in_page_group + page_number
+                page_tokens = doc.tokens_for_page(page_number)
+
+                # find labeled titles and authors
+                page_labels = labels[page_index_in_page_group, :len(page_tokens)]
+
+                indices_labeled_title = np.where(page_labels == dataprep.TITLE_LABEL)[0]
+                if len(indices_labeled_title) > 0:
+                    labeled_title_on_page = longest_continuous_index_sequence(indices_labeled_title)
+                    if len(labeled_title_on_page) > len(labeled_title):
+                        labeled_title_on_page = np.take(page_tokens, labeled_title_on_page)
+                        labeled_title = labeled_title_on_page
+
+                indices_labeled_author = np.where(page_labels == dataprep.AUTHOR_LABEL)[0]
+                for index_sequence in continuous_index_sequences(indices_labeled_author):
+                    labeled_authors.append(np.take(page_tokens, index_sequence))
+
+                # find predicted titles and authors
+                page_predictions = predictions[page_index_in_page_group, :len(page_tokens)]
+
+                indices_predicted_title = np.where(page_predictions == dataprep.TITLE_LABEL)[0]
+                if len(indices_predicted_title) > 0:
+                    predicted_title_on_page = longest_continuous_index_sequence(indices_predicted_title)
+                    if len(predicted_title_on_page) > len(predicted_title):
+                        predicted_title_on_page = np.take(page_tokens, predicted_title_on_page)
+                        predicted_title = predicted_title_on_page
+
+                indices_predicted_author = np.where(page_predictions == dataprep.AUTHOR_LABEL)[0]
+                for index_sequence in continuous_index_sequences(indices_predicted_author):
+                    predicted_authors.append(np.take(page_tokens, index_sequence))
 
             def normalize(s: str) -> str:
                 return unicodedata.normalize("NFKC", s)
@@ -382,73 +336,75 @@ def evaluate_model(
                 return a.strip()
 
             # print titles
-            print("Gold title:    ", doc.gold_title)
+            print("Gold title:    ", doc.gold_title())
 
-            expected_title = [t for t in all_tokens() if t.label == "title"]
-            print("Expected title:", text_for_longest_continuous_tokens(expected_title))
+            labeled_title = " ".join(labeled_title)
+            print("Labeled title: ", labeled_title)
 
-            actual_title = text_for_longest_continuous_tokens(actual_title)
-            print("Actual title:  ", actual_title)
+            predicted_title = " ".join(predicted_title)
+            print("Actual title:  ", predicted_title)
 
+            # calculate title P/R
             title_score = 0.0
-            if normalize(actual_title) == normalize(doc.gold_title):
+            if normalize(predicted_title) == normalize(doc.gold_title()):
                 title_score = 1.0
             print("Score:         ", title_score)
             title_prs.append((title_score, title_score))
 
             # print authors
-            gold_authors = ["%s %s" % gold_author for gold_author in doc.gold_authors]
+            gold_authors = ["%s %s" % gold_author for gold_author in doc.gold_authors()]
             for gold_author in gold_authors:
-                print("Gold author:    ", gold_author)
+                print("Gold author:      ", gold_author)
 
-            expected_authors = [t for t in all_tokens() if t.label == "author"]
-            expected_authors = get_continuous_tokens(expected_authors)
-            for expected_author in expected_authors:
-                expected_author = " ".join([t.text for t in expected_author])
-                print("Expected author:", expected_author)
-
-            actual_authors = get_continuous_tokens(actual_authors)
-            actual_authors = \
-                [" ".join([t.text for t in actual_author]) for actual_author in actual_authors]
-            if len(actual_authors) <= 0:
-                print("No authors found")
+            labeled_authors = [" ".join(ats) for ats in labeled_authors]
+            if len(labeled_authors) <= 0:
+                print("No authors labeled")
             else:
-                for actual_author in actual_authors:
-                    print("Actual author:  ", actual_author)
+                for labeled_author in labeled_authors:
+                    print("Labeled author:   ", labeled_author)
 
+            predicted_authors = [" ".join(ats) for ats in predicted_authors]
+            if len(predicted_authors) <= 0:
+                print("No authors predicted")
+            else:
+                for predicted_author in predicted_authors:
+                    print("Predicted author: ", predicted_author)
+
+            # calculate author P/R
             gold_authors = set(map(normalize_author, gold_authors))
-            actual_authors = set(map(normalize_author, actual_authors))
+            predicted_authors = set(map(normalize_author, predicted_authors))
             precision = 0
-            if len(actual_authors) > 0:
-                precision = len(gold_authors & actual_authors) / len(actual_authors)
+            if len(predicted_authors) > 0:
+                precision = len(gold_authors & predicted_authors) / len(predicted_authors)
             recall = 0
             if len(gold_authors) > 0:
-                recall = len(gold_authors & actual_authors) / len(gold_authors)
+                recall = len(gold_authors & predicted_authors) / len(gold_authors)
             print("Author P/R:       %.3f / %.3f" % (precision, recall))
             author_prs.append((precision, recall))
 
         # update y_score
         nonlocal y_score
         y_score = [y_score]
-        for page_index, page in enumerate(page_group):
-            y_score.append(predictions[page_index, :len(page.tokens)])
+        for page_index, doc_page_number_pair in enumerate(page_group):
+            doc, page_number = doc_page_number_pair
+            y_score.append(raw_predictions[page_index, :doc.token_count_for_page(page_number)])
         y_score = np.concatenate(y_score)
 
         # update y_true
         nonlocal y_true
         y_true = [y_true]
-        for page in page_group:
-            y_true_for_page = np.array(
-                [[token.label == label for label in POTENTIAL_LABELS] for token in page.tokens],
-                dtype=bool
-            )
+        for page_index, doc_page_number_pair in enumerate(page_group):
+            doc, page_number = doc_page_number_pair
+            raw_labels_for_page = raw_labels[page_index, :doc.token_count_for_page(page_number)]
+            y_true_for_page = raw_labels_for_page.astype(np.bool)
             y_true.append(y_true_for_page)
         y_true = np.concatenate(y_true)
 
     page_group = []
     doc_to_index_in_page_group = []
     for doc in test_docs:
-        if len(page_group) + len(doc.pages) > model_settings.batch_size:
+        effective_page_count = min(doc.page_count(), model_settings.max_page_number)
+        if len(page_group) + effective_page_count > model_settings.batch_size:
             # page group is full, let's process it
             process_page_group(page_group, doc_to_index_in_page_group)
 
@@ -457,7 +413,7 @@ def evaluate_model(
             page_group = []
 
         doc_to_index_in_page_group.append((doc, len(page_group)))
-        page_group.extend(doc.pages)
+        page_group.extend([(doc, page_number) for page_number in range(effective_page_count)])
 
     # process the last page group
     process_page_group(page_group, doc_to_index_in_page_group)
@@ -466,13 +422,13 @@ def evaluate_model(
     print()
     scores = sklearn.metrics.average_precision_score(y_true, y_score, average=None)
     print("Areas under the P/R curve:")
-    print("\t".join(map(str, POTENTIAL_LABELS)))
+    print("\t".join(map(str, dataprep.POTENTIAL_LABELS)))
     print("\t".join(["%.3f" % score for score in scores]))
 
     def average_pr(prs):
         p = sum((pr[0] for pr in prs)) / len(prs)
         r = sum((pr[1] for pr in prs)) / len(prs)
-        return (p, r)
+        return p, r
 
     print("TitleP\tTitleR\tAuthorP\tAuthorR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(title_prs) + average_pr(author_prs)))
@@ -527,11 +483,13 @@ def train(
         time_at_last_eval = start_time
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
-            train_docs = dataprep.documents_from_pmc_dir(pmc_dir, glove_vector_file, model_settings)
-            with multiprocessing_generator.ParallelGenerator(
-                make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
-                max_lookahead=128
-            ) as training_data:
+            train_docs = dataprep.documents_from_pmc_dir(pmc_dir, model_settings)
+            #with multiprocessing_generator.ParallelGenerator(
+            #    make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
+            #    max_lookahead=128
+            #) as training_data:
+            if True:
+                training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
                 for batch in training_data:
                     if batch is None:
                         model.reset_states()
@@ -556,7 +514,7 @@ def train(
                             now - start_time,
                             metric_string)
                     time_since_last_eval = now - time_at_last_eval
-                    if time_since_last_eval > 60 * 60:
+                    if time_since_last_eval > 60:# * 60: DEBUG HACK
                         logging.info(
                             "It's been %.0f seconds since the last eval. Triggering another one.",
                             time_since_last_eval)
