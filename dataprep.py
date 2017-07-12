@@ -47,7 +47,7 @@ class TokenStatistics(object):
     def get_font_size_percentiles(self, font_sizes: np.array):
         assert font_sizes.dtype == np.dtype('f4')
         indices = self.cum_font_sizes['item'].searchsorted(font_sizes)
-        return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes))]
+        return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes)-1)]
 
     def get_space_width_percentile(self, space_width):
         # We have to search for the same data type as we have in the array. Otherwise this is super
@@ -58,7 +58,7 @@ class TokenStatistics(object):
     def get_space_width_percentiles(self, space_widths: np.array):
         assert space_widths.dtype == np.dtype('f4')
         indices = self.cum_space_widths['item'].searchsorted(space_widths)
-        return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths))]
+        return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
 
 
 class GloveVectors(object):
