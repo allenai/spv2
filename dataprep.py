@@ -261,8 +261,11 @@ class H5Document(object):
         try:
             with open(nxml_path) as nxml_file:
                 nxml = ET.parse(nxml_file).getroot()
-        except FileNotFoundError:  # will have to be changed into whatever error open() throws
+        except FileNotFoundError:
             logging.warning("Could not find %s; skipping", nxml_path)
+            return None
+        except UnicodeDecodeError:
+            logging.warning("Could not decode %s; skipping", nxml_path)
             return None
 
         def all_inner_text(node):
