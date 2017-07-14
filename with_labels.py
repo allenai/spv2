@@ -113,7 +113,11 @@ def featurize_page(doc: dataprep.H5DocumentWithFeatures, page_number: int):
     labels_one_hot = np.zeros(
         shape=(len(labels_as_ints), len(dataprep.POTENTIAL_LABELS)),
         dtype=np.float32)
-    labels_one_hot[np.arange(len(labels_as_ints)),labels_as_ints] = 1
+    try:
+        labels_one_hot[np.arange(len(labels_as_ints)),labels_as_ints] = 1
+    except:
+        logging.error("Error in document %s", doc.doc_id())
+        raise
 
     return (page_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
 
