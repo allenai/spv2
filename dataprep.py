@@ -256,6 +256,7 @@ class H5Document(object):
 
         # find the nxml that goes with this file
         doc_id = self.doc_id()
+        logging.info("Labeling %s", doc_id)
         nxml_path = re.sub("\\.pdf$", ".nxml", doc_id)
         nxml_path = os.path.join(pmc_dir, doc_id[:2], "docs", nxml_path)
         try:
