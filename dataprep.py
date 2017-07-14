@@ -180,7 +180,8 @@ class H5Document(object):
         h5_doc_group = h5_file.create_group(doc_sha)
         h5_doc_group.attrs["doc_id"] = doc_id
 
-        for page_number, json_page in enumerate(json_doc["pages"]):
+        MAX_PAGE_NUMBER = 3 # This is a bit of a hack, because this is not the same as the max page number in model settings.
+        for page_number, json_page in enumerate(json_doc["pages"][:MAX_PAGE_NUMBER]):
             h5_page_group = h5_doc_group.create_group("page_%d" % page_number)
             h5_page_group.attrs["width"] = float(json_page["width"])
             h5_page_group.attrs["height"] = float(json_page["height"])
@@ -225,6 +226,9 @@ class H5Document(object):
 
         return H5Document(h5_file, doc_sha)
 
+    def delete(self):
+        del self.h5_file[self.doc_sha()]
+
     def _h5_pages(self):
         return (self.h5_group[name] for name in self.h5_group.keys() if name.startswith("page_"))
 
@@ -252,13 +256,17 @@ class H5Document(object):
 
         # find the nxml that goes with this file
         doc_id = self.doc_id()
+        logging.info("Labeling %s", doc_id)
         nxml_path = re.sub("\\.pdf$", ".nxml", doc_id)
         nxml_path = os.path.join(pmc_dir, doc_id[:2], "docs", nxml_path)
         try:
             with open(nxml_path) as nxml_file:
                 nxml = ET.parse(nxml_file).getroot()
-        except FileNotFoundError:  # will have to be changed into whatever error open() throws
+        except FileNotFoundError:
             logging.warning("Could not find %s; skipping", nxml_path)
+            return None
+        except UnicodeDecodeError:
+            logging.warning("Could not decode %s; skipping", nxml_path)
             return None
 
         def all_inner_text(node):
@@ -305,8 +313,6 @@ class H5Document(object):
         author_matches = [None] * len(authors)
         for h5_page in h5_pages:
             number_of_tokens_on_page = len(h5_page["tokens"])
-
-            h5_page.create_dataset("labels", (number_of_tokens_on_page,), dtype='i8')
 
             page_text = []
             page_text_length = 0
@@ -414,6 +420,12 @@ class H5Document(object):
             logging.warning("Could not find all authors in %s; skipping", doc_id)
             return None
 
+        # actually create labels in h5
+        # After this point, we can't return None anymore
+        for h5_page in h5_pages:
+            number_of_tokens_on_page = len(h5_page["tokens"])
+            h5_page.create_dataset("labels", (number_of_tokens_on_page,), dtype='i8', fillvalue=0)
+
         # actually label the title
         title_page, title_first_token_index, title_one_past_last_token_index, _ = title_match
         title_labels = title_page["labels"]
@@ -510,6 +522,7 @@ class H5DocumentWithFeatures(object):
 
         for page_number in page_number_range:
             if not labeled_doc.has_labels_for_page(page_number):
+                logging.info("No labels for page %d of %s; can't make features", page_number, labeled_doc.doc_sha())
                 continue
 
             h5_page_group = h5_doc_group.create_group("page_%d" % page_number)
@@ -784,6 +797,9 @@ def documents_from_pmc_dir(
                             pages_returned += doc.page_count()
                             if (pages_returned_before // 100) != (pages_returned // 100):
                                 logging.info("%d pages labeled", pages_returned)
+                        else:
+                            logging.info("Deleting %s", doc.doc_sha())
+                            doc.delete()
                 except:
                     try:
                         os.remove(temp_labeled_tokens_path)
