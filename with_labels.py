@@ -11,7 +11,7 @@ from keras.layers.wrappers import TimeDistributed
 from keras.models import Model
 from keras.callbacks import LambdaCallback
 from keras.layers import Masking
-from keras.optimizers import RMSprop
+from keras.optimizers import Adam
 
 import sklearn
 import sklearn.metrics
@@ -93,7 +93,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     logging.info("softmax:\t%s", softmax.shape)
 
     model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=softmax)
-    model.compile(RMSprop(), "categorical_crossentropy", metrics=["accuracy"])
+    model.compile(Adam(), "categorical_crossentropy", metrics=["accuracy"])
     return model
 
 
