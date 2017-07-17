@@ -11,6 +11,8 @@ resolvers += Resolver.bintrayRepo("allenai", "maven")
 libraryDependencies ++= Seq(
   "org.apache.pdfbox" % "pdfbox" % "2.0.5" exclude ("commons-logging", "commons-logging"),
   "org.apache.pdfbox" % "fontbox" % "2.0.5" exclude ("commons-logging", "commons-logging"),
+  "org.apache.pdfbox" % "pdfbox-tools" % "2.0.5" exclude ("commons-logging", "commons-logging"),
+  "com.github.scopt" %% "scopt" % "3.3.0",
   "org.slf4j" % "jcl-over-slf4j" % "1.7.25",
   "com.amazonaws" % "aws-java-sdk" % "1.7.4" exclude ("commons-logging", "commons-logging"),
   "org.allenai.common" %% "common-core" % "1.4.10",
@@ -24,3 +26,5 @@ libraryDependencies ++= Seq(
 PB.targets in Compile := Seq(
   scalapb.gen() -> (sourceManaged in Compile).value
 )
+
+mainClass in assembly := Some("org.allenai.scienceparse2.PDFRenderer")
