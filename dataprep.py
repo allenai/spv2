@@ -1,8 +1,6 @@
 import mmh3
 import logging
 import numpy as np
-import itertools
-import bz2
 import gzip
 import json
 import os
@@ -10,11 +8,11 @@ import token_statistics
 import re
 import xml.etree.ElementTree as ET
 import unicodedata
-import pickle
 import stringmatch
-import multiprocessing_generator
 import subprocess
 import io
+import h5py
+import codecs
 
 import settings
 
@@ -24,8 +22,8 @@ import settings
 
 class TokenStatistics(object):
     def __init__(self, filename):
-        (texts, fonts, font_sizes,
-         space_widths) = token_statistics.load_stats_file_no_coordinates(filename)
+        (texts, fonts, font_sizes, space_widths) = \
+            token_statistics.load_stats_file_no_coordinates(filename)
 
         def make_cumulative(counting_dictionary, dtype):
             result = np.fromiter(
@@ -44,16 +42,23 @@ class TokenStatistics(object):
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
         font_size = np.asarray(font_size, 'f4')
-        i = self.cum_font_sizes['item'].searchsorted(font_size)
-        return self.cum_font_sizes['count'][i]
+        return self.get_font_size_percentiles(font_size)
+
+    def get_font_size_percentiles(self, font_sizes: np.array):
+        assert font_sizes.dtype == np.dtype('f4')
+        indices = self.cum_font_sizes['item'].searchsorted(font_sizes)
+        return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes)-1)]
 
     def get_space_width_percentile(self, space_width):
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
         space_width = np.asarray(space_width, 'f4')
-        i = self.cum_space_widths['item'].searchsorted(space_width)
-        i = min(i, len(self.cum_space_widths) - 1)
-        return self.cum_space_widths['count'][i]
+        return self.get_space_width_percentiles(space_width)
+
+    def get_space_width_percentiles(self, space_widths: np.array):
+        assert space_widths.dtype == np.dtype('f4')
+        indices = self.cum_space_widths['item'].searchsorted(space_widths)
+        return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
 
 
 class GloveVectors(object):
@@ -124,127 +129,11 @@ class GloveVectors(object):
             return vector
 
 
-class Token(object):
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-        self.label = None
-        self.normalized_features = None  # will be set by the Document constructor
-
-    def __str__(self):
-        return "Token(%s, %s, %.2f, ...)" % (self.text, self.font, self.font_size)
-
-    @classmethod
-    def from_json(cls, json_token):
-        return Token(
-            text=str(json_token["text"]),
-            font=str(json_token["font"]),
-            left=float(json_token["left"]),
-            right=float(json_token["right"]),
-            top=float(json_token["top"]),
-            bottom=float(json_token["bottom"]),
-            font_size=float(json_token["fontSize"]),
-            space_width=float(json_token["fontSpaceWidth"])
-        )
-
-
-class Page(object):
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-
-    @classmethod
-    def from_json(cls, json_page):
-        return Page(
-            width=float(json_page["width"]),
-            height=float(json_page["height"]),
-            tokens=[Token.from_json(t) for t in json_page.get("tokens", [])]
-        )
-
-
-class Document(object):
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-
-        # read pages
-        if len(self.pages) <= 0:
-            raise ValueError("%s has no pages" % self.doc_id)
-        if any(len(page.tokens) <= 0 for page in self.pages):
-            raise ValueError("%s has pages without tokens" % self.doc_id)
-
-    def add_normalized_features(
-        self,
-        max_page_number: int,
-        token_hash_size: int,
-        font_hash_size: int,
-        token_stats: TokenStatistics
-    ):
-        self.pages = self.pages[:max_page_number]
-
-        font_sizes_in_doc = np.fromiter((t.font_size for t in self.all_tokens()), dtype='f4')
-        font_sizes_in_doc.sort()
-        space_widths_in_doc = np.fromiter((t.space_width for t in self.all_tokens()), dtype='f4')
-        space_widths_in_doc.sort()
-
-        def get_quantile(a, value):
-            return a.searchsorted(np.asarray(value, 'f4')) / len(a)
-
-        def squash_to_range(value, minimum, maximum) -> float:
-            """Squashes all values into the range from -0.5 to +0.5"""
-            if minimum == maximum:
-                return 0.0
-            else:
-                return ((value - minimum) / (maximum - minimum)) - 0.5
-
-        for page_number, page in enumerate(self.pages):
-            width = page.width
-            height = page.height
-            for token in page.tokens:
-                text_feature = mmh3.hash(token.text) % token_hash_size
-                font_feature = mmh3.hash(token.font) % font_hash_size
-
-                left_feature = squash_to_range(float(token.left), 0, width)
-                right_feature = squash_to_range(float(token.right), 0, width)
-                top_feature = squash_to_range(float(token.top), 0, height)
-                bottom_feature = squash_to_range(float(token.bottom), 0, height)
-                font_size_feature = \
-                    token_stats.get_font_size_percentile(float(token.font_size)) - 0.5
-                space_width_feature = \
-                    token_stats.get_space_width_percentile(float(token.space_width)) - 0.5
-                font_size_in_doc_feature = \
-                    get_quantile(font_sizes_in_doc, float(token.font_size)) - 0.5
-                space_width_in_doc_feature = \
-                    get_quantile(space_widths_in_doc, float(token.space_width)) - 0.5
-
-                token.normalized_features = (
-                    page_number + 1,  # one for the mask
-                    text_feature + 1,  # one for the mask
-                    font_feature + 1,  # one for the mask
-                    np.array([
-                        left_feature,
-                        right_feature,
-                        top_feature,
-                        bottom_feature,
-                        font_size_feature,
-                        space_width_feature,
-                        font_size_in_doc_feature,
-                        space_width_in_doc_feature
-                    ], dtype='float32')
-                )
-
-    @classmethod
-    def from_json(cls, json_doc):
-        doc_id = json_doc["docId"]
-        pages = [Page.from_json(p) for p in json_doc.get("pages", [])]
-        return Document(doc_id=doc_id, pages=pages)
-
-    def all_tokens(self):
-        return itertools.chain.from_iterable([page.tokens for page in self.pages])
-
-
 #
 # Labeling 🏷️
 #
 
-LABELING_VERSION = 7
+LABELING_VERSION = 8
 
 def normalize(s: str) -> str:
     s = s.lower()
@@ -256,256 +145,482 @@ _not_spaces_re = re.compile(r'\S+')
 _word_characters_re = re.compile(r'[\w]+')
 _sha1_re = re.compile(r'^[0-9a-f]{40}$')
 
-def label_tokens_in_one_document(doc, pmc_dir):
-    """Returns (labeled_doc, total_token_count, title_token_count, author_token_count), or None if 
-    it could not label successfully."""
+_vectorized_decode = np.vectorize(codecs.decode)
 
-    # find the nxml that goes with this file
-    nxml_path = os.path.normpath(doc.doc_id).split(os.path.sep)
-    for i, path_element in enumerate(nxml_path):
-        if _sha1_re.match(path_element) is not None:
-            nxml_path = nxml_path[i:]
-            break
-    nxml_path = os.sep.join(nxml_path)
-    nxml_path = re.sub("\\.pdf$", ".nxml", nxml_path)
-    nxml_path = os.path.join(pmc_dir, nxml_path[:2], "docs", nxml_path)
-    try:
-        with open(nxml_path) as nxml_file:
-            nxml = ET.parse(nxml_file).getroot()
-    except KeyError:  # will have to be changed into whatever error open() throws
-        #logging.warning("Could not find %s; skipping", nxml_path)
-        return None
+h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
-    def all_inner_text(node):
-        return "".join(node.itertext())
+POTENTIAL_LABELS = [None, "title", "author"]
+NONE_LABEL = 0
+TITLE_LABEL = POTENTIAL_LABELS.index("title")
+AUTHOR_LABEL = POTENTIAL_LABELS.index("author")
 
-    def tokenize(s: str):
-        """Tokenizes string s exactly as dataprep does, for maximum matching potential."""
-        return filter(_not_spaces_re.fullmatch, _split_words_re.split(s))
+class H5Document(object):
+    def __init__(self, h5_file: h5py.File, doc_sha: str):
+        self.h5_file = h5_file
+        self.h5_group = h5_file[doc_sha]
 
-    title = nxml.findall("./front/article-meta/title-group/article-title")
-    if len(title) != 1:
-        logging.warning("Found %d gold titles for %s; skipping", len(title), doc.doc_id)
-        return None
-    title = " ".join(tokenize(all_inner_text(title[0])))
-    if len(title) <= 4:
-        logging.warning("Title '%s' is too short; skipping", title)
-        return None
-    doc.gold_title = title
+    @classmethod
+    def from_json(cls, h5_file: h5py.File, json_doc: dict):
+        # find the proper doc id
+        doc_id = json_doc["docId"]
+        doc_id = doc_id.split("/")
+        for i, id_element in enumerate(doc_id):
+            if _sha1_re.match(id_element) is not None:
+                doc_id = doc_id[i:]
+                break
+        doc_sha = doc_id[0]
+        assert _sha1_re.match(doc_sha) is not None
+        doc_id = "/".join(doc_id)
 
-    author_nodes = \
-        nxml.findall("./front/article-meta/contrib-group/contrib[@contrib-type='author']/name")
-    authors = []
-    for author_node in author_nodes:
+        # copy that whole thing into h5
+        if doc_sha in h5_file:
+            logging.info("Doc %s is a duplicate", doc_sha)
+            return None         # This document is a duplicate.
 
-        def textify_string_nodes(nodes):
-            return " ".join([all_inner_text(an) for an in nodes])
-        given_names = \
-            " ".join(tokenize(textify_string_nodes(author_node.findall("./given-names"))))
-        surnames = \
-            " ".join(tokenize(textify_string_nodes(author_node.findall("./surname"))))
-        if len(surnames) <= 0:
-            logging.warning("No surnames for one of the authors; skipping")
+        h5_doc_group = h5_file.create_group(doc_sha)
+        h5_doc_group.attrs["doc_id"] = doc_id
+
+        MAX_PAGE_NUMBER = 3 # This is a bit of a hack, because this is not the same as the max page number in model settings.
+        for page_number, json_page in enumerate(json_doc["pages"][:MAX_PAGE_NUMBER]):
+            h5_page_group = h5_doc_group.create_group("page_%d" % page_number)
+            h5_page_group.attrs["width"] = float(json_page["width"])
+            h5_page_group.attrs["height"] = float(json_page["height"])
+
+            try:
+                json_tokens = json_page["tokens"]
+            except KeyError:
+                json_tokens = []
+
+            if len(json_tokens) <= 0:
+                h5_page_group.create_dataset("tokens", (0,), dtype=h5_unicode_type)
+                h5_page_group.create_dataset("token_dimensions", (0,4), dtype="float32")
+                h5_page_group.create_dataset("token_fonts", (0,), dtype=h5_unicode_type)
+                h5_page_group.create_dataset("token_font_sizes", (0,), dtype="float32")
+                h5_page_group.create_dataset("token_font_space_widths", (0,), dtype="float32")
+            else:
+                h5_page_group.create_dataset(
+                    "tokens",
+                    data=[json_token["text"].encode("utf-8") for json_token in json_tokens],
+                    dtype=h5_unicode_type)
+                h5_page_group.create_dataset(
+                    "token_dimensions",
+                    data=[(
+                        float(json_token["left"]),
+                        float(json_token["right"]),
+                        float(json_token["top"]),
+                        float(json_token["bottom"]),
+                    ) for json_token in json_tokens],
+                    dtype="float32")
+                h5_page_group.create_dataset(
+                    "token_fonts",
+                    data=[json_token["font"].encode("utf-8") for json_token in json_tokens],
+                    dtype=h5_unicode_type)
+                h5_page_group.create_dataset(
+                    "token_font_sizes",
+                    data=[float(json_token["fontSize"]) for json_token in json_tokens],
+                    dtype="float32")
+                h5_page_group.create_dataset(
+                    "token_font_space_widths",
+                    data=[float(json_token["fontSpaceWidth"]) for json_token in json_tokens],
+                    dtype="float32")
+
+        return H5Document(h5_file, doc_sha)
+
+    def delete(self):
+        del self.h5_file[self.doc_sha()]
+
+    def _h5_pages(self):
+        return (self.h5_group[name] for name in self.h5_group.keys() if name.startswith("page_"))
+
+    def _h5_page(self, page_number: int):
+        return self.h5_group["page_%d" % page_number]
+
+    def page_count(self):
+        return sum((1 for _ in self._h5_pages()))
+
+    def doc_id(self) -> str:
+        return self.h5_group.attrs["doc_id"]
+
+    def doc_sha(self) -> str:
+        return self.h5_group.name[-40:]
+
+    def add_labels(self, pmc_dir: str):
+        """Returns None if this document can't be labeled, or a tuple like this:
+        (total_token_count, title_token_count, author_token_count)"""
+
+        h5_pages = list(self._h5_pages())
+
+        # filter out docs with no pages
+        if len(h5_pages) <= 0:
             return None
 
-        authors.append((given_names, surnames))
-    if len(authors) == 0:
-        logging.warning("Found no gold authors for %s; skipping", doc.doc_id)
-        return None
-    doc.gold_authors = authors
+        # find the nxml that goes with this file
+        doc_id = self.doc_id()
+        logging.info("Labeling %s", doc_id)
+        nxml_path = re.sub("\\.pdf$", ".nxml", doc_id)
+        nxml_path = os.path.join(pmc_dir, doc_id[:2], "docs", nxml_path)
+        try:
+            with open(nxml_path) as nxml_file:
+                nxml = ET.parse(nxml_file).getroot()
+        except FileNotFoundError:
+            logging.warning("Could not find %s; skipping", nxml_path)
+            return None
+        except UnicodeDecodeError:
+            logging.warning("Could not decode %s; skipping", nxml_path)
+            return None
 
-    if not title or not authors:
-        return None
+        def all_inner_text(node):
+            return "".join(node.itertext())
+        def textify_string_nodes(nodes):
+            return " ".join([all_inner_text(an) for an in nodes])
 
-    title_match = None
-    author_matches = [None] * len(authors)
-    for page in doc.pages:
-        page_text = []
-        page_text_length = 0
-        start_pos_to_token_index = {}
-        for token_index, token in enumerate(page.tokens):
-            if len(page_text) > 0:
-                page_text.append(" ")
-                page_text_length += 1
+        def tokenize(s: str):
+            """Tokenizes strings exactly as dataprep does, for maximum matching potential."""
+            return filter(_not_spaces_re.fullmatch, _split_words_re.split(s))
 
-            start_pos_to_token_index[page_text_length] = token_index
+        title = nxml.findall("./front/article-meta/title-group/article-title")
+        if len(title) != 1:
+            logging.warning("Found %d gold titles for %s; skipping", len(title), doc_id)
+            return None
+        title = " ".join(tokenize(all_inner_text(title[0])))
+        if len(title) <= 4:
+            logging.warning("Title '%s' is too short; skipping", title)
+            return None
+        self.h5_group.attrs["gold_title"] = title
 
-            normalized_token_text = normalize(token.text)
-            page_text.append(normalized_token_text)
-            page_text_length += len(normalized_token_text)
-
-        page_text = "".join(page_text)
-        assert page_text_length == len(page_text)
-
-        def find_string_in_page(string):
-            fuzzy_match = stringmatch.match(normalize(string), page_text)
-            if fuzzy_match.cost > len(string) // 3:
+        author_nodes = \
+            nxml.findall("./front/article-meta/contrib-group/contrib[@contrib-type='author']/name")
+        authors = []
+        for author_node in author_nodes:
+            given_names = \
+                " ".join(tokenize(textify_string_nodes(author_node.findall("./given-names"))))
+            surnames = \
+                " ".join(tokenize(textify_string_nodes(author_node.findall("./surname"))))
+            if len(surnames) <= 0:
+                logging.warning("No surnames for one of the authors; skipping")
                 return None
 
-            start = fuzzy_match.start_pos
-            first_token_index = None
-            while not first_token_index and start >= 0:
-                first_token_index = start_pos_to_token_index.get(start, None)
-                start -= 1
-            if not first_token_index:
-                first_token_index = 0
+            authors.append((given_names, surnames))
+        if len(authors) == 0:
+            logging.warning("Found no gold authors for %s; skipping", doc_id)
+            return None
+        self.h5_group.attrs["gold_authors"] = [[n.encode("utf-8") for n in a] for a in authors]
 
-            end = fuzzy_match.end_pos
-            one_past_last_token_index = None
-            while not one_past_last_token_index and end < len(page_text):
-                one_past_last_token_index = start_pos_to_token_index.get(end, None)
-                end += 1
-            if not one_past_last_token_index:
-                one_past_last_token_index = len(page.tokens)
+        if not title or not authors:
+            return None
 
-            assert first_token_index != one_past_last_token_index
+        title_match = None
+        author_matches = [None] * len(authors)
+        for h5_page in h5_pages:
+            number_of_tokens_on_page = len(h5_page["tokens"])
 
-            return page, first_token_index, one_past_last_token_index, fuzzy_match.cost
+            page_text = []
+            page_text_length = 0
+            start_pos_to_token_index = {}
+            for token_index, token in enumerate(h5_page["tokens"]):
+                if len(page_text) > 0:
+                    page_text.append(" ")
+                    page_text_length += 1
 
-        #
-        # find title
-        #
+                start_pos_to_token_index[page_text_length] = token_index
 
-        title_match_on_this_page = find_string_in_page(title)
-        if title_match_on_this_page:
-            if not title_match or title_match_on_this_page[3] < title_match[3]:
-                title_match = title_match_on_this_page
+                normalized_token_text = normalize(token)
+                page_text.append(normalized_token_text)
+                page_text_length += len(normalized_token_text)
 
-        #
-        # find authors
-        #
+            page_text = "".join(page_text)
+            assert page_text_length == len(page_text)
 
-        for author_index, author in enumerate(authors):
+            def find_string_in_page(string):
+                fuzzy_match = stringmatch.match(normalize(string), page_text)
+                if fuzzy_match.cost > len(string) // 3:
+                    return None
 
-            def initials(names, space=" "):
-                return space.join(
-                    (x[0] for x in filter(_word_characters_re.fullmatch, tokenize(names)))
-                )
+                start = fuzzy_match.start_pos
+                first_token_index = None
+                while not first_token_index and start >= 0:
+                    first_token_index = start_pos_to_token_index.get(start, None)
+                    start -= 1
+                if not first_token_index:
+                    first_token_index = 0
 
-            given_names, surnames = author
-            if len(given_names) == 0:
-                author_variants = {surnames}
-            else:
-                author_variants = {
-                    "%s %s" % (given_names, surnames),
-                    "%s %s" % (initials(given_names, " "), surnames),
-                    "%s . %s" % (initials(given_names, " . "), surnames),
-                    "%s %s" % (initials(given_names, ""), surnames),
-                    "%s , %s" % (surnames, given_names),
-                    "%s %s" % (given_names[0], surnames),
-                    "%s . %s" % (given_names[0], surnames),
-                }
+                end = fuzzy_match.end_pos
+                one_past_last_token_index = None
+                while one_past_last_token_index is None and end < len(page_text):
+                    one_past_last_token_index = start_pos_to_token_index.get(end, None)
+                    end += 1
+                if one_past_last_token_index is None:
+                    one_past_last_token_index = number_of_tokens_on_page
 
-            for author_variant in author_variants:
-                new_match = find_string_in_page(author_variant)
-                if not new_match:
-                    continue
+                assert first_token_index != one_past_last_token_index
 
-                old_match = author_matches[author_index]
-                if not old_match:
+                return h5_page, first_token_index, one_past_last_token_index, fuzzy_match.cost
+
+            #
+            # find title
+            #
+
+            title_match_on_this_page = find_string_in_page(title)
+            if title_match_on_this_page is not None:
+                if title_match is None or title_match_on_this_page[3] < title_match[3]:
+                    title_match = title_match_on_this_page
+
+            #
+            # find authors
+            #
+
+            for author_index, author in enumerate(authors):
+
+                def initials(names, space=" "):
+                    return space.join(
+                        (x[0] for x in filter(_word_characters_re.fullmatch, tokenize(names)))
+                    )
+
+                given_names, surnames = author
+                if len(given_names) == 0:
+                    author_variants = {surnames}
+                else:
+                    author_variants = {
+                        "%s %s" % (given_names, surnames),
+                        "%s %s" % (initials(given_names, " "), surnames),
+                        "%s . %s" % (initials(given_names, " . "), surnames),
+                        "%s %s" % (initials(given_names, ""), surnames),
+                        "%s , %s" % (surnames, given_names),
+                        "%s %s" % (given_names[0], surnames),
+                        "%s . %s" % (given_names[0], surnames),
+                    }
+
+                for author_variant in author_variants:
+                    new_match = find_string_in_page(author_variant)
+                    if new_match is None:
+                        continue
+
+                    old_match = author_matches[author_index]
+                    if old_match is None:
+                        author_matches[author_index] = new_match
+                        continue
+
+                    old_match_cost = old_match[3]
+                    new_match_cost = new_match[3]
+                    if old_match_cost < new_match_cost:
+                        continue
+
+                    old_match_length = old_match[2] - old_match[1]
+                    new_match_length = new_match[2] - new_match[1]
+                    if new_match_length < old_match_length:
+                        continue
+
                     author_matches[author_index] = new_match
-                    continue
 
-                old_match_cost = old_match[3]
-                new_match_cost = new_match[3]
-                if old_match_cost < new_match_cost:
-                    continue
+        if title_match is None:
+            logging.warning("Could not find title '%s' in %s; skipping", title, doc_id)
+            return None
 
-                old_match_length = old_match[2] - old_match[1]
-                new_match_length = new_match[2] - new_match[1]
-                if new_match_length < old_match_length:
-                    continue
+        if any((a is None for a in author_matches)):
+            logging.warning("Could not find all authors in %s; skipping", doc_id)
+            return None
 
-                author_matches[author_index] = new_match
+        # actually create labels in h5
+        # After this point, we can't return None anymore
+        for h5_page in h5_pages:
+            number_of_tokens_on_page = len(h5_page["tokens"])
+            h5_page.create_dataset("labels", (number_of_tokens_on_page,), dtype='i8', fillvalue=0)
 
-    if not title_match:
-        logging.warning("Could not find title '%s' in %s; skipping", title, doc.doc_id)
-        return None
+        # actually label the title
+        title_page, title_first_token_index, title_one_past_last_token_index, _ = title_match
+        title_labels = title_page["labels"]
+        title_labels[title_first_token_index:title_one_past_last_token_index] = TITLE_LABEL
 
-    if not all(author_matches):
-        logging.warning("Could not find all authors in %s; skipping", doc.doc_id)
-        return None
+        # actually label the authors
+        for author_match in author_matches:
+            author_page, author_first_token_index, author_one_past_last_token_index, _ = author_match
+            author_labels = author_page["labels"]
+            author_labels[author_first_token_index:author_one_past_last_token_index] = AUTHOR_LABEL
+            # TODO: warn if we're overwriting existing labels
 
-    # actually label the title
-    title_page, title_first_token_index, title_one_past_last_token_index, _ = title_match
-    for token_index in range(title_first_token_index, title_one_past_last_token_index):
-        title_page.tokens[token_index].label = "title"
+        # update statistics
+        total_token_count = 0
+        title_token_count = 0
+        author_token_count = 0
+        for h5_page in h5_pages:
+            labels = h5_page["labels"]
+            total_token_count += len(labels)
+            # TODO: is there a faster way to count these? Maybe a histogram function or something?
+            title_token_count += sum((1 for l in labels if l == TITLE_LABEL))
+            author_token_count += sum((1 for l in labels if l == AUTHOR_LABEL))
 
-    # actually label the authors
-    for author_match in author_matches:
-        author_page, author_first_token_index, author_one_past_last_token_index, _ = author_match
-        for token_index in range(author_first_token_index, author_one_past_last_token_index):
-            token = author_page.tokens[token_index]
-            if token.label:
-                logging.warning(
-                    "Token %s on doc %s should be author, but it's already %s", token.text,
-                    doc.doc_id, token.label
-                )
-            token.label = "author"
+        return total_token_count, title_token_count, author_token_count
 
-    # filter out docs with no pages
-    if len(doc.pages) <= 0:
-        return None
+    def has_labels_for_page(self, page_number: int) -> bool:
+        return "labels" in self._h5_page(page_number).keys()
 
-    # set page and index on every token, for convenience later
-    for page_index, page in enumerate(doc.pages):
-        for token_index, token in enumerate(page.tokens):
-            token.index = token_index
-            token.page = page_index
+    def font_sizes_from_page(self, page_number: int):
+        return self._h5_page(page_number)["token_font_sizes"]
 
-    # update statistics
-    total_token_count = 0
-    title_token_count = 0
-    author_token_count = 0
-    for page in doc.pages:
-        total_token_count += len(page.tokens)
-        title_token_count += sum((1 for t in page.tokens if t.label == "title"))
-        author_token_count += sum((1 for t in page.tokens if t.label == "author"))
+    def space_widths_from_page(self, page_number: int):
+        return self._h5_page(page_number)["token_font_space_widths"]
 
-    return doc, total_token_count, title_token_count, author_token_count
+    def page_dimensions(self, page_number: int):
+        page_attrs = self._h5_page(page_number).attrs
+        return page_attrs["width"], page_attrs["height"]
 
+    def token_dimensions_from_page(self, page_number: int):
+        return self._h5_page(page_number)["token_dimensions"]
 
-def label_tokens(docs, pmc_dir):
-    tried_to_label = 0
-    successfully_labeled = 0
+    def get_token_bytes_from_page(self, page_number: int):
+        return self._h5_page(page_number)["tokens"]
 
-    total_token_count = 0
-    title_token_count = 0
-    author_token_count = 0
+    def token_count_for_page(self, page_number: int):
+        return len(self.get_token_bytes_from_page(page_number))
 
-    pages_returned = 0
+    def get_font_bytes_from_page(self, page_number: int):
+        return self._h5_page(page_number)["token_fonts"]
 
-    labeled_docs = (label_tokens_in_one_document(doc, pmc_dir) for doc in docs)
-    for doc_labeling_result in labeled_docs:
-        tried_to_label += 1
-        if tried_to_label % 100 == 0:
-            none_token_count = total_token_count - title_token_count - author_token_count
-            logging.info(
-                "Labeled %d out of %d (%.3f%%)", successfully_labeled, tried_to_label,
-                100.0 * successfully_labeled / tried_to_label
-            )
-            logging.info(
-                "Token count: %d; Title tokens: %d (%.3f%%); Author tokens: %d (%.3f%%); None tokens: %d (%.3f%%)",
-                total_token_count, title_token_count, 100.0 * title_token_count / total_token_count,
-                author_token_count, 100.0 * author_token_count / total_token_count,
-                none_token_count, 100.0 * none_token_count / total_token_count
-            )
+    def labels_for_page(self, page_number: int):
+        return self._h5_page(page_number)["labels"]
 
-        if doc_labeling_result:
-            labeled_doc, doc_total_token_count, doc_title_token_count, doc_author_token_count = doc_labeling_result
+    def gold_title(self):
+        return self.h5_group.attrs["gold_title"]
 
-            # update statistics
-            successfully_labeled += 1
-            total_token_count += doc_total_token_count
-            title_token_count += doc_title_token_count
-            author_token_count += doc_author_token_count
+    def gold_authors(self):
+        authors = self.h5_group.attrs["gold_authors"]
+        authors = _vectorized_decode(authors)
+        authors = list(map(tuple, authors))
+        return authors
 
-            yield labeled_doc
+class H5DocumentWithFeatures(object):
+    def __init__(self, h5_file: h5py.File, labeled_doc: H5Document):
+        self.h5_file = h5_file
+        self.labeled_doc = labeled_doc
 
-            pages_returned_before = pages_returned
-            pages_returned += len(labeled_doc.pages)
-            if (pages_returned_before // 100) != (pages_returned // 100):
-                logging.info("%d pages labeled", pages_returned)
+    @classmethod
+    def from_labeled_doc(
+        cls,
+        h5_file: h5py.File,
+        labeled_doc: H5Document,
+        max_page_number: int,
+        token_hash_size: int,
+        font_hash_size: int,
+        token_stats: TokenStatistics
+    ):
+        h5_doc_group = h5_file.create_group(labeled_doc.doc_sha())
+        page_number_range = range(0, min(max_page_number, labeled_doc.page_count()))
+
+        font_sizes_in_doc = []
+        space_widths_in_doc = []
+        for page_number in page_number_range:
+            font_sizes_in_doc.append(labeled_doc.font_sizes_from_page(page_number))
+            space_widths_in_doc.append(labeled_doc.space_widths_from_page(page_number))
+        font_sizes_in_doc = np.concatenate(font_sizes_in_doc)
+        font_sizes_in_doc.sort()
+        space_widths_in_doc = np.concatenate(space_widths_in_doc)
+        space_widths_in_doc.sort()
+
+        def get_quantiles(a: np.array, values: np.array) -> np.array:
+            assert values.dtype == np.dtype('f4')
+            return a.searchsorted(values) / len(a)
+
+        for page_number in page_number_range:
+            if not labeled_doc.has_labels_for_page(page_number):
+                logging.info("No labels for page %d of %s; can't make features", page_number, labeled_doc.doc_sha())
+                continue
+
+            h5_page_group = h5_doc_group.create_group("page_%d" % page_number)
+            width, height = labeled_doc.page_dimensions(page_number)
+
+            bytes_to_hash = np.vectorize(mmh3.hash, otypes=[np.int32])
+            token_features = \
+                bytes_to_hash(labeled_doc.get_token_bytes_from_page(page_number)) % token_hash_size
+            font_features = \
+                bytes_to_hash(labeled_doc.get_font_bytes_from_page(page_number)) % font_hash_size
+            # add 1 to account for keras' masking
+            h5_page_group.create_dataset("token_features", data=(token_features + 1))
+            h5_page_group.create_dataset("font_features", data=(font_features + 1))
+
+            numeric_features = np.zeros(
+                (labeled_doc.token_count_for_page(page_number), 8),
+                dtype='float32')
+
+            # token dimensions
+            # dimensions are (left, right, top, bottom)
+            token_dimensions = labeled_doc.token_dimensions_from_page(page_number)
+            if width <= 0:
+                numeric_features[:,0:2] = 0.0
+            else:
+                # squash left and right into 0.0 - 1.0
+                numeric_features[:,0:2] = token_dimensions[:,0:2] / width
+            if height <= 0:
+                numeric_features[:,2:4] = 0.0
+            else:
+                # squash top and bottom into 0.0 - 1.0
+                numeric_features[:,2:4] = token_dimensions[:,2:4] / height
+
+            # font sizes and space widths relative to corpus
+            numeric_features[:,4] = \
+                token_stats.get_font_size_percentiles(labeled_doc.font_sizes_from_page(page_number))
+            numeric_features[:,5] = \
+                token_stats.get_space_width_percentiles(labeled_doc.space_widths_from_page(page_number))
+
+            # font sizes and space widths relative to doc
+            numeric_features[:,6] = \
+                get_quantiles(font_sizes_in_doc, labeled_doc.font_sizes_from_page(page_number))
+            numeric_features[:,7] = \
+                get_quantiles(space_widths_in_doc, labeled_doc.space_widths_from_page(page_number))
+
+            # shift everything so we end up with a range of -0.5 - +0.5
+            numeric_features -= 0.5
+
+            # store the numeric features
+            h5_page_group.create_dataset("numeric_features", data=numeric_features)
+
+        return H5DocumentWithFeatures(h5_file, labeled_doc)
+
+    def _h5_doc_group(self):
+        return self.h5_file[self.labeled_doc.doc_sha()]
+
+    def _h5_pages(self):
+        doc_group = self._h5_doc_group()
+        return (doc_group[name] for name in doc_group.keys() if name.startswith("page_"))
+
+    def _h5_page(self, page_number: int):
+        return self._h5_doc_group()["page_%d" % page_number]
+
+    def page_count(self):
+        return self.labeled_doc.page_count()
+
+    def token_count_for_page(self, page_number: int) -> int:
+        return self.labeled_doc.token_count_for_page(page_number)
+
+    def token_features_for_page(self, page_number: int):
+        h5_page_group = self._h5_page(page_number)
+        return h5_page_group["token_features"]
+
+    def font_features_for_page(self, page_number: int):
+        h5_page_group = self._h5_page(page_number)
+        return h5_page_group["font_features"]
+
+    def numeric_features_for_page(self, page_number: int):
+        h5_page_group = self._h5_page(page_number)
+        return h5_page_group["numeric_features"]
+
+    def labels_for_page(self, page_number: int):
+        return self.labeled_doc.labels_for_page(page_number)
+
+    def has_labels_for_page(self, page_number: int):
+        return self.labeled_doc.has_labels_for_page(page_number)
+
+    def doc_id(self):
+        return self.labeled_doc.doc_id()
+
+    def tokens_for_page(self, page_number: int):
+        # I would expect we have to decode this first, from bytes to string, but apparently not.
+        return self.labeled_doc.get_token_bytes_from_page(page_number)
+
+    def gold_title(self):
+        return self.labeled_doc.gold_title()
+
+    def gold_authors(self):
+        return self.labeled_doc.gold_authors()
 
 
 #
@@ -526,35 +641,29 @@ for potential_zcat in ["gzcat", "zcat", None]:
     _zcat = potential_zcat
     break
 
-def zcat_process(filename: str) -> subprocess.Popen:
+def zcat_process(filename: str, encoding=None) -> subprocess.Popen:
     """Starts a zcat process that writes the decompressed file to stdout. It's annoying that we
     have to load zipped files this way, but it's about 40% faster than the gzip module 🙄."""
     return subprocess.Popen(
-            [_zcat, filename],
-            stdout=subprocess.PIPE,
-            close_fds=True)
+        [_zcat, filename],
+        stdout=subprocess.PIPE,
+        close_fds=True,
+        encoding=encoding)
+
+def bzcat_process(filename: str, encoding=None) -> subprocess.Popen:
+    return subprocess.Popen(
+        ["bzcat", filename],
+        stdout=subprocess.PIPE,
+        close_fds=True,
+        encoding=encoding)
 
 def documents_from_file(filename):
-    with (bz2.open(filename, 'rt', encoding="UTF-8")) as f:
-        for line in f:
+    with bzcat_process(filename, encoding="UTF-8") as p:
+        for line in p.stdout:
             try:
-                yield Document.from_json(json.loads(line))
+                yield json.loads(line)
             except ValueError as e:
                 logging.warning("Error while reading document (%s); skipping", e)
-
-
-def documents_from_dir(dirname, reverse: bool=False):
-    for (dirpath, dirnames, filenames) in os.walk(dirname):
-        if reverse:
-            filenames.reverse()
-        for filename in filenames:
-            if filename.endswith(".json.bz2"):
-                yield from documents_from_file(os.path.join(dirpath, filename))
-
-        if reverse:
-            dirnames.reverse()
-        for subdir in dirnames:
-            yield from documents_from_dir(os.path.join(dirpath, subdir))
 
 def documents_from_pmc_dir(
     dirname,
@@ -600,76 +709,146 @@ def documents_from_pmc_dir(
             labeled_tokens_path = \
                 os.path.join(
                     bucket_path,
-                    "labeled-tokens-v%d.pickle.gz" % LABELING_VERSION)
+                    "labeled-tokens-v%d.h5" % LABELING_VERSION)
             if os.path.exists(labeled_tokens_path):
-                with zcat_process(labeled_tokens_path) as p:
-                    doc_count = 0
-                    while True:
-                        try:
-                            result = pickle.load(p.stdout)
-                            yield result
-                            doc_count += 1
-                        except EOFError:
-                            break
-                    assert doc_count >= 400, "Number of documents (%d) was less than expected (400) from %s. File is likely incomplete" % (
-                        doc_count, labeled_tokens_path
-                    )
+                h5_file = h5py.File(labeled_tokens_path, "r")
+                # We don't close this file. The H5Document instances keep a reference to it and need
+                # it open. We rely on Python to close it for us when the reference count goes to
+                # zero.
+
+                doc_count = 0
+                for key in h5_file.keys():
+                    if _sha1_re.match(key) is not None:
+                        yield H5Document(h5_file, key)
+                        doc_count += 1
+                assert doc_count >= 400, "Number of documents (%d) was less than expected (400) from %s. File is likely incomplete" % (
+                    doc_count, labeled_tokens_path
+                )
             else:
                 logging.warning("Could not find %s, recreating it", labeled_tokens_path)
                 temp_labeled_tokens_path = labeled_tokens_path + ".%d.temp" % os.getpid()
-                with multiprocessing_generator.ParallelGenerator(
-                    unlabeled_tokens(), max_lookahead=64
-                ) as docs:
-                    docs = label_tokens(docs, dirname)
-                    with gzip.open(temp_labeled_tokens_path, "wb") as f:
-                        for doc in docs:
+
+                h5_file = h5py.File(temp_labeled_tokens_path, "w-", libver="latest")
+                # We don't close this file. The H5Document instances keep a reference to it and need
+                # it open. We rely on Python to close it for us when the reference count goes to
+                # zero.
+
+                try:
+                    tried_to_label = 0
+                    successfully_labeled = 0
+
+                    total_token_count = 0
+                    title_token_count = 0
+                    author_token_count = 0
+
+                    pages_returned = 0
+
+                    for json_doc in unlabeled_tokens():
+                        # make h5 out of json
+                        try:
+                            doc = H5Document.from_json(h5_file, json_doc)
+                        except:
+                            try:
+                                doc_id = json_doc["docId"]
+                            except:
+                                doc_id = None
+                            if doc_id is not None:
+                                logging.error("Error while processing %s", doc_id)
+                            else:
+                                logging.error("Error while processing unknown document")
+                            raise
+                        if doc is None:
+                            continue
+
+                        # label the document
+                        tried_to_label += 1
+                        if tried_to_label % 100 == 0:
+                            none_token_count = \
+                                total_token_count - title_token_count - author_token_count
+                            logging.info(
+                                "Labeled %d out of %d (%.3f%%)",
+                                successfully_labeled,
+                                tried_to_label,
+                                100.0 * successfully_labeled / tried_to_label)
+                            logging.info(
+                                "Token count: %d; Title tokens: %d (%.3f%%); Author tokens: %d (%.3f%%); None tokens: %d (%.3f%%)",
+                                total_token_count,
+                                title_token_count,
+                                100.0 * title_token_count / total_token_count,
+                                author_token_count,
+                                100.0 * author_token_count / total_token_count,
+                                none_token_count,
+                                100.0 * none_token_count / total_token_count)
+
+                        labeling_result = doc.add_labels(dirname)
+                        if labeling_result is not None:
+                            doc_total_token_count, doc_title_token_count, doc_author_token_count = \
+                                labeling_result
+
+                            # update statistics
+                            successfully_labeled += 1
+                            total_token_count += doc_total_token_count
+                            title_token_count += doc_title_token_count
+                            author_token_count += doc_author_token_count
+
                             yield doc
-                            pickle.dump(doc, f)
+
+                            pages_returned_before = pages_returned
+                            pages_returned += doc.page_count()
+                            if (pages_returned_before // 100) != (pages_returned // 100):
+                                logging.info("%d pages labeled", pages_returned)
+                        else:
+                            logging.info("Deleting %s", doc.doc_sha())
+                            doc.delete()
+                except:
+                    try:
+                        os.remove(temp_labeled_tokens_path)
+                    except FileNotFoundError:
+                        pass
+                    raise
+
+                h5_file.flush()
+                h5_file.swmr_mode = True
                 os.rename(temp_labeled_tokens_path, labeled_tokens_path)
 
         def labeled_and_featurized_tokens():
-            labeled_and_featurized_tokens_path = \
+            token_features_path = \
                 os.path.join(
                     bucket_path,
-                    "labeled-and-featurized-tokens-%02x-v%d.pickle.gz" % (abs(hash(featurizing_hash_components)), LABELING_VERSION))
-            if os.path.exists(labeled_and_featurized_tokens_path):
-                with zcat_process(labeled_and_featurized_tokens_path) as p:
-                    doc_count = 0
-                    while True:
-                        try:
-                            yield pickle.load(p.stdout)
-                            doc_count += 1
-                        except EOFError:
-                            break
-                    assert doc_count >= 400, "Number of documents (%d) was less than expected (400) from %s. File is likely incomplete" % (
-                        doc_count, labeled_and_featurized_tokens_path
-                    )
+                    "token-features-%02x-v%d.h5" % (abs(hash(featurizing_hash_components)), LABELING_VERSION))
+            if os.path.exists(token_features_path):
+                h5_file = h5py.File(token_features_path, "r")
+
+                for labeled_doc in labeled_tokens():
+                    yield H5DocumentWithFeatures(h5_file, labeled_doc)
             else:
-                logging.warning(
-                    "Could not find %s, recreating it", labeled_and_featurized_tokens_path
-                )
+                logging.warning("Could not find %s, recreating it", token_features_path)
+
                 nonlocal token_stats
                 if token_stats is None:
                     token_stats = TokenStatistics(os.path.join(dirname, "all.tokenstats2.gz"))
 
-                temp_labeled_and_featurized_tokens_path = \
-                    labeled_and_featurized_tokens_path + ".%d.temp" % os.getpid()
-                with multiprocessing_generator.ParallelGenerator(
-                    labeled_tokens(), max_lookahead=64
-                ) as docs:
-                    docs = docs_with_normalized_features(
-                        model_settings.max_page_number,
-                        model_settings.token_hash_size,
-                        model_settings.font_hash_size,
-                        token_stats,
-                        docs)
-                    with gzip.open(temp_labeled_and_featurized_tokens_path, "wb") as f:
-                        for doc in docs:
-                            yield doc
-                            pickle.dump(doc, f)
-                os.rename(
-                    temp_labeled_and_featurized_tokens_path, labeled_and_featurized_tokens_path
-                )
+                temp_token_features_path = token_features_path + ".%d.temp" % os.getpid()
+                h5_file = h5py.File(temp_token_features_path, "w-", libver="latest")
+                try:
+                    for labeled_doc in labeled_tokens():
+                        yield H5DocumentWithFeatures.from_labeled_doc(
+                            h5_file,
+                            labeled_doc,
+                            model_settings.max_page_number,
+                            model_settings.token_hash_size,
+                            model_settings.font_hash_size,
+                            token_stats)
+                except:
+                    try:
+                        os.remove(temp_token_features_path)
+                    except FileNotFoundError:
+                        pass
+                    raise
+
+                h5_file.flush()
+                h5_file.swmr_mode = True
+                os.rename(temp_token_features_path, token_features_path)
 
         yield from labeled_and_featurized_tokens()
 
