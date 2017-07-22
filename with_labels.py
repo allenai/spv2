@@ -352,7 +352,7 @@ def evaluate_model(
             title_prs.append((title_score, title_score))
 
             # print authors
-            gold_authors = ["%s %s" % gold_author for gold_author in doc.gold_authors]
+            gold_authors = ["%s %s" % tuple(gold_author) for gold_author in doc.gold_authors]
             for gold_author in gold_authors:
                 print("Gold author:      ", gold_author)
 
