@@ -7,7 +7,10 @@ import logging
 import sys
 import gzip
 
-import dataprep
+# This depends on an old version of dataprep. Before running it again, it will have to be updated to
+# run against dataprep2.py.
+#import dataprep
+
 
 #
 # Main program 🎛
