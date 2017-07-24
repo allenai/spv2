@@ -65,7 +65,7 @@ def _pdftoken_file_to_stats(file):
     remove_uniques(tops)
     remove_uniques(bottoms)
 
-    return (texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms)
+    return texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms
 
 def save_stats_file(
         filename: str,
@@ -97,7 +97,7 @@ def load_stats_file(filename: str):
         rights = pickle.load(f)
         tops = pickle.load(f)
         bottoms = pickle.load(f)
-    return (texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms)
+    return texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms
 
 def load_stats_file_no_coordinates(filename: str):
     with gzip.open(filename, "rb") as f:
@@ -105,7 +105,7 @@ def load_stats_file_no_coordinates(filename: str):
         fonts = pickle.load(f)
         font_sizes = pickle.load(f)
         space_widths = pickle.load(f)
-    return (texts, fonts, font_sizes, space_widths)
+    return texts, fonts, font_sizes, space_widths
 
 def main():
     import argparse
