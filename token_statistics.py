@@ -7,7 +7,10 @@ import logging
 import sys
 import gzip
 
-import dataprep
+# This depends on an old version of dataprep. Before running it again, it will have to be updated to
+# run against dataprep2.py.
+#import dataprep
+
 
 #
 # Main program 🎛
@@ -65,7 +68,7 @@ def _pdftoken_file_to_stats(file):
     remove_uniques(tops)
     remove_uniques(bottoms)
 
-    return (texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms)
+    return texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms
 
 def save_stats_file(
         filename: str,
@@ -97,7 +100,7 @@ def load_stats_file(filename: str):
         rights = pickle.load(f)
         tops = pickle.load(f)
         bottoms = pickle.load(f)
-    return (texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms)
+    return texts, fonts, font_sizes, space_widths, lefts, rights, tops, bottoms
 
 def load_stats_file_no_coordinates(filename: str):
     with gzip.open(filename, "rb") as f:
@@ -105,9 +108,9 @@ def load_stats_file_no_coordinates(filename: str):
         fonts = pickle.load(f)
         font_sizes = pickle.load(f)
         space_widths = pickle.load(f)
-    return (texts, fonts, font_sizes, space_widths)
+    return texts, fonts, font_sizes, space_widths
 
-if __name__ == "__main__":
+def main():
     import argparse
 
     try:
@@ -183,3 +186,6 @@ if __name__ == "__main__":
     else:
         logging.error("Unknown command: %s", command)
         logging.error("Command must be one of \"gather\" or \"combine\".")
+
+if __name__ == "__main__":
+    main()
