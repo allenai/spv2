@@ -107,7 +107,7 @@ def load_stats_file_no_coordinates(filename: str):
         space_widths = pickle.load(f)
     return (texts, fonts, font_sizes, space_widths)
 
-if __name__ == "__main__":
+def main():
     import argparse
 
     try:
@@ -183,3 +183,6 @@ if __name__ == "__main__":
     else:
         logging.error("Unknown command: %s", command)
         logging.error("Command must be one of \"gather\" or \"combine\".")
+
+if __name__ == "__main__":
+    main()
