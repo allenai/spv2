@@ -7,7 +7,7 @@ import time
 
 from keras.layers import Embedding, Input, LSTM, Activation, Dense
 from keras.layers.merge import Concatenate
-from keras.layers.wrappers import TimeDistributed
+from keras.layers.wrappers import TimeDistributed, Bidirectional
 from keras.models import Model
 from keras.layers import Masking
 from keras.optimizers import Adam
@@ -70,7 +70,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     )([pageno_embedding, token_embedding, font_embedding, numeric_masked])
     logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
 
-    lstm = LSTM(units=1024, return_sequences=True, stateful=True)(pdftokens_combined)
+    lstm = Bidirectional(LSTM(units=1024, return_sequences=True))(pdftokens_combined)
     logging.info("lstm:\t%s", lstm.shape)
 
     one_hot_output = TimeDistributed(Dense(len(dataprep2.POTENTIAL_LABELS)))(lstm)
