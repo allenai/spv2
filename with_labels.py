@@ -27,49 +27,11 @@ import unicodedata
 
 def model_with_labels(model_settings: settings.ModelSettings):
     """Returns an untrained model that predicts the next token in a stream of PDF tokens."""
-    PAGENO_VECTOR_SIZE = model_settings.max_page_number * 2
-    pageno_input = Input(
-        name='pageno_input', batch_shape=(model_settings.batch_size, model_settings.timesteps)
-    )
-    logging.info("pageno_input:\t%s", pageno_input.shape)
-    pageno_embedding = \
-        Embedding(
-            name='pageno_embedding',
-            mask_zero=True,
-            input_dim=model_settings.max_page_number+1,    # one for the mask
-            output_dim=PAGENO_VECTOR_SIZE)(pageno_input)
-    logging.info("pageno_embedding:\t%s", pageno_embedding.shape)
-
-    token_input = Input(
-        name='token_input', batch_shape=(model_settings.batch_size, model_settings.timesteps)
-    )
-    logging.info("token_input:\t%s", token_input.shape)
-    token_embedding = \
-        Embedding(
-            name='token_embedding',
-            mask_zero=True,
-            input_dim=model_settings.token_hash_size+1,    # one for the mask
-            output_dim=model_settings.token_vector_size)(token_input)
-    logging.info("token_embedding:\t%s", token_embedding.shape)
-
-    FONT_VECTOR_SIZE = 10
-    font_input = Input(
-        name='font_input', batch_shape=(model_settings.batch_size, model_settings.timesteps)
-    )
-    logging.info("font_input:\t%s", font_input.shape)
-    font_embedding = \
-        Embedding(
-            name='font_embedding',
-            mask_zero=True,
-            input_dim=model_settings.font_hash_size+1,    # one for the mask
-            output_dim=FONT_VECTOR_SIZE)(font_input)
-    logging.info("font_embedding:\t%s", font_embedding.shape)
-
     numeric_inputs = Input(
         name='numeric_inputs', batch_shape=(
             model_settings.batch_size,
             model_settings.timesteps,
-            10
+            2
         )
     )
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
@@ -77,12 +39,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
     logging.info("numeric_masked:\t%s", numeric_masked.shape)
 
-    pdftokens_combined = Concatenate(
-        name='pdftoken_combined', axis=2
-    )([pageno_embedding, token_embedding, font_embedding, numeric_masked])
-    logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
-
-    lstm = LSTM(units=1024, return_sequences=True, stateful=True)(pdftokens_combined)
+    lstm = LSTM(units=1024, return_sequences=True, stateful=True)(numeric_inputs)
     logging.info("lstm:\t%s", lstm.shape)
 
     one_hot_output = TimeDistributed(Dense(len(dataprep2.POTENTIAL_LABELS)))(lstm)
@@ -91,7 +48,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     softmax = TimeDistributed(Activation('softmax'))(one_hot_output)
     logging.info("softmax:\t%s", softmax.shape)
 
-    model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=softmax)
+    model = Model(inputs=[numeric_inputs], outputs=softmax)
     model.compile(Adam(), "categorical_crossentropy", metrics=["accuracy"])
     return model
 
@@ -101,12 +58,6 @@ def model_with_labels(model_settings: settings.ModelSettings):
 #
 
 def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
-    page_inputs = np.full(
-        (len(page.tokens),),
-        page.page_number + 1,    # one for keras' mask
-        dtype=np.int32)
-    token_inputs = page.token_hashes
-    font_inputs = page.font_hashes
     numeric_inputs = page.scaled_numeric_features
 
     labels_as_ints = page.labels
@@ -119,7 +70,7 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
         logging.error("Error in document %s", doc.doc_id)
         raise
 
-    return (page_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
+    return numeric_inputs[:,8:10], labels_one_hot
 
 def page_length_for_doc_page_pair(doc_page_pair) -> int:
     return len(doc_page_pair[1].tokens)
@@ -130,7 +81,7 @@ def make_batches_from_page_group(model_settings: settings.ModelSettings, page_gr
     max_length = max(page_lengths)
     logging.debug("Page group spans length from %d to %d", min_length, max_length)
 
-    batch_inputs = [[], [], [], []]
+    batch_inputs = []
     batch_outputs = []
 
     def round_up_to_multiple(number, multiple):
@@ -149,26 +100,20 @@ def make_batches_from_page_group(model_settings: settings.ModelSettings, page_gr
         def pad1D(a):
             return np.pad(a, (0, required_padding), mode='constant')
 
-        featurized_input = (
-            pad1D(featurized_input[0]),
-            pad1D(featurized_input[1]),
-            pad1D(featurized_input[2]),
-            np.pad(featurized_input[3], ((0, required_padding), (0, 0)), mode='constant')
-        )
-        featurized_output = np.pad(
-            featurized_output, ((0, required_padding), (0, 0)), mode='constant'
-        )
+        featurized_input = \
+            np.pad(featurized_input, ((0, required_padding), (0, 0)), mode='constant')
+        featurized_output = \
+            np.pad(featurized_output, ((0, required_padding), (0, 0)), mode='constant')
 
-        for index, input in enumerate(featurized_input):
-            batch_inputs[index].append(input)
+        batch_inputs.append(featurized_input)
         batch_outputs.append(featurized_output)
 
-    batch_inputs = list(map(np.stack, batch_inputs))
+    batch_inputs = np.stack(batch_inputs)
     batch_outputs = np.stack(batch_outputs)
 
     for start_index in range(0, padding_length, model_settings.timesteps):
         end_index = start_index + model_settings.timesteps
-        inputs = list(map(lambda i: i[:, start_index:end_index], batch_inputs))
+        inputs = batch_inputs[:, start_index:end_index, :]
         outputs = batch_outputs[:, start_index:end_index, :]
         yield inputs, outputs
 
@@ -474,12 +419,12 @@ def train(
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
             train_docs = dataprep2.documents(pmc_dir, model_settings, test=False)
-            with multiprocessing_generator.ParallelGenerator(
-                make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
-                max_lookahead=128
-            ) as training_data:
-            #if True:
-            #    training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+            #with multiprocessing_generator.ParallelGenerator(
+            #    make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
+            #    max_lookahead=128
+            #) as training_data:
+            if True:
+                training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
                 for batch in training_data:
                     if batch is None:
                         model.reset_states()
