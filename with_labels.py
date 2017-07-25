@@ -238,187 +238,187 @@ def evaluate_model(
     title_prs = []
     author_prs = []
 
-    def process_page_group(page_group, doc_to_index_in_page_group):
-        # fill up the batch with copies of the last page
-        # We need to have the exact number of pages, so we just fill it up with fluff.
-        padded_page_group = page_group.copy()
-        while len(padded_page_group) < model_settings.batch_size:
-            padded_page_group.append(page_group[-1])
-        assert len(padded_page_group) == model_settings.batch_size
+    with open(log_filename, "w") as log_file:
+        def process_page_group(page_group, doc_to_index_in_page_group):
+            # fill up the batch with copies of the last page
+            # We need to have the exact number of pages, so we just fill it up with fluff.
+            padded_page_group = page_group.copy()
+            while len(padded_page_group) < model_settings.batch_size:
+                padded_page_group.append(page_group[-1])
+            assert len(padded_page_group) == model_settings.batch_size
 
-        # process the pages
-        predictions = []
-        labels = []
-        model.reset_states()
-        for batch in make_batches_from_page_group(model_settings, padded_page_group):
-            if batch is None:
-                model.reset_states()
-                continue
-            x, y = batch
+            # process the pages
+            predictions = []
+            labels = []
+            model.reset_states()
+            for batch in make_batches_from_page_group(model_settings, padded_page_group):
+                if batch is None:
+                    model.reset_states()
+                    continue
+                x, y = batch
 
-            prediction = model.predict_on_batch(x)
-            predictions.append(prediction)
+                prediction = model.predict_on_batch(x)
+                predictions.append(prediction)
 
-            labels.append(y)
+                labels.append(y)
 
-        raw_predictions = np.concatenate(predictions, axis=1)
-        predictions = raw_predictions.argmax(axis=2)
+            raw_predictions = np.concatenate(predictions, axis=1)
+            predictions = raw_predictions.argmax(axis=2)
 
-        raw_labels = np.concatenate(labels, axis=1)
-        labels = raw_labels.argmax(axis=2)
+            raw_labels = np.concatenate(labels, axis=1)
+            labels = raw_labels.argmax(axis=2)
 
-        # print output
-        for doc, index_in_page_group in doc_to_index_in_page_group:
-            print()
-            print("Document ", doc.doc_id)
+            # print output
+            for doc, index_in_page_group in doc_to_index_in_page_group:
+                log_file.write("\nDocument %s\n" % doc.doc_id)
 
-            def continuous_index_sequences(indices: np.array):
-                """Given an array like this: [1,2,3,5,6,7,10], this returns continuously increasing
-                subsequences, like this: [[1,2,3], [5,6,7], [10]]"""
-                if len(indices) <= 0:
-                    return []
+                def continuous_index_sequences(indices: np.array):
+                    """Given an array like this: [1,2,3,5,6,7,10], this returns continuously increasing
+                    subsequences, like this: [[1,2,3], [5,6,7], [10]]"""
+                    if len(indices) <= 0:
+                        return []
+                    else:
+                        return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
+
+                def longest_continuous_index_sequence(indices):
+                    """Given an array of indices, this returns the longest continuously increasing
+                    subsequence in the array."""
+                    return max(continuous_index_sequences(indices), key=len)
+
+                labeled_title = np.empty(shape=(0,), dtype=np.unicode)
+                labeled_authors = []
+
+                predicted_title = np.empty(shape=(0,), dtype=np.unicode)
+                predicted_authors = []
+
+                for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
+                    page_index_in_page_group = index_in_page_group + page_number
+
+                    # find labeled titles and authors
+                    page_labels = labels[page_index_in_page_group, :len(page.tokens)]
+
+                    indices_labeled_title = np.where(page_labels == dataprep2.TITLE_LABEL)[0]
+                    if len(indices_labeled_title) > 0:
+                        labeled_title_on_page = longest_continuous_index_sequence(indices_labeled_title)
+                        if len(labeled_title_on_page) > len(labeled_title):
+                            labeled_title_on_page = np.take(page.tokens, labeled_title_on_page)
+                            labeled_title = labeled_title_on_page
+
+                    indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
+                    for index_sequence in continuous_index_sequences(indices_labeled_author):
+                        labeled_authors.append(np.take(page.tokens, index_sequence))
+
+                    # find predicted titles and authors
+                    page_predictions = predictions[page_index_in_page_group, :len(page.tokens)]
+
+                    indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
+                    if len(indices_predicted_title) > 0:
+                        predicted_title_on_page = longest_continuous_index_sequence(indices_predicted_title)
+                        if len(predicted_title_on_page) > len(predicted_title):
+                            predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
+                            predicted_title = predicted_title_on_page
+
+                    indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
+                    for index_sequence in continuous_index_sequences(indices_predicted_author):
+                        predicted_authors.append(np.take(page.tokens, index_sequence))
+
+                def normalize(s: str) -> str:
+                    return unicodedata.normalize("NFKC", s)
+
+                def normalize_author(a: str) -> str:
+                    a = a.split(",", 2)
+                    if len(a) == 1:
+                        a = a[0]
+                    else:
+                        return "%s %s" % (a[1], a[0])
+                    a = normalize(a)
+                    a = a.replace(".", " ")
+                    a = _multiple_spaces_re.sub(" ", a)
+                    return a.strip()
+
+                # print titles
+                log_file.write("Gold title:    %s\n" % doc.gold_title)
+
+                labeled_title = " ".join(labeled_title)
+                log_file.write("Labeled title: %s\n" % labeled_title)
+
+                predicted_title = " ".join(predicted_title)
+                log_file.write("Actual title:  %s\n" % predicted_title)
+
+                # calculate title P/R
+                title_score = 0.0
+                if normalize(predicted_title) == normalize(doc.gold_title):
+                    title_score = 1.0
+                log_file.write("Score:         %s\n" % title_score)
+                title_prs.append((title_score, title_score))
+
+                # print authors
+                gold_authors = ["%s %s" % tuple(gold_author) for gold_author in doc.gold_authors]
+                for gold_author in gold_authors:
+                    log_file.write("Gold author:      %s\n" % gold_author)
+
+                labeled_authors = [" ".join(ats) for ats in labeled_authors]
+                if len(labeled_authors) <= 0:
+                    log_file.write("No authors labeled\n")
                 else:
-                    return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
+                    for labeled_author in labeled_authors:
+                        log_file.write("Labeled author:   %s\n" % labeled_author)
 
-            def longest_continuous_index_sequence(indices):
-                """Given an array of indices, this returns the longest continuously increasing
-                subsequence in the array."""
-                return max(continuous_index_sequences(indices), key=len)
-
-            labeled_title = np.empty(shape=(0,), dtype=np.unicode)
-            labeled_authors = []
-
-            predicted_title = np.empty(shape=(0,), dtype=np.unicode)
-            predicted_authors = []
-
-            for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
-                page_index_in_page_group = index_in_page_group + page_number
-
-                # find labeled titles and authors
-                page_labels = labels[page_index_in_page_group, :len(page.tokens)]
-
-                indices_labeled_title = np.where(page_labels == dataprep2.TITLE_LABEL)[0]
-                if len(indices_labeled_title) > 0:
-                    labeled_title_on_page = longest_continuous_index_sequence(indices_labeled_title)
-                    if len(labeled_title_on_page) > len(labeled_title):
-                        labeled_title_on_page = np.take(page.tokens, labeled_title_on_page)
-                        labeled_title = labeled_title_on_page
-
-                indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
-                for index_sequence in continuous_index_sequences(indices_labeled_author):
-                    labeled_authors.append(np.take(page.tokens, index_sequence))
-
-                # find predicted titles and authors
-                page_predictions = predictions[page_index_in_page_group, :len(page.tokens)]
-
-                indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
-                if len(indices_predicted_title) > 0:
-                    predicted_title_on_page = longest_continuous_index_sequence(indices_predicted_title)
-                    if len(predicted_title_on_page) > len(predicted_title):
-                        predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
-                        predicted_title = predicted_title_on_page
-
-                indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-                for index_sequence in continuous_index_sequences(indices_predicted_author):
-                    predicted_authors.append(np.take(page.tokens, index_sequence))
-
-            def normalize(s: str) -> str:
-                return unicodedata.normalize("NFKC", s)
-
-            def normalize_author(a: str) -> str:
-                a = a.split(",", 2)
-                if len(a) == 1:
-                    a = a[0]
+                predicted_authors = [" ".join(ats) for ats in predicted_authors]
+                if len(predicted_authors) <= 0:
+                    log_file.write("No authors predicted\n")
                 else:
-                    return "%s %s" % (a[1], a[0])
-                a = normalize(a)
-                a = a.replace(".", " ")
-                a = _multiple_spaces_re.sub(" ", a)
-                return a.strip()
+                    for predicted_author in predicted_authors:
+                        log_file.write("Predicted author: %s\n" % predicted_author)
 
-            # print titles
-            print("Gold title:    ", doc.gold_title)
+                # calculate author P/R
+                gold_authors = set(map(normalize_author, gold_authors))
+                predicted_authors = set(map(normalize_author, predicted_authors))
+                precision = 0
+                if len(predicted_authors) > 0:
+                    precision = len(gold_authors & predicted_authors) / len(predicted_authors)
+                recall = 0
+                if len(gold_authors) > 0:
+                    recall = len(gold_authors & predicted_authors) / len(gold_authors)
+                log_file.write("Author P/R:       %.3f / %.3f\n" % (precision, recall))
+                author_prs.append((precision, recall))
 
-            labeled_title = " ".join(labeled_title)
-            print("Labeled title: ", labeled_title)
+            # update y_score
+            nonlocal y_score
+            y_score = [y_score]
+            for page_index, doc_page_pair in enumerate(page_group):
+                page = doc_page_pair[1]
+                y_score.append(raw_predictions[page_index, :len(page.tokens)])
+            y_score = np.concatenate(y_score)
 
-            predicted_title = " ".join(predicted_title)
-            print("Actual title:  ", predicted_title)
+            # update y_true
+            nonlocal y_true
+            y_true = [y_true]
+            for page_index, doc_page_pair in enumerate(page_group):
+                page = doc_page_pair[1]
+                raw_labels_for_page = raw_labels[page_index, :len(page.tokens)]
+                y_true_for_page = raw_labels_for_page.astype(np.bool)
+                y_true.append(y_true_for_page)
+            y_true = np.concatenate(y_true)
 
-            # calculate title P/R
-            title_score = 0.0
-            if normalize(predicted_title) == normalize(doc.gold_title):
-                title_score = 1.0
-            print("Score:         ", title_score)
-            title_prs.append((title_score, title_score))
+        page_group = []
+        doc_to_index_in_page_group = []
+        for doc in test_docs:
+            pages = doc.pages[:model_settings.max_page_number]
 
-            # print authors
-            gold_authors = ["%s %s" % tuple(gold_author) for gold_author in doc.gold_authors]
-            for gold_author in gold_authors:
-                print("Gold author:      ", gold_author)
+            if len(page_group) + len(pages) > model_settings.batch_size:
+                # page group is full, let's process it
+                process_page_group(page_group, doc_to_index_in_page_group)
 
-            labeled_authors = [" ".join(ats) for ats in labeled_authors]
-            if len(labeled_authors) <= 0:
-                print("No authors labeled")
-            else:
-                for labeled_author in labeled_authors:
-                    print("Labeled author:   ", labeled_author)
+                # get started with the next page group
+                doc_to_index_in_page_group = []
+                page_group = []
 
-            predicted_authors = [" ".join(ats) for ats in predicted_authors]
-            if len(predicted_authors) <= 0:
-                print("No authors predicted")
-            else:
-                for predicted_author in predicted_authors:
-                    print("Predicted author: ", predicted_author)
+            doc_to_index_in_page_group.append((doc, len(page_group)))
+            page_group.extend([(doc, page) for page in pages])
 
-            # calculate author P/R
-            gold_authors = set(map(normalize_author, gold_authors))
-            predicted_authors = set(map(normalize_author, predicted_authors))
-            precision = 0
-            if len(predicted_authors) > 0:
-                precision = len(gold_authors & predicted_authors) / len(predicted_authors)
-            recall = 0
-            if len(gold_authors) > 0:
-                recall = len(gold_authors & predicted_authors) / len(gold_authors)
-            print("Author P/R:       %.3f / %.3f" % (precision, recall))
-            author_prs.append((precision, recall))
-
-        # update y_score
-        nonlocal y_score
-        y_score = [y_score]
-        for page_index, doc_page_pair in enumerate(page_group):
-            page = doc_page_pair[1]
-            y_score.append(raw_predictions[page_index, :len(page.tokens)])
-        y_score = np.concatenate(y_score)
-
-        # update y_true
-        nonlocal y_true
-        y_true = [y_true]
-        for page_index, doc_page_pair in enumerate(page_group):
-            page = doc_page_pair[1]
-            raw_labels_for_page = raw_labels[page_index, :len(page.tokens)]
-            y_true_for_page = raw_labels_for_page.astype(np.bool)
-            y_true.append(y_true_for_page)
-        y_true = np.concatenate(y_true)
-
-    page_group = []
-    doc_to_index_in_page_group = []
-    for doc in test_docs:
-        pages = doc.pages[:model_settings.max_page_number]
-
-        if len(page_group) + len(pages) > model_settings.batch_size:
-            # page group is full, let's process it
-            process_page_group(page_group, doc_to_index_in_page_group)
-
-            # get started with the next page group
-            doc_to_index_in_page_group = []
-            page_group = []
-
-        doc_to_index_in_page_group.append((doc, len(page_group)))
-        page_group.extend([(doc, page) for page in pages])
-
-    # process the last page group
-    process_page_group(page_group, doc_to_index_in_page_group)
+        # process the last page group
+        process_page_group(page_group, doc_to_index_in_page_group)
 
     # produce some numbers for a spreadsheet
     print()
@@ -445,7 +445,8 @@ def train(
     training_batches: int=100000,
     test_batches: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings,
-    output_filename: str=None
+    output_filename: str=None,
+    log_filename: str=None
 ):
     """Returns a trained model using the data in dir as training data"""
     model = model_with_labels(model_settings)
@@ -510,7 +511,7 @@ def train(
                             logging.info("Writing temporary model to %s", output_filename)
                             model.save(output_filename, overwrite=True)
                         ev_result = evaluate_model(
-                            model, model_settings, pmc_dir, test_batches
+                            model, model_settings, pmc_dir, test_batches, log_filename
                         )  # TODO: batches != docs
                         scored_results.append((now - start_time, trained_batches, ev_result))
                         print_scored_results(now - start_time)
@@ -522,7 +523,7 @@ def train(
     logging.info("Triggering final evaluation")
     now = time.time()
     final_ev = evaluate_model(
-        model, model_settings, pmc_dir, test_batches
+        model, model_settings, pmc_dir, test_batches, log_filename
     )  # TODO: batches != docs
     scored_results.append((now - start_time, training_batches, final_ev))
 
@@ -596,7 +597,8 @@ def main():
         args.training_batches,
         args.test_batches,
         model_settings,
-        args.output
+        args.output,
+        args.output + ".log"
     )
 
     model.save(args.output, overwrite=True)
