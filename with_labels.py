@@ -28,9 +28,7 @@ import unicodedata
 def model_with_labels(model_settings: settings.ModelSettings):
     """Returns an untrained model that predicts the next token in a stream of PDF tokens."""
     PAGENO_VECTOR_SIZE = model_settings.max_page_number * 2
-    pageno_input = Input(
-        name='pageno_input', batch_shape=(model_settings.batch_size, model_settings.timesteps)
-    )
+    pageno_input = Input(name='pageno_input', shape=(None,))
     logging.info("pageno_input:\t%s", pageno_input.shape)
     pageno_embedding = \
         Embedding(
@@ -40,9 +38,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
             output_dim=PAGENO_VECTOR_SIZE)(pageno_input)
     logging.info("pageno_embedding:\t%s", pageno_embedding.shape)
 
-    token_input = Input(
-        name='token_input', batch_shape=(model_settings.batch_size, model_settings.timesteps)
-    )
+    token_input = Input(name='token_input', shape=(None,))
     logging.info("token_input:\t%s", token_input.shape)
     token_embedding = \
         Embedding(
@@ -53,9 +49,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     logging.info("token_embedding:\t%s", token_embedding.shape)
 
     FONT_VECTOR_SIZE = 10
-    font_input = Input(
-        name='font_input', batch_shape=(model_settings.batch_size, model_settings.timesteps)
-    )
+    font_input = Input(name='font_input', shape=(None,))
     logging.info("font_input:\t%s", font_input.shape)
     font_embedding = \
         Embedding(
@@ -65,13 +59,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
             output_dim=FONT_VECTOR_SIZE)(font_input)
     logging.info("font_embedding:\t%s", font_embedding.shape)
 
-    numeric_inputs = Input(
-        name='numeric_inputs', batch_shape=(
-            model_settings.batch_size,
-            model_settings.timesteps,
-            8
-        )
-    )
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 8))
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
