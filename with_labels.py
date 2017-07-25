@@ -435,11 +435,16 @@ def train(
     test_batches: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings,
     output_filename: str=None,
-    log_filename: str=None
+    log_filename: str=None,
+    graph_filename: str=None
 ):
     """Returns a trained model using the data in dir as training data"""
     model = model_with_labels(model_settings)
     model.summary()
+
+    if graph_filename is not None:
+        from keras.utils import plot_model
+        plot_model(model, graph_filename, show_shapes=True)
 
     if start_weights_filename is not None:
         model.load_weights(start_weights_filename)
@@ -587,7 +592,8 @@ def main():
         args.test_batches,
         model_settings,
         args.output,
-        args.output + ".log"
+        args.output + ".log",
+        args.output + ".png"
     )
 
     model.save(args.output, overwrite=True)
