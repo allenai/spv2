@@ -224,7 +224,8 @@ def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
     pmc_dir: str,
-    test_doc_count: int
+    test_doc_count: int,
+    log_filename: str
 ):
     # run on some other documents and produce human-readable output
     test_docs = dataprep2.documents(pmc_dir, model_settings, test=True)
