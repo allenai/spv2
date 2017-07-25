@@ -419,12 +419,12 @@ def train(
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
             train_docs = dataprep2.documents(pmc_dir, model_settings, test=False)
-            #with multiprocessing_generator.ParallelGenerator(
-            #    make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
-            #    max_lookahead=128
-            #) as training_data:
-            if True:
-                training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+            with multiprocessing_generator.ParallelGenerator(
+                make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
+                max_lookahead=128
+            ) as training_data:
+            #if True:
+            #    training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
                 for batch in training_data:
                     if batch is None:
                         model.reset_states()
