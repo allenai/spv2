@@ -112,7 +112,7 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
 def page_length_for_doc_page_pair(doc_page_pair) -> int:
     return len(doc_page_pair[1].tokens)
 
-def make_batches_from_page_group(model_settings: settings.ModelSettings, page_group):
+def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     page_lengths = list(map(page_length_for_doc_page_pair, page_group))
     min_length = min(page_lengths)
     max_length = max(page_lengths)
@@ -121,17 +121,11 @@ def make_batches_from_page_group(model_settings: settings.ModelSettings, page_gr
     batch_inputs = [[], [], [], []]
     batch_outputs = []
 
-    def round_up_to_multiple(number, multiple):
-        num = number + (multiple - 1)
-        return num - (num % multiple)
-
-    padding_length = round_up_to_multiple(max_length, model_settings.timesteps)
-
     assert len(page_group) == model_settings.batch_size
 
     for doc, page in page_group:
         page_length = len(page.tokens)
-        required_padding = padding_length - page_length
+        required_padding = max_length - page_length
         featurized_input, featurized_output = featurize_page(doc, page)
 
         def pad1D(a):
@@ -154,11 +148,7 @@ def make_batches_from_page_group(model_settings: settings.ModelSettings, page_gr
     batch_inputs = list(map(np.stack, batch_inputs))
     batch_outputs = np.stack(batch_outputs)
 
-    for start_index in range(0, padding_length, model_settings.timesteps):
-        end_index = start_index + model_settings.timesteps
-        inputs = list(map(lambda i: i[:, start_index:end_index], batch_inputs))
-        outputs = batch_outputs[:, start_index:end_index, :]
-        yield inputs, outputs
+    return batch_inputs, batch_outputs
 
 
 def make_batches(
@@ -197,8 +187,7 @@ def make_batches(
     pages = get_pages_of_vaguely_the_same_length()
 
     for page_group in pages:
-        yield from make_batches_from_page_group(model_settings, page_group)
-        yield None  # signals to the consumer of this generator to reset the model
+        yield batch_from_page_group(model_settings, page_group)
 
 
 #
@@ -237,24 +226,11 @@ def evaluate_model(
             assert len(padded_page_group) == model_settings.batch_size
 
             # process the pages
-            predictions = []
-            labels = []
-            model.reset_states()
-            for batch in make_batches_from_page_group(model_settings, padded_page_group):
-                if batch is None:
-                    model.reset_states()
-                    continue
-                x, y = batch
+            x, y = batch_from_page_group(model_settings, padded_page_group)
+            raw_predictions = model.predict_on_batch(x)
+            raw_labels = y
 
-                prediction = model.predict_on_batch(x)
-                predictions.append(prediction)
-
-                labels.append(y)
-
-            raw_predictions = np.concatenate(predictions, axis=1)
             predictions = raw_predictions.argmax(axis=2)
-
-            raw_labels = np.concatenate(labels, axis=1)
             labels = raw_labels.argmax(axis=2)
 
             # print output
@@ -467,17 +443,13 @@ def train(
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
             train_docs = dataprep2.documents(pmc_dir, model_settings, test=False)
-            with multiprocessing_generator.ParallelGenerator(
-                make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
-                max_lookahead=128
-            ) as training_data:
-            #if True:
-            #    training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+            #with multiprocessing_generator.ParallelGenerator(
+            #    make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
+            #    max_lookahead=128
+            #) as training_data:
+            if True:
+                training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
                 for batch in training_data:
-                    if batch is None:
-                        model.reset_states()
-                        continue
-
                     x, y = batch
                     metrics = model.train_on_batch(x, y)
 
@@ -544,12 +516,6 @@ def main():
         help="directory with the PMC data"
     )
     parser.add_argument(
-        "--timesteps",
-        type=int,
-        default=model_settings.timesteps,
-        help="number of time steps, i.e., length/depth of the LSTM"
-    )
-    parser.add_argument(
         "--token-vector-size",
         type=int,
         default=model_settings.token_vector_size,
@@ -580,7 +546,6 @@ def main():
     )
     args = parser.parse_args()
 
-    model_settings = model_settings._replace(timesteps=args.timesteps)
     model_settings = model_settings._replace(token_vector_size=args.token_vector_size)
     model_settings = model_settings._replace(batch_size=args.batch_size)
     print(model_settings)
