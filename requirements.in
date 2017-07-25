@@ -5,3 +5,4 @@ pytest
 h5py
 sklearn
 cffi
+intervaltree

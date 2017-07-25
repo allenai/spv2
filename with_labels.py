@@ -69,7 +69,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
         name='numeric_inputs', batch_shape=(
             model_settings.batch_size,
             model_settings.timesteps,
-            8
+            10
         )
     )
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
@@ -224,7 +224,8 @@ def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
     pmc_dir: str,
-    test_doc_count: int
+    test_doc_count: int,
+    log_filename: str
 ):
     # run on some other documents and produce human-readable output
     test_docs = dataprep2.documents(pmc_dir, model_settings, test=True)

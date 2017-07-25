@@ -11,6 +11,8 @@ import stringmatch
 import subprocess
 import h5py
 import collections
+import typing
+import intervaltree
 
 import settings
 
@@ -57,6 +59,48 @@ class TokenStatistics(object):
         assert space_widths.dtype == np.dtype('f4')
         indices = self.cum_space_widths['item'].searchsorted(space_widths)
         return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
+
+class VisionOutput(object):
+    BoundingBox = collections.namedtuple("BoundingBox", [
+        "label",
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "confidence"
+    ])
+
+    def __init__(self, file_path):
+        self.boxes = {}
+        with open(file_path) as file:
+            for line in file:
+                line = json.loads(line)
+                sha = line["docSha"]
+                bounding_boxes_for_sha = []
+                for json_page in line["pages"]:
+                    bounding_boxes_for_page = []
+                    for label, left, top, right, bottom, confidence in json_page:
+                        bounding_boxes_for_page.append(
+                            self.BoundingBox(label, left, right, top, bottom, confidence))
+                    bounding_boxes_for_sha.append(bounding_boxes_for_page)
+                if sha in self.boxes:
+                    logging.warning("Duplicate sha %s in %s", sha, file_path)
+                self.boxes[sha] = bounding_boxes_for_sha
+
+    def boxes_for_sha_and_page(self, sha: str, page: int) -> typing.List[BoundingBox]:
+        try:
+            return self.boxes[sha][page]
+        except KeyError:
+            # We don't have boxes for that document.
+            logging.warning("Missing vision output for %s", sha)
+            return list()
+        except IndexError:
+            # We have boxes for that document, but not for that page.
+            return list()
+
+    def pages_for_sha(self, sha: str):
+        return len(self.boxes[sha])
+
 
 #
 # Helpers 💁
@@ -543,7 +587,11 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = 1
+#
+# Featurizing ☎️️
+#
+
+FEATURIZED_TOKENS_VERSION = 2   # added vision output
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -567,6 +615,9 @@ def featurized_tokens_file(
         return h5py.File(featurized_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", featurized_tokens_path)
+
+    vision_output = VisionOutput(os.path.join(bucket_path, "vision_output.json"))
+
     with labeled_tokens_file(bucket_path) as labeled_tokens:
         temp_featurized_tokens_path = featurized_tokens_path + ".%d.temp" % os.getpid()
         featurized_file = h5py.File(temp_featurized_tokens_path, "w-", libver="latest")
@@ -597,7 +648,14 @@ def featurized_tokens_file(
             # numeric features
             scaled_numeric_features = featurized_file.create_dataset(
                 "token_scaled_numeric_features",
-                shape=(len(lab_token_text_features), 8),
+                shape=(len(lab_token_text_features), 10),
+                    # (left, right, top, bottom (all relative to the page size),
+                    #  font size percentile in corpus,
+                    #  space width percentile in corpus,
+                    #  font size percentile in doc,
+                    #  space width percentile in doc
+                    #  vision output for title,
+                    #  vision output for author)
                 dtype=np.float32,
                 fillvalue=0.0)
 
@@ -622,7 +680,7 @@ def featurized_tokens_file(
                     assert values.dtype == np.dtype('f4')
                     return a.searchsorted(values) / len(a)
 
-                for json_page in json_metadata["pages"]:
+                for page_number, json_page in enumerate(json_metadata["pages"]):
                     width, height = json_page["dimensions"]
                     first_token_index = int(json_page["first_token_index"])
                     token_count = int(json_page["token_count"])
@@ -657,6 +715,30 @@ def featurized_tokens_file(
                         get_quantiles(font_sizes_in_doc, numeric_features[:,4])
                     scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
                         get_quantiles(space_widths_in_doc, numeric_features[:,5])
+
+                    # overlap the tokens' bounding boxes with bounding boxes from vision
+                    bounding_boxes_from_vision = \
+                        vision_output.boxes_for_sha_and_page(json_metadata["doc_sha"], page_number)
+                    y_intervals = intervaltree.IntervalTree.from_tuples(
+                        ((bb.top, bb.bottom, bb) for bb in bounding_boxes_from_vision))
+                    x_intervals = intervaltree.IntervalTree.from_tuples(
+                        ((bb.left, bb.right, bb) for bb in bounding_boxes_from_vision))
+
+                    for token_index, coordinates in enumerate(numeric_features[:,0:4]):
+                        left, right, top, bottom = coordinates
+                        y_overlaps = {interval.data for interval in y_intervals.search(top, bottom)}
+                        if len(y_overlaps) <= 0:
+                            continue    # shortcut for performance
+                        x_overlaps = {interval.data for interval in x_intervals.search(left, right)}
+                        all_overlaps = x_overlaps & y_overlaps
+
+                        FIRST_VISION_FEATURE_INDEX = 8
+                        for i, label in enumerate(["title", "author"]):
+                            confidences_for_label = \
+                                [bb.confidence for bb in all_overlaps if bb.label == label]
+                            if len(confidences_for_label) > 0:
+                                scaled_numeric_features[first_token_index+token_index, FIRST_VISION_FEATURE_INDEX + i] = \
+                                    max(confidences_for_label)
 
                     # shift everything so we end up with a range of -0.5 - +0.5
                     scaled_numeric_features[first_token_index:one_past_last_token_index,:] -= 0.5
@@ -771,9 +853,6 @@ def main():
     for bucket_number in args.bucket_number:
         logging.info("Processing bucket %s", bucket_number)
         prepare_bucket(bucket_number, args.pmc_dir, token_stats, model_settings)
-
-    for doc in documents(args.pmc_dir, model_settings):
-        print(doc.doc_id)
 
 if __name__ == "__main__":
     main()
