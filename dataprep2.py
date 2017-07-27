@@ -772,8 +772,5 @@ def main():
         logging.info("Processing bucket %s", bucket_number)
         prepare_bucket(bucket_number, args.pmc_dir, token_stats, model_settings)
 
-    for doc in documents(args.pmc_dir, model_settings):
-        print(doc.doc_id)
-
 if __name__ == "__main__":
     main()
