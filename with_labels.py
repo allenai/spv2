@@ -114,14 +114,19 @@ def page_length_for_doc_page_pair(doc_page_pair) -> int:
 
 def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     page_lengths = list(map(page_length_for_doc_page_pair, page_group))
-    min_length = min(page_lengths)
     max_length = max(page_lengths)
-    logging.debug("Page group spans length from %d to %d", min_length, max_length)
+
+    padded_token_count = max_length * len(page_group)
+    unpadded_token_count = sum(page_lengths)
+    waste = float(padded_token_count - unpadded_token_count) / padded_token_count
+    logging.debug(
+        "Batching page group with %d pages, %d tokens, %.2f%% waste",
+        len(page_group),
+        max_length,
+        waste * 100)
 
     batch_inputs = [[], [], [], []]
     batch_outputs = []
-
-    assert len(page_group) == model_settings.batch_size
 
     for doc, page in page_group:
         page_length = len(page.tokens)
@@ -151,43 +156,96 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     return batch_inputs, batch_outputs
 
 
+class PagePool:
+    def __init__(self):
+        self.pool = []
+        self.slice_start = 0
+
+    def add(self, doc: dataprep2.Document, page: dataprep2.Page):
+        self.pool.append((doc, page))
+
+        if self.slice_start > 0:
+            slice_start_doc, slice_start_page = self.pool[self.slice_start]
+            if len(page.tokens) < len(slice_start_page.tokens):
+                self.slice_start += 1
+
+    def __len__(self) -> int:
+        return len(self.pool)
+
+    @staticmethod
+    def _prepare_slice_for_release(slice, desired_slice_size: int):
+        slice.sort(key=page_length_for_doc_page_pair)
+
+        # issue warning if the slice is bigger than it should be
+        # This happens when a single page is bigger than our desired number of tokens
+        # per batch.
+        last_slice_doc, last_slice_page = slice[-1]
+        slice_token_count = len(slice) * len(last_slice_page.tokens)
+        if slice_token_count > desired_slice_size:
+            assert len(slice) == 1
+            logging.warning(
+                "Doc %s, page %d has %d tokens, more than tokens_per_batch (%d). Batch will be too large.",
+                last_slice_doc.doc_id,
+                last_slice_page.page_number,
+                len(last_slice_page.tokens),
+                desired_slice_size)
+
+        return slice
+
+    def get_slice(self, desired_slice_size: int) -> typing.List[typing.Tuple[dataprep2.Document, dataprep2.Page]]:
+        if len(self.pool) <= 0:
+            raise ValueError
+
+        self.pool.sort(key=page_length_for_doc_page_pair)
+        slice = []
+        slice_max_token_count = 0
+        while len(self.pool) > 0:
+            self.slice_start = min(self.slice_start, len(self.pool) - 1)
+            next_doc, next_page = self.pool[self.slice_start]
+            new_slice_token_count = \
+                (len(slice) + 1) * max(len(next_page.tokens), slice_max_token_count)
+            if new_slice_token_count > desired_slice_size and len(slice) > 0:
+                slice = self._prepare_slice_for_release(slice, desired_slice_size)
+                self.slice_start += 1
+                self.slice_start %= len(self.pool)
+                return slice
+
+            slice.append(self.pool[self.slice_start])
+            slice_max_token_count = max(slice_max_token_count, len(next_page.tokens))
+            del self.pool[self.slice_start]
+
+        logging.info("Page pool empty, returning the remaining pages")
+        slice = self._prepare_slice_for_release(slice, desired_slice_size)
+        self.slice_start = 0
+        return slice
+
 def make_batches(
-        model_settings: settings.ModelSettings,
-        docs: typing.Generator[dataprep2.Document, None, None],
-        keep_unlabeled_pages=True
+    model_settings: settings.ModelSettings,
+    docs: typing.Generator[dataprep2.Document, None, None],
+    keep_unlabeled_pages=True
 ):
-    def get_pages_of_vaguely_the_same_length():
-        page_pool = []
-        max_page_pool_size = model_settings.batch_size * 16
-        slice_start = 0  # we rotate slice_start to get an even distribution of page lengths
+    max_page_pool_size = model_settings.tokens_per_batch // 4    # rule of thumb
+    page_pool = PagePool()
 
-        for doc in docs:
-            for page in doc.pages[:model_settings.max_page_number]:
-                # filter out pages that have no labeled tokens
-                if not keep_unlabeled_pages:
-                    if not np.any(page.labels):
-                        continue
-                page_pool.append((doc, page))
+    # fill up the page pool and yield from it as long as it's full
+    for doc in docs:
+        for page in doc.pages[:model_settings.max_page_number]:
+            # filter out pages that have no labeled tokens
+            if not keep_unlabeled_pages:
+                if not np.any(page.labels):
+                    continue
+            page_pool.add(doc, page)
 
-            if len(page_pool) >= max_page_pool_size:
-                page_pool.sort(key=page_length_for_doc_page_pair)
-                yield page_pool[slice_start:slice_start + model_settings.batch_size]
-                del page_pool[slice_start:slice_start + model_settings.batch_size]
-                slice_start += model_settings.batch_size
-                slice_start %= max_page_pool_size - model_settings.batch_size
+        if len(page_pool) >= max_page_pool_size:
+            yield batch_from_page_group(
+                model_settings,
+                page_pool.get_slice(model_settings.tokens_per_batch))
 
-        # emit all leftover pages
-        # Actually, not all leftover pages, but enough until the number of pages left is smaller
-        # our batch size.
-        page_pool.sort(key=page_length_for_doc_page_pair)
-        while len(page_pool) >= model_settings.batch_size:
-            yield page_pool[0:model_settings.batch_size]
-            del page_pool[0:model_settings.batch_size]
-
-    pages = get_pages_of_vaguely_the_same_length()
-
-    for page_group in pages:
-        yield batch_from_page_group(model_settings, page_group)
+    # emit all leftover pages
+    while len(page_pool) > 0:
+        yield batch_from_page_group(
+            model_settings,
+            page_pool.get_slice(model_settings.tokens_per_batch))
 
 
 #
@@ -196,7 +254,6 @@ def make_batches(
 
 _multiple_spaces_re = re.compile("\s+")
 
-
 def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
@@ -204,186 +261,167 @@ def evaluate_model(
     test_doc_count: int,
     log_filename: str
 ):
-    # run on some other documents and produce human-readable output
+    #
+    # Load and prepare documents
+    #
+
     test_docs = dataprep2.documents(pmc_dir, model_settings, test=True)
     test_docs = list(itertools.islice(test_docs, 0, test_doc_count))
+    if len(test_docs) < test_doc_count:
+        logging.warning(
+            "Requested %d test documents, but we only have %d",
+            test_doc_count,
+            len(test_docs))
 
-    # these are arrays for calculating P/R curves, in the format that scikit insists on for them
-    y_score = np.empty([0, len(dataprep2.POTENTIAL_LABELS)], dtype="f4")
-    y_true = np.empty([0, len(dataprep2.POTENTIAL_LABELS)], dtype="bool")
+    page_pool = PagePool()
+    for doc in test_docs:
+        for page in doc.pages:
+            page_pool.add(doc, page)
+
+    docpage_to_results = {}
+    while len(page_pool) > 0:
+        slice = page_pool.get_slice(model_settings.tokens_per_batch)
+        x, y = batch_from_page_group(model_settings, slice)
+        raw_predictions_for_slice = model.predict_on_batch(x)
+        raw_labels_for_slice = y
+
+        for index, docpage in enumerate(slice):
+            doc, page = docpage
+
+            key = (doc.doc_sha, page.page_number)
+            assert key not in docpage_to_results
+            docpage_to_results[key] = (
+                raw_predictions_for_slice[index,:len(page.tokens)],
+                raw_labels_for_slice[index,:len(page.tokens)])
+
+    #
+    # Summarize and print results
+    #
 
     # these are arrays of tuples (precision, recall) to produce an SPV1-style metric
     title_prs = []
     author_prs = []
 
     with open(log_filename, "w") as log_file:
-        def process_page_group(page_group, doc_to_index_in_page_group):
-            # fill up the batch with copies of the last page
-            # We need to have the exact number of pages, so we just fill it up with fluff.
-            padded_page_group = page_group.copy()
-            while len(padded_page_group) < model_settings.batch_size:
-                padded_page_group.append(page_group[-1])
-            assert len(padded_page_group) == model_settings.batch_size
-
-            # process the pages
-            x, y = batch_from_page_group(model_settings, padded_page_group)
-            raw_predictions = model.predict_on_batch(x)
-            raw_labels = y
-
-            predictions = raw_predictions.argmax(axis=2)
-            labels = raw_labels.argmax(axis=2)
-
-            # print output
-            for doc, index_in_page_group in doc_to_index_in_page_group:
-                log_file.write("\nDocument %s\n" % doc.doc_id)
-
-                def continuous_index_sequences(indices: np.array):
-                    """Given an array like this: [1,2,3,5,6,7,10], this returns continuously increasing
-                    subsequences, like this: [[1,2,3], [5,6,7], [10]]"""
-                    if len(indices) <= 0:
-                        return []
-                    else:
-                        return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
-
-                def longest_continuous_index_sequence(indices):
-                    """Given an array of indices, this returns the longest continuously increasing
-                    subsequence in the array."""
-                    return max(continuous_index_sequences(indices), key=len)
-
-                labeled_title = np.empty(shape=(0,), dtype=np.unicode)
-                labeled_authors = []
-
-                predicted_title = np.empty(shape=(0,), dtype=np.unicode)
-                predicted_authors = []
-
-                for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
-                    page_index_in_page_group = index_in_page_group + page_number
-
-                    # find labeled titles and authors
-                    page_labels = labels[page_index_in_page_group, :len(page.tokens)]
-
-                    indices_labeled_title = np.where(page_labels == dataprep2.TITLE_LABEL)[0]
-                    if len(indices_labeled_title) > 0:
-                        labeled_title_on_page = longest_continuous_index_sequence(indices_labeled_title)
-                        if len(labeled_title_on_page) > len(labeled_title):
-                            labeled_title_on_page = np.take(page.tokens, labeled_title_on_page)
-                            labeled_title = labeled_title_on_page
-
-                    indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
-                    for index_sequence in continuous_index_sequences(indices_labeled_author):
-                        labeled_authors.append(np.take(page.tokens, index_sequence))
-
-                    # find predicted titles and authors
-                    page_predictions = predictions[page_index_in_page_group, :len(page.tokens)]
-
-                    indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
-                    if len(indices_predicted_title) > 0:
-                        predicted_title_on_page = longest_continuous_index_sequence(indices_predicted_title)
-                        if len(predicted_title_on_page) > len(predicted_title):
-                            predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
-                            predicted_title = predicted_title_on_page
-
-                    indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-                    for index_sequence in continuous_index_sequences(indices_predicted_author):
-                        predicted_authors.append(np.take(page.tokens, index_sequence))
-
-                def normalize(s: str) -> str:
-                    return unicodedata.normalize("NFKC", s)
-
-                def normalize_author(a: str) -> str:
-                    a = a.split(",", 2)
-                    if len(a) == 1:
-                        a = a[0]
-                    else:
-                        return "%s %s" % (a[1], a[0])
-                    a = normalize(a)
-                    a = a.replace(".", " ")
-                    a = _multiple_spaces_re.sub(" ", a)
-                    return a.strip()
-
-                # print titles
-                log_file.write("Gold title:    %s\n" % doc.gold_title)
-
-                labeled_title = " ".join(labeled_title)
-                log_file.write("Labeled title: %s\n" % labeled_title)
-
-                predicted_title = " ".join(predicted_title)
-                log_file.write("Actual title:  %s\n" % predicted_title)
-
-                # calculate title P/R
-                title_score = 0.0
-                if normalize(predicted_title) == normalize(doc.gold_title):
-                    title_score = 1.0
-                log_file.write("Score:         %s\n" % title_score)
-                title_prs.append((title_score, title_score))
-
-                # print authors
-                gold_authors = ["%s %s" % tuple(gold_author) for gold_author in doc.gold_authors]
-                for gold_author in gold_authors:
-                    log_file.write("Gold author:      %s\n" % gold_author)
-
-                labeled_authors = [" ".join(ats) for ats in labeled_authors]
-                if len(labeled_authors) <= 0:
-                    log_file.write("No authors labeled\n")
-                else:
-                    for labeled_author in labeled_authors:
-                        log_file.write("Labeled author:   %s\n" % labeled_author)
-
-                predicted_authors = [" ".join(ats) for ats in predicted_authors]
-                if len(predicted_authors) <= 0:
-                    log_file.write("No authors predicted\n")
-                else:
-                    for predicted_author in predicted_authors:
-                        log_file.write("Predicted author: %s\n" % predicted_author)
-
-                # calculate author P/R
-                gold_authors = set(map(normalize_author, gold_authors))
-                predicted_authors = set(map(normalize_author, predicted_authors))
-                precision = 0
-                if len(predicted_authors) > 0:
-                    precision = len(gold_authors & predicted_authors) / len(predicted_authors)
-                recall = 0
-                if len(gold_authors) > 0:
-                    recall = len(gold_authors & predicted_authors) / len(gold_authors)
-                log_file.write("Author P/R:       %.3f / %.3f\n" % (precision, recall))
-                author_prs.append((precision, recall))
-
-            # update y_score
-            nonlocal y_score
-            y_score = [y_score]
-            for page_index, doc_page_pair in enumerate(page_group):
-                page = doc_page_pair[1]
-                y_score.append(raw_predictions[page_index, :len(page.tokens)])
-            y_score = np.concatenate(y_score)
-
-            # update y_true
-            nonlocal y_true
-            y_true = [y_true]
-            for page_index, doc_page_pair in enumerate(page_group):
-                page = doc_page_pair[1]
-                raw_labels_for_page = raw_labels[page_index, :len(page.tokens)]
-                y_true_for_page = raw_labels_for_page.astype(np.bool)
-                y_true.append(y_true_for_page)
-            y_true = np.concatenate(y_true)
-
-        page_group = []
-        doc_to_index_in_page_group = []
         for doc in test_docs:
-            pages = doc.pages[:model_settings.max_page_number]
+            log_file.write("\nDocument %s\n" % doc.doc_id)
 
-            if len(page_group) + len(pages) > model_settings.batch_size:
-                # page group is full, let's process it
-                process_page_group(page_group, doc_to_index_in_page_group)
+            def continuous_index_sequences(indices: np.array):
+                """Given an array like this: [1,2,3,5,6,7,10], this returns continuously increasing
+                subsequences, like this: [[1,2,3], [5,6,7], [10]]"""
+                if len(indices) <= 0:
+                    return []
+                else:
+                    return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
 
-                # get started with the next page group
-                doc_to_index_in_page_group = []
-                page_group = []
+            def longest_continuous_index_sequence(indices):
+                """Given an array of indices, this returns the longest continuously increasing
+                subsequence in the array."""
+                return max(continuous_index_sequences(indices), key=len)
 
-            doc_to_index_in_page_group.append((doc, len(page_group)))
-            page_group.extend([(doc, page) for page in pages])
+            labeled_title = np.empty(shape=(0,), dtype=np.unicode)
+            labeled_authors = []
 
-        # process the last page group
-        process_page_group(page_group, doc_to_index_in_page_group)
+            predicted_title = np.empty(shape=(0,), dtype=np.unicode)
+            predicted_authors = []
+
+            for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
+                page_raw_predictions, page_raw_labels = \
+                    docpage_to_results[(doc.doc_sha, page.page_number)]
+
+                # find labeled titles and authors
+                page_labels = page_raw_labels.argmax(axis=1)
+
+                indices_labeled_title = np.where(page_labels == dataprep2.TITLE_LABEL)[0]
+                if len(indices_labeled_title) > 0:
+                    labeled_title_on_page = longest_continuous_index_sequence(indices_labeled_title)
+                    if len(labeled_title_on_page) > len(labeled_title):
+                        labeled_title_on_page = np.take(page.tokens, labeled_title_on_page)
+                        labeled_title = labeled_title_on_page
+
+                indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
+                for index_sequence in continuous_index_sequences(indices_labeled_author):
+                    labeled_authors.append(np.take(page.tokens, index_sequence))
+
+                # find predicted titles and authors
+                page_predictions = page_raw_predictions.argmax(axis=1)
+
+                indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
+                if len(indices_predicted_title) > 0:
+                    predicted_title_on_page = longest_continuous_index_sequence(indices_predicted_title)
+                    if len(predicted_title_on_page) > len(predicted_title):
+                        predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
+                        predicted_title = predicted_title_on_page
+
+                indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
+                for index_sequence in continuous_index_sequences(indices_predicted_author):
+                    predicted_authors.append(np.take(page.tokens, index_sequence))
+
+            def normalize(s: str) -> str:
+                return unicodedata.normalize("NFKC", s)
+
+            def normalize_author(a: str) -> str:
+                a = a.split(",", 2)
+                if len(a) == 1:
+                    a = a[0]
+                else:
+                    return "%s %s" % (a[1], a[0])
+                a = normalize(a)
+                a = a.replace(".", " ")
+                a = _multiple_spaces_re.sub(" ", a)
+                return a.strip()
+
+            # print titles
+            log_file.write("Gold title:    %s\n" % doc.gold_title)
+
+            labeled_title = " ".join(labeled_title)
+            log_file.write("Labeled title: %s\n" % labeled_title)
+
+            predicted_title = " ".join(predicted_title)
+            log_file.write("Actual title:  %s\n" % predicted_title)
+
+            # calculate title P/R
+            title_score = 0.0
+            if normalize(predicted_title) == normalize(doc.gold_title):
+                title_score = 1.0
+            log_file.write("Score:         %s\n" % title_score)
+            title_prs.append((title_score, title_score))
+
+            # print authors
+            gold_authors = ["%s %s" % tuple(gold_author) for gold_author in doc.gold_authors]
+            for gold_author in gold_authors:
+                log_file.write("Gold author:      %s\n" % gold_author)
+
+            labeled_authors = [" ".join(ats) for ats in labeled_authors]
+            if len(labeled_authors) <= 0:
+                log_file.write("No authors labeled\n")
+            else:
+                for labeled_author in labeled_authors:
+                    log_file.write("Labeled author:   %s\n" % labeled_author)
+
+            predicted_authors = [" ".join(ats) for ats in predicted_authors]
+            if len(predicted_authors) <= 0:
+                log_file.write("No authors predicted\n")
+            else:
+                for predicted_author in predicted_authors:
+                    log_file.write("Predicted author: %s\n" % predicted_author)
+
+            # calculate author P/R
+            gold_authors = set(map(normalize_author, gold_authors))
+            predicted_authors = set(map(normalize_author, predicted_authors))
+            precision = 0
+            if len(predicted_authors) > 0:
+                precision = len(gold_authors & predicted_authors) / len(predicted_authors)
+            recall = 0
+            if len(gold_authors) > 0:
+                recall = len(gold_authors & predicted_authors) / len(gold_authors)
+            log_file.write("Author P/R:       %.3f / %.3f\n" % (precision, recall))
+            author_prs.append((precision, recall))
+
+    # Calculate P/R and AUC
+    y_score = np.concatenate([raw_prediction for raw_prediction, _ in docpage_to_results.values()])
+    y_true = np.concatenate([raw_labels for _, raw_labels in docpage_to_results.values()])
+    y_true = y_true.astype(np.bool)
 
     # produce some numbers for a spreadsheet
     print()
@@ -459,7 +497,7 @@ def train(
                         break
 
                     now = time.time()
-                    if trained_batches % 100 == 0:
+                    if trained_batches % 1 == 0:
                         metric_string = ", ".join(
                             ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
                         )
@@ -522,7 +560,7 @@ def main():
         help="the size of the vectors representing tokens"
     )
     parser.add_argument(
-        "--batch-size", type=int, default=model_settings.batch_size, help="the size of the batches"
+        "--tokens-per-batch", type=int, default=model_settings.tokens_per_batch, help="the number of tokens in a batch"
     )
     parser.add_argument(
         "--start-weights",
@@ -547,7 +585,7 @@ def main():
     args = parser.parse_args()
 
     model_settings = model_settings._replace(token_vector_size=args.token_vector_size)
-    model_settings = model_settings._replace(batch_size=args.batch_size)
+    model_settings = model_settings._replace(tokens_per_batch=args.tokens_per_batch)
     print(model_settings)
 
     model = train(

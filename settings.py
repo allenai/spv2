@@ -7,7 +7,7 @@ ModelSettingsBase = collections.namedtuple(
         "token_hash_size",
         "font_hash_size",
         "token_vector_size",
-        "batch_size"
+        "tokens_per_batch"
     ]
 )
 
@@ -21,5 +21,5 @@ default_model_settings = ModelSettings(
     token_hash_size=1024 * 32,
     font_hash_size=1024 * 4,
     token_vector_size=1024,
-    batch_size=4
+    tokens_per_batch=8 * 1024
 )
