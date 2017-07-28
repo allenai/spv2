@@ -474,10 +474,8 @@ def train(
         for time_elapsed, batch_count, ev_result in scored_results:
             print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
 
-    start_time = time.time()
     if training_batches > 0:
         trained_batches = 0
-        time_at_last_eval = start_time
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
             train_docs = dataprep2.documents(pmc_dir, model_settings, test=False)
@@ -488,6 +486,13 @@ def train(
             #if True:
             #    training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
                 for batch in training_data:
+                    if trained_batches == 0:
+                        # It takes a while to get here the first time, since things have to be
+                        # loaded from cache, the page pool has to be filled up, and so on, so we
+                        # don't officially start until we get here for the first time.
+                        start_time = time.time()
+                        time_at_last_eval = start_time
+
                     x, y = batch
                     metrics = model.train_on_batch(x, y)
 
