@@ -116,14 +116,14 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     page_lengths = list(map(page_length_for_doc_page_pair, page_group))
     max_length = max(page_lengths)
 
-    padded_token_count = max_length * len(page_group)
-    unpadded_token_count = sum(page_lengths)
-    waste = float(padded_token_count - unpadded_token_count) / padded_token_count
-    logging.debug(
-        "Batching page group with %d pages, %d tokens, %.2f%% waste",
-        len(page_group),
-        max_length,
-        waste * 100)
+    #padded_token_count = max_length * len(page_group)
+    #unpadded_token_count = sum(page_lengths)
+    #waste = float(padded_token_count - unpadded_token_count) / padded_token_count
+    #logging.debug(
+    #    "Batching page group with %d pages, %d tokens, %.2f%% waste",
+    #    len(page_group),
+    #    max_length,
+    #    waste * 100)
 
     batch_inputs = [[], [], [], []]
     batch_outputs = []
