@@ -459,7 +459,7 @@ def train(
                             ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
                         )
                         logging.info(
-                            "Trained on %d batches in %.0f s (%.2f bps). Last batch: %.2f s. %s",
+                            "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
                             trained_batches,
                             now - start_time,
                             (now - start_time) / trained_batches,
