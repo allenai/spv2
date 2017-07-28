@@ -763,7 +763,7 @@ def prepare_bucket(
     bucket_path = os.path.join(pmc_dir, bucket_number)
     featurized_tokens_file(bucket_path, token_stats, model_settings)
 
-Page = collections.namedtuple(
+PageBase = collections.namedtuple(
     "Page", [
         "page_number",
         "tokens",
@@ -774,7 +774,7 @@ Page = collections.namedtuple(
     ]
 )
 
-Document = collections.namedtuple(
+DocumentBase = collections.namedtuple(
     "Document", [
         "doc_id",
         "doc_sha",
@@ -783,6 +783,21 @@ Document = collections.namedtuple(
         "pages"
     ]
 )
+
+# Because the default representation of these makes debugging unbearably slow, we're overwriting
+# how they present themselves.
+
+class Page(PageBase):
+    def __str__(self):
+        return "Page(%d, ...)" % self.page_number
+    def __repr__(self):
+        return "Page(%d, ...)" % self.page_number
+
+class Document(DocumentBase):
+    def __str__(self):
+        return "Document('%s', ...)" % self.doc_id
+    def __repr__(self):
+        return "Document('%s', ...)" % self.doc_id
 
 def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
     if test:
