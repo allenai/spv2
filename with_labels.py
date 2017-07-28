@@ -288,7 +288,7 @@ def evaluate_model(
         for index, docpage in enumerate(slice):
             doc, page = docpage
 
-            key = (doc.doc_sha, page.page_number)
+            key = (doc.doc_id, page.page_number)
             assert key not in docpage_to_results
             docpage_to_results[key] = (
                 raw_predictions_for_slice[index,:len(page.tokens)],
@@ -327,7 +327,7 @@ def evaluate_model(
 
             for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
                 page_raw_predictions, page_raw_labels = \
-                    docpage_to_results[(doc.doc_sha, page.page_number)]
+                    docpage_to_results[(doc.doc_id, page.page_number)]
 
                 # find labeled titles and authors
                 page_labels = page_raw_labels.argmax(axis=1)
