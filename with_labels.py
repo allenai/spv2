@@ -516,6 +516,9 @@ def train(
                         logging.info(
                             "It's been %.0f seconds since the last eval. Triggering another one.",
                             time_since_last_eval)
+
+                        eval_start_time = time.time()
+
                         if output_filename is not None:
                             logging.info("Writing temporary model to %s", output_filename)
                             model.save(output_filename, overwrite=True)
@@ -524,7 +527,12 @@ def train(
                         )  # TODO: batches != docs
                         scored_results.append((now - start_time, trained_batches, ev_result))
                         print_scored_results(now - start_time)
-                        time_at_last_eval = now
+
+                        eval_end_time = time.time()
+                        # adjust start time to ignore the time we spent evaluating
+                        start_time += eval_end_time - eval_start_time
+
+                        time_at_last_eval = eval_end_time
         if output_filename is not None:
             logging.info("Writing temporary final model to %s", output_filename)
             model.save(output_filename, overwrite=True)
