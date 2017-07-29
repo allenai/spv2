@@ -116,14 +116,14 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     page_lengths = list(map(page_length_for_doc_page_pair, page_group))
     max_length = max(page_lengths)
 
-    padded_token_count = max_length * len(page_group)
-    unpadded_token_count = sum(page_lengths)
-    waste = float(padded_token_count - unpadded_token_count) / padded_token_count
-    logging.debug(
-        "Batching page group with %d pages, %d tokens, %.2f%% waste",
-        len(page_group),
-        max_length,
-        waste * 100)
+    #padded_token_count = max_length * len(page_group)
+    #unpadded_token_count = sum(page_lengths)
+    #waste = float(padded_token_count - unpadded_token_count) / padded_token_count
+    #logging.debug(
+    #    "Batching page group with %d pages, %d tokens, %.2f%% waste",
+    #    len(page_group),
+    #    max_length,
+    #    waste * 100)
 
     batch_inputs = [[], [], [], []]
     batch_outputs = []
@@ -493,6 +493,7 @@ def train(
                         start_time = time.time()
                         time_at_last_eval = start_time
 
+                    batch_start_time = time.time()
                     x, y = batch
                     metrics = model.train_on_batch(x, y)
 
@@ -507,9 +508,11 @@ def train(
                             ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
                         )
                         logging.info(
-                            "Trained on %d batches in %.0f seconds. %s",
+                            "Trained on %d batches in %.0f s (%.2f bps). Last batch: %.2f s. %s",
                             trained_batches,
                             now - start_time,
+                            (now - start_time) / trained_batches,
+                            now - batch_start_time,
                             metric_string)
                     time_since_last_eval = now - time_at_last_eval
                     if time_since_last_eval > 60 * 60:
