@@ -543,7 +543,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = 1
+FEATURIZED_TOKENS_VERSION = 3 # capitalization
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -583,7 +583,7 @@ def featurized_tokens_file(
             # hash font and strings
             # This does all tokens in memory at once. We might have to be clever if that runs out
             # of memory.
-            bytes_to_hash = np.vectorize(mmh3.hash, otypes=[np.uint32])
+            bytes_to_hash = np.vectorize(lambda t: mmh3.hash(t.lower()), otypes=[np.uint32])
             text_features = bytes_to_hash(lab_token_text_features)
             text_features[:,0] %= model_settings.token_hash_size
             text_features[:,1] %= model_settings.font_hash_size
@@ -597,10 +597,35 @@ def featurized_tokens_file(
             # numeric features
             scaled_numeric_features = featurized_file.create_dataset(
                 "token_scaled_numeric_features",
-                shape=(len(lab_token_text_features), 8),
+                shape=(len(lab_token_text_features), 15),
                 dtype=np.float32,
                 fillvalue=0.0)
 
+            # capitalization features (these are numeric features)
+            #  8: First letter is upper (0.5) or not (-0.5)
+            #  9: Second letter is upper (0.5) or not (-0.5)
+            # 10: Fraction of uppers
+            # 11: First letter is lower (0.5) or not (-0.5)
+            # 12: Second letter is lower (0.5) or not (-0.5)
+            # 13: Fraction of lowers
+            # 14: Fraction of numerics
+            for token_index, token in enumerate(lab_token_text_features[:,0]):
+                feature_index = 8
+                for fn in [str.isupper, str.islower]:
+                    for char_index in [0, 1]:
+                        if len(token) > char_index and fn(token[char_index]):
+                            scaled_numeric_features[token_index, feature_index] = 1.0
+                        feature_index += 1
+                    if len(token) > 0:
+                        scaled_numeric_features[token_index, feature_index] = \
+                            sum(1 for c in token if fn(c)) / len(token)
+                    feature_index += 1
+                scaled_numeric_features[token_index, feature_index] = \
+                    sum(1 for c in token if c.isnumeric()) / len(token)
+                feature_index += 1
+            scaled_numeric_features[:,8:15] -= 0.5
+
+            # sizes and positions (these are also numeric features)
             for json_metadata in lab_doc_metadata:
                 json_metadata = json.loads(json_metadata)
 
