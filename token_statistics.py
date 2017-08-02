@@ -91,7 +91,7 @@ def save_stats_file(
         pickle.dump(bottoms, f)
 
 def load_stats_file(filename: str):
-    with open(filename, "rb") as f:
+    with gzip.open(filename, "rb") as f:
         texts = pickle.load(f)
         fonts = pickle.load(f)
         font_sizes = pickle.load(f)
