@@ -59,7 +59,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
             output_dim=FONT_VECTOR_SIZE)(font_input)
     logging.info("font_embedding:\t%s", font_embedding.shape)
 
-    numeric_inputs = Input(name='numeric_inputs', shape=(None, 8))
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 15))
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
