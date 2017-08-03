@@ -757,17 +757,21 @@ def featurized_tokens_file(
                         left, right, top, bottom = coordinates
                         coordinates = (left, top, right, bottom)
 
+                        best_title_iofirst = 0
                         if len(title_bounding_boxes) > 0:
                             best_title_iofirst = max(
                                 (compute_iofirst(coordinates, bb) for bb in title_bounding_boxes))
-                            if best_title_iofirst > 0.1:
-                                scaled_numeric_features[first_token_index+token_index, 8] = 1.0
 
+                        best_author_iofirst = 0
                         if len(author_bounding_boxes) > 0:
                             best_author_iofirst = max(
                                 (compute_iofirst(coordinates, bb) for bb in author_bounding_boxes))
-                            if best_author_iofirst > 0.1:
-                                scaled_numeric_features[first_token_index+token_index, 9] = 1.0
+
+                        if best_title_iofirst > 0.1 and best_title_iofirst >= best_author_iofirst:
+                            scaled_numeric_features[first_token_index+token_index, 8] = 1.0
+
+                        if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
+                            scaled_numeric_features[first_token_index+token_index, 9] = 1.0
 
                     # shift everything so we end up with a range of -0.5 - +0.5
                     scaled_numeric_features[first_token_index:one_past_last_token_index,:] -= 0.5
