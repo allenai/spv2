@@ -780,7 +780,7 @@ def featurized_tokens_file(
                 scaled_numeric_features[token_index, feature_index] = \
                     sum(1 for c in token if c.isnumeric()) / len(token)
                 feature_index += 1
-            scaled_numeric_features[:,8:15] -= 0.5
+                # The -0.5 offset it applied at the end.
 
             # sizes and positions (these are also numeric features)
             for json_metadata in lab_doc_metadata:
@@ -840,8 +840,10 @@ def featurized_tokens_file(
                     scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
                         get_quantiles(space_widths_in_doc, numeric_features[:,5])
 
-                    # shift everything so we end up with a range of -0.5 - +0.5
-                    scaled_numeric_features[first_token_index:one_past_last_token_index,:] -= 0.5
+                    # The -0.5 offset it applied at the end.
+
+            # shift everything so we end up with a range of -0.5 - +0.5
+            scaled_numeric_features[:,:] -= 0.5
         except:
             try:
                 os.remove(temp_featurized_tokens_path)
