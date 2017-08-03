@@ -70,13 +70,19 @@ def model_with_labels(model_settings: settings.ModelSettings):
     )([pageno_embedding, token_embedding, font_embedding, numeric_masked])
     logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
 
-    lstm = Bidirectional(LSTM(units=1024, return_sequences=True))(pdftokens_combined)
+    churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
+    logging.info("churned_tokens:\t%s", churned_tokens.shape)
+
+    lstm = Bidirectional(LSTM(units=1024, return_sequences=True))(churned_tokens)
     logging.info("lstm:\t%s", lstm.shape)
 
-    one_hot_output = TimeDistributed(Dense(len(dataprep2.POTENTIAL_LABELS)))(lstm)
+    one_hot_output = TimeDistributed(
+        Dense(len(dataprep2.POTENTIAL_LABELS)),
+        name="one_hot_output"
+    )(lstm)
     logging.info("one_hot_output:\t%s", one_hot_output.shape)
 
-    softmax = TimeDistributed(Activation('softmax'))(one_hot_output)
+    softmax = TimeDistributed(Activation('softmax'), name="softmax")(one_hot_output)
     logging.info("softmax:\t%s", softmax.shape)
 
     model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=softmax)
