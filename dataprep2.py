@@ -147,22 +147,22 @@ class GloveVectors(object):
 
         self.word2index = {}
         self.vectors = []
-        try:
-            with zcat_process(self.filename, encoding="UTF-8") as p:
-                for index, line in enumerate(p.stdout):
-                    line = line.split()
-                    word = normalize(line[0])
-                    try:
-                        self.word2index[word] = index
-                        self.vectors.append(np.asarray(line[1:], dtype='float32'))
-                    except:
-                        logging.error("Error while loading line for '%s'", word)
-                        raise
-            self.vectors = np.stack(self.vectors)
-            self.vectors_stddev = np.std(self.vectors)
-        except:
-            logging.error("Error while loading %s", self.filename)
-            raise
+        with zcat_process(self.filename, encoding="UTF-8") as p:
+            for line_number, line in enumerate(p.stdout):
+                line = line.split(" ")
+                word = normalize(line[0])
+                try:
+                    self.word2index[word] = len(self.vectors)
+                    self.vectors.append(np.asarray(line[1:], dtype='float32'))
+                except:
+                    logging.error(
+                        "Error while loading line for '%s' at %s:%d",
+                        word,
+                        self.filename,
+                        line_number)
+                    raise
+        self.vectors = np.stack(self.vectors)
+        self.vectors_stddev = np.std(self.vectors)
 
     def get_dimensions(self) -> int:
         return self.dimensions
