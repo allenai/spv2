@@ -201,7 +201,7 @@ class CombinedEmbeddings(object):
     """Combines token statistics and glove vectors to produce embeddings to start training with."""
 
     OOV = " ⚠ OOV ⚠ " # must be something that the tokenizer would destroy
-    OOV_INDEX = 0
+    OOV_INDEX = 1     # 0 is the keras masking value
 
     def __init__(
         self,
@@ -211,22 +211,28 @@ class CombinedEmbeddings(object):
     ):
         # build token2index
         self.token2index = {
-            token: index + 1        # index 0 is the OOV token
+            token: index + 2        # index 0 is the keras masking value, index 1 is the OOV token
             for index, token
             in enumerate(tokenstats.get_tokens_with_minimum_frequency(min_token_freq))
         }
         self.token2index[self.OOV] = self.OOV_INDEX
+        # check whether there are duplicate indices
+        indices = set(self.token2index.values())
+        assert len(indices) == len(self.token2index)
+        # make sure that 0, the keras masking value, did not make it into the indices
+        assert 0 not in indices
 
         # build the embedding matrix
         self.matrix = np.zeros(
             shape=(len(self.token2index)+1, glove.get_dimensions_with_random()),    # +1 for the keras mask
             dtype=np.float32)
         for token, index in self.token2index.items():
-            self.matrix[index+1] = glove.get_vector_or_random(token)    # +1 for the keras mask
+            self.matrix[index] = glove.get_vector_or_random(token)
 
         # print out some stats
-        inv_count = np.sum(self.matrix[2:,0]) + (0.5 * len(self.matrix))    # the first scalar in the word vector is -0.5 if it's OOV, or 0.5 otherwise
+        inv_count = np.sum(self.matrix[2:,0]) + (0.5 * (len(self.matrix) - 2))    # the first scalar in the word vector is -0.5 if it's OOV, or 0.5 otherwise
         oov_count = len(self.matrix[2:]) - inv_count    # 2: compensates for the keras mask and the OOV token
+        assert inv_count + oov_count == len(self.matrix) - 2
         logging.info(
             "%d words in vocab, %d of them from glove (%.2f%%)",
             inv_count + oov_count,
@@ -234,7 +240,9 @@ class CombinedEmbeddings(object):
             (100 * inv_count) / (inv_count + oov_count))
 
     def index_for_token(self, token: str) -> int:
-        return self.token2index.get(normalize(token), self.OOV_INDEX)
+        r = self.token2index.get(normalize(token), self.OOV_INDEX)
+        assert r != 0   # we must never return the keras masking value
+        return r
 
     def dimensions(self):
         return self.matrix.shape[1]
