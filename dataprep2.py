@@ -902,5 +902,63 @@ def main():
         logging.info("Processing bucket %s", bucket_number)
         prepare_bucket(bucket_number, args.pmc_dir, token_stats, model_settings)
 
+def evaluate_vision():
+    logging.getLogger().setLevel(logging.DEBUG)
+
+    model_settings = settings.default_model_settings
+
+    import argparse
+    parser = argparse.ArgumentParser(description="Warms the cache for buckets in the pmc directory")
+    parser.add_argument(
+        "--pmc-dir",
+        type=str,
+        default="/net/nfs.corp/s2-research/science-parse/pmc/",
+        help="directory with the PMC data"
+    )
+    args = parser.parse_args()
+
+    print(model_settings)
+
+    y_score = []
+    y_true = []
+
+    import sklearn
+    import sklearn.metrics
+    for doc in documents(args.pmc_dir, model_settings, test=True):
+        for page in doc.pages:
+            if len(page.tokens) <= 0:
+                continue
+
+            vision_scores = np.zeros(
+                shape=(len(page.tokens), len(POTENTIAL_LABELS)),
+                dtype=float
+            )
+            vision_scores[:,TITLE_LABEL] = page.scaled_numeric_features[:,8]
+            vision_scores[:,AUTHOR_LABEL] = page.scaled_numeric_features[:,9]
+            vision_scores[:,NONE_LABEL] = -page.scaled_numeric_features[:,8:10].max(axis=1)
+            y_score.append(vision_scores)
+
+            labels_as_ints = page.labels
+            labels_bool = np.zeros(
+                shape=(len(labels_as_ints), len(POTENTIAL_LABELS)),
+                dtype=np.bool)
+            labels_bool[np.arange(len(labels_as_ints)),labels_as_ints] = True
+            y_true.append(labels_bool)
+
+            scores = sklearn.metrics.average_precision_score(labels_bool, vision_scores, average=None)
+            print(
+                "%s\t%d\t%s" % (
+                    doc.doc_id,
+                    page.page_number,
+                    "\t".join(["%.3f" % score for score in scores])))
+
+    y_score = np.concatenate(y_score)
+    y_true = np.concatenate(y_true)
+
+    scores = sklearn.metrics.average_precision_score(y_true, y_score, average=None)
+    print("Areas under the P/R curve:")
+    print("\t".join(map(str, POTENTIAL_LABELS)))
+    print("\t".join(["%.3f" % score for score in scores]))
+
 if __name__ == "__main__":
-    main()
+    evaluate_vision()
