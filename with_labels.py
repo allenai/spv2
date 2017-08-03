@@ -33,10 +33,7 @@ def model_with_labels(model_settings: settings.ModelSettings):
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
     logging.info("numeric_masked:\t%s", numeric_masked.shape)
 
-    lstm = Bidirectional(LSTM(units=64, return_sequences=True))(numeric_inputs)
-    logging.info("lstm:\t%s", lstm.shape)
-
-    one_hot_output = TimeDistributed(Dense(len(dataprep2.POTENTIAL_LABELS)))(lstm)
+    one_hot_output = TimeDistributed(Dense(len(dataprep2.POTENTIAL_LABELS)))(numeric_masked)
     logging.info("one_hot_output:\t%s", one_hot_output.shape)
 
     softmax = TimeDistributed(Activation('softmax'))(one_hot_output)
