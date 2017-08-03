@@ -20,6 +20,6 @@ default_model_settings = ModelSettings(
     max_page_number=3,
     token_hash_size=1024 * 32,
     font_hash_size=1024 * 4,
-    token_vector_size=1024,
+    token_vector_size=100,
     tokens_per_batch=32 * 1024
 )
