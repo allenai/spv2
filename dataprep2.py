@@ -705,7 +705,7 @@ def featurized_tokens_file(
     featurizing_hash_components = (
         model_settings.max_page_number,
         model_settings.font_hash_size,
-        #model_settings.minimum_token_frequency, # This should be part of the hash, but I forgot when I prepared the featurized files. TODO: Put this back before re-calculating featurized files.
+        model_settings.minimum_token_frequency,
         # Strings get a different hash every time you run python, so they are pre-hashed with mmh3.
         mmh3.hash(os.path.basename(model_settings.glove_vectors))
     )
