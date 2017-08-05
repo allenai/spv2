@@ -77,13 +77,16 @@ def model_with_labels(
     churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
     logging.info("churned_tokens:\t%s", churned_tokens.shape)
 
-    lstm = Bidirectional(LSTM(units=1024, return_sequences=True))(churned_tokens)
-    logging.info("lstm:\t%s", lstm.shape)
+    lstm1 = Bidirectional(LSTM(units=512, return_sequences=True))(churned_tokens)
+    logging.info("lstm1:\t%s", lstm1.shape)
+
+    lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
+    logging.info("lstm2:\t%s", lstm2.shape)
 
     one_hot_output = TimeDistributed(
         Dense(len(dataprep2.POTENTIAL_LABELS)),
         name="one_hot_output"
-    )(lstm)
+    )(lstm2)
     logging.info("one_hot_output:\t%s", one_hot_output.shape)
 
     softmax = TimeDistributed(Activation('softmax'), name="softmax")(one_hot_output)
