@@ -802,6 +802,7 @@ PageBase = collections.namedtuple(
         "tokens",
         "token_hashes",
         "font_hashes",
+        "numeric_features",
         "scaled_numeric_features",
         "labels"
     ]
@@ -832,12 +833,15 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
-def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
-    if test:
-        buckets = range(0xf0, 0x100)
-    else:
-        buckets = range(0x00, 0xf0)
-    buckets = ["%02x" % x for x in buckets]
+def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False, buckets=None):
+    if buckets is None:
+        if test:
+            buckets = range(0xf0, 0x100)
+        else:
+            buckets = range(0x00, 0xf0)
+        buckets = ["%02x" % x for x in buckets]
+    buckets = list(buckets)
+    buckets.sort()
 
     token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats2.gz"))
 
@@ -865,6 +869,8 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
                         featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
                     font_hashes = \
                         featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                    numeric_features = \
+                        featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
                     scaled_numeric_features = \
                         featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
                     labels = \
@@ -959,5 +965,64 @@ def evaluate_vision():
     print("\t".join(map(str, POTENTIAL_LABELS)))
     print("\t".join(["%.3f" % score for score in scores]))
 
+def print_docs():
+    logging.getLogger().setLevel(logging.DEBUG)
+
+    model_settings = settings.default_model_settings
+
+    import argparse
+    parser = argparse.ArgumentParser(description="Warms the cache for buckets in the pmc directory")
+    parser.add_argument(
+        "--pmc-dir",
+        type=str,
+        default="/net/nfs.corp/s2-research/science-parse/pmc/",
+        help="directory with the PMC data"
+    )
+    parser.add_argument("doc_sha", type=str, nargs='+', help="shas to print features for")
+    args = parser.parse_args()
+
+    print(model_settings)
+
+    header = [
+        "token",
+        "label",
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "font_size",
+        "font_space_width",
+        "left_rel_page",
+        "right_rel_page",
+        "top_rel_page",
+        "bottom_rel_page",
+        "font_size_%corpus",
+        "space_width_%corpus",
+        "font_size_%doc",
+        "space_width_%doc",
+        "vision_title",
+        "vision_author"
+    ]
+    print("\t".join(header))
+    print()
+
+    shas = set(args.doc_sha)
+    buckets = set([sha[:2] for sha in shas])
+    for doc in documents(args.pmc_dir, model_settings, buckets=buckets):
+        if doc.doc_sha not in shas:
+            continue
+        print(doc.doc_id)
+        for page in doc.pages:
+            print("Page %d" % page.page_number)
+            for i in range(len(page.tokens)):
+                line = [page.tokens[i], str(page.labels[i])]
+                for feature in page.numeric_features[i]:
+                    line.append("%.3f" % feature)
+                for feature in page.scaled_numeric_features[i]:
+                    line.append("%.3f" % feature)
+                assert len(line) == len(header)
+                print("\t".join(line))
+        print()
+
 if __name__ == "__main__":
-    evaluate_vision()
+    print_docs()
