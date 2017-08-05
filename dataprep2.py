@@ -922,7 +922,6 @@ def evaluate_vision():
     y_score = []
     y_true = []
 
-    import sklearn
     import sklearn.metrics
     for doc in documents(args.pmc_dir, model_settings, test=True):
         for page in doc.pages:
