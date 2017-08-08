@@ -71,9 +71,19 @@ def normalize(s: str) -> str:
 
 class TokenStatistics(object):
     def __init__(self, filename):
+        self.filename = filename
+        self.tokens = None
+        self.cum_font_sizes = None
+        self.cum_space_widths = None
+        # We load all this stuff lazily.
+
+    def _ensure_loaded(self):
+        if self.tokens is not None:
+            return
+
         # load the file
         (texts, fonts, font_sizes, space_widths) = \
-            token_statistics.load_stats_file_no_coordinates(filename)
+            token_statistics.load_stats_file_no_coordinates(self.filename)
 
         # prepare normalized tokens
         self.tokens = {}
@@ -99,6 +109,7 @@ class TokenStatistics(object):
         self.cum_space_widths = make_cumulative(space_widths, 'f4')
 
     def get_font_size_percentile(self, font_size):
+        self._ensure_loaded()
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
         font_size = np.asarray(font_size, 'f4')
@@ -106,10 +117,12 @@ class TokenStatistics(object):
 
     def get_font_size_percentiles(self, font_sizes: np.array):
         assert font_sizes.dtype == np.dtype('f4')
+        self._ensure_loaded()
         indices = self.cum_font_sizes['item'].searchsorted(font_sizes)
         return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes)-1)]
 
     def get_space_width_percentile(self, space_width):
+        self._ensure_loaded()
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
         space_width = np.asarray(space_width, 'f4')
@@ -117,10 +130,12 @@ class TokenStatistics(object):
 
     def get_space_width_percentiles(self, space_widths: np.array):
         assert space_widths.dtype == np.dtype('f4')
+        self._ensure_loaded()
         indices = self.cum_space_widths['item'].searchsorted(space_widths)
         return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
 
     def get_tokens_with_minimum_frequency(self, min_freq: int) -> typing.Generator[str, None, None]:
+        self._ensure_loaded()
         # We can do this because self.tokens is sorted.
         for token, count in self.tokens:
             if count < min_freq:
@@ -209,11 +224,22 @@ class CombinedEmbeddings(object):
         glove: GloveVectors,
         min_token_freq: int
     ):
+        self.tokenstats = tokenstats
+        self.glove = glove
+        self.min_token_freq = min_token_freq
+
+        self.token2index = None
+        self.matrix = None
+
+    def _ensure_loaded(self):
+        if self.token2index is not None:
+            return
+
         # build token2index
         self.token2index = {
             token: index + 2        # index 0 is the keras masking value, index 1 is the OOV token
             for index, token
-            in enumerate(tokenstats.get_tokens_with_minimum_frequency(min_token_freq))
+            in enumerate(self.tokenstats.get_tokens_with_minimum_frequency(self.min_token_freq))
         }
         self.token2index[self.OOV] = self.OOV_INDEX
         # check whether there are duplicate indices
@@ -224,10 +250,10 @@ class CombinedEmbeddings(object):
 
         # build the embedding matrix
         self.matrix = np.zeros(
-            shape=(len(self.token2index)+1, glove.get_dimensions_with_random()),    # +1 for the keras mask
+            shape=(len(self.token2index)+1, self.glove.get_dimensions_with_random()),    # +1 for the keras mask
             dtype=np.float32)
         for token, index in self.token2index.items():
-            self.matrix[index] = glove.get_vector_or_random(token)
+            self.matrix[index] = self.glove.get_vector_or_random(token)
 
         # print out some stats
         inv_count = np.sum(self.matrix[2:,0]) + (0.5 * (len(self.matrix) - 2))    # the first scalar in the word vector is -0.5 if it's OOV, or 0.5 otherwise
@@ -240,17 +266,21 @@ class CombinedEmbeddings(object):
             (100 * inv_count) / (inv_count + oov_count))
 
     def index_for_token(self, token: str) -> int:
+        self._ensure_loaded()
         r = self.token2index.get(normalize(token), self.OOV_INDEX)
         assert r != 0   # we must never return the keras masking value
         return r
 
     def dimensions(self):
+        self._ensure_loaded()
         return self.matrix.shape[1]
 
     def vocab_size(self):
+        self._ensure_loaded()
         return self.matrix.shape[0] - 1 # -1 for the keras mask
 
     def matrix_for_keras(self):
+        self._ensure_loaded()
         return self.matrix
 
 

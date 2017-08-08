@@ -489,6 +489,7 @@ def train(
         for time_elapsed, batch_count, ev_result in scored_results:
             print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
 
+    start_time = None
     if training_batches > 0:
         trained_batches = 0
         while trained_batches < training_batches:
@@ -557,6 +558,8 @@ def train(
 
     logging.info("Triggering final evaluation")
     now = time.time()
+    if start_time is None:
+        start_time = now
     final_ev = evaluate_model(
         model, model_settings, pmc_dir, test_batches, log_filename
     )  # TODO: batches != docs
