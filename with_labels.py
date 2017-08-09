@@ -368,7 +368,7 @@ def evaluate_model(
                     predicted_authors.append(np.take(page.tokens, index_sequence))
 
             def normalize(s: str) -> str:
-                return unicodedata.normalize("NFKC", s)
+                return unicodedata.normalize("NFKC", s).lower()
 
             def normalize_author(a: str) -> str:
                 a = a.split(",", 2)
