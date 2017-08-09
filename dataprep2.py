@@ -984,10 +984,6 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
                         featurized["token_labels"][first_token_index:last_token_index_plus_one]
                 ))
 
-            def trim_punctuation_from_author(author):
-                given_names, surnames = author
-                return trim_punctuation(given_names), trim_punctuation(surnames)
-
             yield Document(
                 doc_metadata["doc_id"],
                 doc_metadata["doc_sha"],
