@@ -417,6 +417,13 @@ LABELED_TOKENS_VERSION = 9
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
 _word_characters_re = re.compile(r'[\w]+')
+_leading_punctuation = re.compile(r'^[\.]+')
+_trailing_punctuation = re.compile(r'[\.]+$')
+
+def trim_punctuation(s: str) -> str:
+    s = _leading_punctuation.sub("", s)
+    s = _trailing_punctuation.sub("", s)
+    return s.strip()
 
 def labeled_tokens_file(bucket_path: str):
     """Returns the h5 file with the labeled tokens"""
@@ -491,6 +498,8 @@ def labeled_tokens_file(bucket_path: str):
                     logging.warning("Found %d gold titles for %s; skipping doc", len(gold_title), doc_id)
                     continue
                 gold_title = " ".join(tokenize(all_inner_text(gold_title[0])))
+                gold_title = trim_punctuation(gold_title)
+                gold_title.replace("\u2026", ". . .")       # replace ellipsis
                 if len(gold_title) <= 4:
                     logging.warning("Title '%s' is too short; skipping doc", gold_title)
                     continue
@@ -978,7 +987,7 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
             yield Document(
                 doc_metadata["doc_id"],
                 doc_metadata["doc_sha"],
-                doc_metadata["gold_title"],
+                trim_punctuation(doc_metadata["gold_title"]),
                 doc_metadata["gold_authors"],
                 pages)
 
