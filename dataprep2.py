@@ -905,9 +905,12 @@ def featurized_tokens_file(
 PageBase = collections.namedtuple(
     "Page", [
         "page_number",
+        "width",
+        "height",
         "tokens",
         "token_hashes",
         "font_hashes",
+        "numeric_features",
         "scaled_numeric_features",
         "labels"
     ]
@@ -962,12 +965,16 @@ def documents_for_bucket(
 
             pages.append(Page(
                 page_number,
+                float(json_page["dimensions"][0]),
+                float(json_page["dimensions"][1]),
                 tokens = \
                     featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
                 token_hashes = \
                     featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
                 font_hashes = \
                     featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                numeric_features = \
+                    featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
                 scaled_numeric_features = \
                     featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
                 labels = \
@@ -1035,6 +1042,15 @@ def dump_documents(
                 html_file.write("<h2>Page %d</h2>\n" % page.page_number)
                 html_file.write('<table class="table">\n')
 
+                # get statistics for numeric features
+                numeric_features_min = np.min(page.numeric_features, axis=0)
+                numeric_features_max = np.max(page.numeric_features, axis=0)
+
+                numeric_features_min[0:2] = 0.0
+                numeric_features_max[0:2] = page.width
+                numeric_features_min[2:4] = 0.0
+                numeric_features_max[2:4] = page.height
+
                 # first row of header
                 columns = [
                     ("token", page.tokens, None),
@@ -1057,6 +1073,14 @@ def dump_documents(
                         "2low",
                         "f_low",
                         "f_num"
+                    ]),
+                    ("numeric_features", page.numeric_features, [
+                        "left",
+                        "right",
+                        "top",
+                        "bottom",
+                        "fs",
+                        "sw"
                     ])
                 ]
 
@@ -1087,8 +1111,8 @@ def dump_documents(
                 # We're abusing these CSS classes from Bootstrap to color rows according to their
                 # label.
 
-                for i in range(len(page.tokens)):
-                    label = page.labels[i]
+                for token_index in range(len(page.tokens)):
+                    label = page.labels[token_index]
 
                     color_class = label2color_class[label]
                     if color_class is None:
@@ -1097,16 +1121,17 @@ def dump_documents(
                         html_file.write('<tr class="%s">' % color_class)
 
                     for column_name, array, subcolumns in columns:
-                        values = array[i]
+                        values = array[token_index]
                         if len(array.shape) == 1:
                             values = [values]
 
-                        formatter_fn = str
-                        color_fn = lambda x: None
-                        color_class_fn = lambda x: None
+                        def formatter_fn(v, i: int):
+                            return str(v)
+                        color_fn = lambda v, i: None
+                        color_class_fn = lambda v, i: None
                         if column_name == "scaled_numeric_features":
-                            formatter_fn = lambda x: "%.3f" % x
-                            def color_fn(v):
+                            formatter_fn = lambda v, i: "%.3f" % v
+                            def color_fn(v, i: int) -> str:
                                 top = (255, 255, 170)
                                 bottom = (128, 170, 255)
                                 v = v + 0.5
@@ -1118,20 +1143,43 @@ def dump_documents(
                                 )
                                 # You're not supposed to scale colors like this, but it's good
                                 # enough.
-
                                 return "rgb(%d, %d, %d)" % color
                         elif column_name == "token_hash":
-                            def color_class_fn(v):
+                            def color_class_fn(v, i: int):
                                 if v == 0:  # masking value, should never happen
                                     return "danger"
                                 elif v == 1:  # oov token
                                     return "warning"
                                 else:
                                     return None
+                        elif column_name == "numeric_features":
+                            def formatter_fn(v, i: int) -> str:
+                                if i == 5: # space width
+                                    return "%.3f" % v
+                                else:
+                                    return str(v)
+                            def color_fn(v, i: int) -> str:
+                                top = (255, 170, 170)
+                                bottom = (170, 255, 192)
 
-                        for value in values:
-                            color = color_fn(value)
-                            color_class = color_class_fn(value)
+                                if numeric_features_min[i] == numeric_features_max[i]:
+                                    color = bottom
+                                else:
+                                    v -= numeric_features_min[i]
+                                    v /= (numeric_features_max[i] - numeric_features_min[i])
+
+                                    color = (
+                                        int(top[0] * v + bottom[0] * (1 - v)),
+                                        int(top[1] * v + bottom[1] * (1 - v)),
+                                        int(top[2] * v + bottom[2] * (1 - v)),
+                                    )
+                                    # You're not supposed to scale colors like this, but it's good
+                                    # enough.
+                                return "rgb(%d, %d, %d)" % color
+
+                        for i, value in enumerate(values):
+                            color = color_fn(value, i)
+                            color_class = color_class_fn(value, i)
 
                             # start the open the tag
                             html_file.write('<td')
@@ -1146,7 +1194,7 @@ def dump_documents(
                             # end the open tag
                             html_file.write(">")
 
-                            html_file.write(formatter_fn(value))
+                            html_file.write(formatter_fn(value, i))
                             html_file.write("</td>")
                     html_file.write("</tr>\n")
 
