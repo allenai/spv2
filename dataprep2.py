@@ -1035,6 +1035,7 @@ def dump_documents(
             html_file.write("<title>%s</title>" % doc.doc_sha)
             html_file.write('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">\n')
             html_file.write('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa" crossorigin="anonymous"></script>\n')
+            html_file.write('<style> td { text-align:right; } </style>\n')
             html_file.write("</head>\n"
                             "<body>\n")
             html_file.write("<h1>%s</h1>\n" % doc.doc_sha)
@@ -1183,14 +1184,10 @@ def dump_documents(
 
                             # start the open the tag
                             html_file.write('<td')
-                            # write the class
                             if color_class is not None:
                                 html_file.write(' class="%s"' % color_class)
-                            # write the style
-                            html_file.write(' style="text-align:right')
                             if color is not None:
-                                html_file.write('; background-color: %s' % color)
-                            html_file.write('"')
+                                html_file.write(' style="background-color: %s"' % color)
                             # end the open tag
                             html_file.write(">")
 
