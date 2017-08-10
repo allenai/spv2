@@ -14,6 +14,7 @@ import collections
 import gzip
 import typing
 import sys
+import html
 
 import settings
 
@@ -1025,23 +1026,32 @@ def dump_documents(
 ):
     bucket_path = os.path.join(pmc_dir, bucket_number)
     for doc in documents_for_bucket(bucket_path, token_stats, embeddings, model_settings):
-        html_path = os.path.join(bucket_path, "docs", doc.doc_id)
-        assert html_path.endswith(".pdf")
-        html_path = html_path[:-3] + "html"
+        pdf_path = os.path.join(bucket_path, "docs", doc.doc_id)
+        assert pdf_path.endswith(".pdf")
+        html_path = pdf_path[:-3] + "html"
         logging.info("Dumping %s", html_path)
         with open(html_path, "w") as html_file:
             html_file.write("<html>\n"
                             "<head>\n")
-            html_file.write("<title>%s</title>" % doc.doc_sha)
+            html_file.write("<title>%s</title>" % html.escape(doc.doc_sha))
             html_file.write('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">\n')
             html_file.write('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa" crossorigin="anonymous"></script>\n')
             html_file.write('<style> td { text-align:right; } </style>\n')
             html_file.write("</head>\n"
                             "<body>\n")
-            html_file.write("<h1>%s</h1>\n" % doc.doc_sha)
+            html_file.write('<h1><a href="%s">%s</a></h1>\n' % (
+                os.path.basename(pdf_path),
+                html.escape(doc.doc_id)))
+
+            html_file.write("<p>Gold title: <b>%s</b></p>\n" % html.escape(doc.gold_title))
+            for given_names, surnames in doc.gold_authors:
+                html_file.write("<p>Gold author: <b>%s %s</b></p>\n" % (
+                    html.escape(given_names),
+                    html.escape(surnames)))
+
             for page in doc.pages:
                 html_file.write("<h2>Page %d</h2>\n" % page.page_number)
-                html_file.write('<table class="table">\n')
+                html_file.write('<table class="table table-condensed">\n')
 
                 # get statistics for numeric features
                 numeric_features_min = np.min(page.numeric_features, axis=0)
@@ -1191,7 +1201,7 @@ def dump_documents(
                             # end the open tag
                             html_file.write(">")
 
-                            html_file.write(formatter_fn(value, i))
+                            html_file.write(html.escape(formatter_fn(value, i)))
                             html_file.write("</td>")
                     html_file.write("</tr>\n")
 
