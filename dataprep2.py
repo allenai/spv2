@@ -13,6 +13,7 @@ import h5py
 import collections
 import gzip
 import typing
+import sys
 
 import settings
 
@@ -409,7 +410,7 @@ def unlabeled_tokens_file(bucket_path: str):
 
 
 #
-# Labeling 🏷️
+# Labeling 🏷
 #
 
 LABELED_TOKENS_VERSION = 9
@@ -431,7 +432,7 @@ def labeled_tokens_file(bucket_path: str):
         os.path.join(
             bucket_path,
             "labeled-tokens-v%d.h5" % LABELED_TOKENS_VERSION)
-    if os.path.exists(labeled_tokens_path): # TODO: re-create the file if the unlabeled file is more recent
+    if os.path.exists(labeled_tokens_path):
         return h5py.File(labeled_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", labeled_tokens_path)
@@ -731,6 +732,11 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
+
+#
+# Featurizing ⛲
+#
+
 FEATURIZED_TOKENS_VERSION = 4 # pre-trained vectors
 
 def featurized_tokens_file(
@@ -754,7 +760,7 @@ def featurized_tokens_file(
             bucket_path,
             "featurized-tokens-%02x-v%d.h5" %
                 (abs(hash(featurizing_hash_components)), FEATURIZED_TOKENS_VERSION))
-    if os.path.exists(featurized_tokens_path): # TODO: re-create the file if the labeled file is more recent
+    if os.path.exists(featurized_tokens_path):
         return h5py.File(featurized_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", featurized_tokens_path)
@@ -896,16 +902,6 @@ def featurized_tokens_file(
         os.rename(temp_featurized_tokens_path, featurized_tokens_path)
         return h5py.File(featurized_tokens_path, "r")
 
-def prepare_bucket(
-    bucket_number: str,
-    pmc_dir: str,
-    token_stats: TokenStatistics,
-    embeddings: CombinedEmbeddings,
-    model_settings: settings.ModelSettings
-):
-    bucket_path = os.path.join(pmc_dir, bucket_number)
-    featurized_tokens_file(bucket_path, token_stats, embeddings, model_settings)
-
 PageBase = collections.namedtuple(
     "Page", [
         "page_number",
@@ -942,6 +938,49 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
+def documents_for_bucket(
+    bucket_path: str,
+    token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
+    model_settings: settings.ModelSettings
+):
+    featurized = featurized_tokens_file(
+        bucket_path,
+        token_stats,
+        embeddings,
+        model_settings)
+    # The file has to stay open, because the document we return refers to it, and needs it
+    # to be open. Python's GC will close the file (hopefully).
+
+    for doc_metadata in featurized["doc_metadata"]:
+        doc_metadata = json.loads(doc_metadata)
+        pages = []
+        for page_number, json_page in enumerate(doc_metadata["pages"]):
+            first_token_index = int(json_page["first_token_index"])
+            token_count = int(json_page["token_count"])
+            last_token_index_plus_one = first_token_index + token_count
+
+            pages.append(Page(
+                page_number,
+                tokens = \
+                    featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
+                token_hashes = \
+                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
+                font_hashes = \
+                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                scaled_numeric_features = \
+                    featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                labels = \
+                    featurized["token_labels"][first_token_index:last_token_index_plus_one]
+            ))
+
+        yield Document(
+            doc_metadata["doc_id"],
+            doc_metadata["doc_sha"],
+            trim_punctuation(doc_metadata["gold_title"]),
+            doc_metadata["gold_authors"],
+            pages)
+
 def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
     if test:
         buckets = range(0xf0, 0x100)
@@ -954,50 +993,191 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
     for bucket in buckets:
-        featurized = featurized_tokens_file(
+        yield from documents_for_bucket(
             os.path.join(pmc_dir, bucket),
             token_stats,
             embeddings,
             model_settings)
-            # The file has to stay open, because the document we return refers to it, and needs it
-            # to be open. Python's GC will close the file (hopefully).
 
-        for doc_metadata in featurized["doc_metadata"]:
-            doc_metadata = json.loads(doc_metadata)
-            pages = []
-            for page_number, json_page in enumerate(doc_metadata["pages"]):
-                first_token_index = int(json_page["first_token_index"])
-                token_count = int(json_page["token_count"])
-                last_token_index_plus_one = first_token_index + token_count
+def prepare_bucket(
+    bucket_number: str,
+    pmc_dir: str,
+    token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
+    model_settings: settings.ModelSettings
+):
+    bucket_path = os.path.join(pmc_dir, bucket_number)
+    featurized_tokens_file(bucket_path, token_stats, embeddings, model_settings)
 
-                pages.append(Page(
-                    page_number,
-                    tokens = \
-                        featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
-                    token_hashes = \
-                        featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
-                    font_hashes = \
-                        featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
-                    scaled_numeric_features = \
-                        featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
-                    labels = \
-                        featurized["token_labels"][first_token_index:last_token_index_plus_one]
-                ))
+def dump_documents(
+    bucket_number: str,
+    pmc_dir: str,
+    token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
+    model_settings: settings.ModelSettings
+):
+    bucket_path = os.path.join(pmc_dir, bucket_number)
+    for doc in documents_for_bucket(bucket_path, token_stats, embeddings, model_settings):
+        html_path = os.path.join(bucket_path, "docs", doc.doc_id)
+        assert html_path.endswith(".pdf")
+        html_path = html_path[:-3] + "html"
+        logging.info("Dumping %s", html_path)
+        with open(html_path, "w") as html_file:
+            html_file.write("<html>\n"
+                            "<head>\n")
+            html_file.write("<title>%s</title>" % doc.doc_sha)
+            html_file.write('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">\n')
+            html_file.write('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa" crossorigin="anonymous"></script>\n')
+            html_file.write("</head>\n"
+                            "<body>\n")
+            html_file.write("<h1>%s</h1>\n" % doc.doc_sha)
+            for page in doc.pages:
+                html_file.write("<h2>Page %d</h2>\n" % page.page_number)
+                html_file.write('<table class="table">\n')
 
-            yield Document(
-                doc_metadata["doc_id"],
-                doc_metadata["doc_sha"],
-                trim_punctuation(doc_metadata["gold_title"]),
-                doc_metadata["gold_authors"],
-                pages)
+                # first row of header
+                columns = [
+                    ("token", page.tokens, None),
+                    ("token_hash", page.token_hashes, None),
+                    ("label", page.labels, None),
+                    ("font_hash", page.font_hashes, None),
+                    ("scaled_numeric_features", page.scaled_numeric_features, [
+                        "left",
+                        "right",
+                        "top",
+                        "bottom",
+                        "fs_corp",
+                        "sw_corp",
+                        "fs_doc",
+                        "sw_doc",
+                        "1up",
+                        "2up",
+                        "f_up",
+                        "1low",
+                        "2low",
+                        "f_low",
+                        "f_num"
+                    ])
+                ]
+
+                html_file.write("<tr>")
+                for column_name, array, subcolumns in columns:
+                    array_width = 1
+                    if len(array.shape) > 1:
+                        array_width = array.shape[1]
+                    html_file.write('<th colspan="%d">%s</th>' % (array_width, column_name))
+                html_file.write("</tr>\n")
+
+                # second row of header
+                html_file.write("<tr>")
+                for column_name, array, subcolumns in columns:
+                    array_width = 1
+                    if len(array.shape) > 1:
+                        array_width = array.shape[1]
+                    if subcolumns is None:
+                        assert array_width == 1
+                        html_file.write("<th></th>")
+                    else:
+                        assert array_width == len(subcolumns)
+                        for subcolumn in subcolumns:
+                            html_file.write('<th>%s</th>' % subcolumn)
+                html_file.write("</tr>\n")
+
+                label2color_class = [None, "success", "info"]
+                # We're abusing these CSS classes from Bootstrap to color rows according to their
+                # label.
+
+                for i in range(len(page.tokens)):
+                    label = page.labels[i]
+
+                    color_class = label2color_class[label]
+                    if color_class is None:
+                        html_file.write("<tr>")
+                    else:
+                        html_file.write('<tr class="%s">' % color_class)
+
+                    for column_name, array, subcolumns in columns:
+                        values = array[i]
+                        if len(array.shape) == 1:
+                            values = [values]
+
+                        formatter_fn = str
+                        color_fn = lambda x: None
+                        color_class_fn = lambda x: None
+                        if column_name == "scaled_numeric_features":
+                            formatter_fn = lambda x: "%.3f" % x
+                            def color_fn(v):
+                                top = (255, 255, 170)
+                                bottom = (128, 170, 255)
+                                v = v + 0.5
+
+                                color = (
+                                    int(top[0] * v + bottom[0] * (1 - v)),
+                                    int(top[1] * v + bottom[1] * (1 - v)),
+                                    int(top[2] * v + bottom[2] * (1 - v)),
+                                )
+                                # You're not supposed to scale colors like this, but it's good
+                                # enough.
+
+                                return "rgb(%d, %d, %d)" % color
+                        elif column_name == "token_hash":
+                            def color_class_fn(v):
+                                if v == 0:  # masking value, should never happen
+                                    return "danger"
+                                elif v == 1:  # oov token
+                                    return "warning"
+                                else:
+                                    return None
+
+                        for value in values:
+                            color = color_fn(value)
+                            color_class = color_class_fn(value)
+
+                            # start the open the tag
+                            html_file.write('<td')
+                            # write the class
+                            if color_class is not None:
+                                html_file.write(' class="%s"' % color_class)
+                            # write the style
+                            html_file.write(' style="text-align:right')
+                            if color is not None:
+                                html_file.write('; background-color: %s' % color)
+                            html_file.write('"')
+                            # end the open tag
+                            html_file.write(">")
+
+                            html_file.write(formatter_fn(value))
+                            html_file.write("</td>")
+                    html_file.write("</tr>\n")
+
+                html_file.write('</table>\n')
+
+            html_file.write("</body>\n")
+            html_file.write("</html>\n")
+
 
 def main():
     logging.getLogger().setLevel(logging.DEBUG)
 
+    # find which command to run
+    commands = {
+        "warm": "Warms the cache for buckets in the PMC directory",
+        "dump": "Dumps labeled and featurized documents to HTML"
+    }
+
+    command = None
+    if len(sys.argv) > 1:
+        command = sys.argv[1].lower()
+        del sys.argv[1]
+    if command is None or command not in commands.keys():
+        progname = sys.argv[0]
+        print("%s {%s}" % (progname, ", ".join(commands.keys())))
+        return 1
+
     model_settings = settings.default_model_settings
 
     import argparse
-    parser = argparse.ArgumentParser(description="Warms the cache for buckets in the pmc directory")
+    parser = argparse.ArgumentParser(description=commands[command])
     parser.add_argument(
         "--pmc-dir",
         type=str,
@@ -1010,7 +1190,7 @@ def main():
         default=model_settings.glove_vectors,
         help="file containing the GloVe vectors"
     )
-    parser.add_argument("bucket_number", type=str, nargs='+', help="buckets to warm the cache for")
+    parser.add_argument("bucket_number", type=str, nargs='+', help="buckets to process")
     args = parser.parse_args()
 
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
@@ -1022,7 +1202,10 @@ def main():
 
     for bucket_number in args.bucket_number:
         logging.info("Processing bucket %s", bucket_number)
-        prepare_bucket(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
+        if command == "warm":
+            prepare_bucket(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
+        elif command == "dump":
+            dump_documents(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
 
 if __name__ == "__main__":
     main()
