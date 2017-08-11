@@ -414,7 +414,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = 9
+LABELED_TOKENS_VERSION = 10
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -542,7 +542,18 @@ def labeled_tokens_file(bucket_path: str):
 
                 # find titles and authors in the document
                 title_match = None
-                author_matches = [None] * len(gold_authors)
+                author_matches = []
+                for author_index in range(len(gold_authors)):
+                    author_matches.append([])
+
+                FuzzyMatch = collections.namedtuple("FuzzyMatch", [
+                    "page_number",
+                    "first_token_index",
+                    "one_past_last_token_index",
+                    "cost",
+                    "matched_string"
+                ])
+
                 for page_number in range(effective_page_count):
                     json_page = json_metadata["pages"][page_number]
                     page_first_token_index = int(json_page["first_token_index"])
@@ -569,9 +580,9 @@ def labeled_tokens_file(bucket_path: str):
                     page_text = "".join(page_text)
                     assert page_text_length == len(page_text)
 
-                    def find_string_in_page(string):
+                    def find_string_in_page(string: str) -> typing.Optional[FuzzyMatch]:
                         fuzzy_match = stringmatch.match(normalize(string), page_text)
-                        if fuzzy_match.cost > len(string) // 3:
+                        if fuzzy_match.cost > ((len(string) - string.count(" ")) // 5):
                             return None
 
                         start = fuzzy_match.start_pos
@@ -592,7 +603,15 @@ def labeled_tokens_file(bucket_path: str):
 
                         assert first_token_index != one_past_last_token_index
 
-                        return page_number, first_token_index, one_past_last_token_index, fuzzy_match.cost
+                        matched_string = tokens[first_token_index:one_past_last_token_index]
+                        matched_string = " ".join(matched_string)
+
+                        return FuzzyMatch(
+                            page_number,
+                            first_token_index,
+                            one_past_last_token_index,
+                            fuzzy_match.cost,
+                            matched_string)
 
                     #
                     # find title
@@ -600,7 +619,7 @@ def labeled_tokens_file(bucket_path: str):
 
                     title_match_on_this_page = find_string_in_page(gold_title)
                     if title_match_on_this_page is not None:
-                        if title_match is None or title_match_on_this_page[3] < title_match[3]:
+                        if title_match is None or title_match_on_this_page.cost < title_match.cost:
                             title_match = title_match_on_this_page
 
                     #
@@ -624,36 +643,42 @@ def labeled_tokens_file(bucket_path: str):
                                 "%s %s" % (initials(given_names, ""), surnames),
                                 "%s , %s" % (surnames, given_names),
                                 "%s %s" % (given_names[0], surnames),
-                                "%s . %s" % (given_names[0], surnames),
-                                }
+                                "%s . %s" % (given_names[0], surnames)}
 
                         for author_variant in author_variants:
                             new_match = find_string_in_page(author_variant)
                             if new_match is None:
                                 continue
 
-                            old_match = author_matches[author_index]
-                            if old_match is None:
-                                author_matches[author_index] = new_match
-                                continue
+                            author_matches[author_index].append(new_match)
 
-                            old_match_cost = old_match[3]
-                            new_match_cost = new_match[3]
-                            if old_match_cost < new_match_cost:
-                                continue
-
-                            old_match_length = old_match[2] - old_match[1]
-                            new_match_length = new_match[2] - new_match[1]
-                            if new_match_length < old_match_length:
-                                continue
-
-                            author_matches[author_index] = new_match
+                # find the definitive author labels from the lists of potential matches we have now
+                # all author matches have to be on the same page
+                page_numbers_with_author_matches = \
+                    set((match.page_number for match in author_matches[0]))
+                for matches in author_matches[1:]:
+                    page_numbers_with_author_matches &= set((match.page_number for match in matches))
+                if len(page_numbers_with_author_matches) <= 0:
+                    logging.warning("Could not find all authors on one page in %s; skipping doc", doc_id)
+                    continue
+                page_number_with_author_matches = min(page_numbers_with_author_matches)
+                for author_index in range(len(author_matches)):
+                    author_matches[author_index] = [
+                        match
+                        for match in author_matches[author_index]
+                        if match.page_number == page_number_with_author_matches]
+                # for the remaining matches, get the best
+                def cost_author_match(match: FuzzyMatch):
+                    return 8 * match.cost - len(match.matched_string)
+                for author_index in range(len(author_matches)):
+                    author_matches[author_index] = \
+                        min(author_matches[author_index], key=cost_author_match)
 
                 if title_match is None:
                     logging.warning("Could not find title '%s' in %s; skipping doc", gold_title, doc_id)
                     continue
 
-                if any((a is None for a in author_matches)):
+                if any((matches is None for matches in author_matches)):
                     logging.warning("Could not find all authors in %s; skipping doc", doc_id)
                     continue
 
@@ -700,13 +725,12 @@ def labeled_tokens_file(bucket_path: str):
                     # create labels
                     labels = np.zeros(token_count, dtype=np.int8)
                     # for title
-                    title_page_number, title_first_token_index, title_one_past_last_token_index, _ = title_match
-                    if title_page_number == page_number:
-                        labels[title_first_token_index:title_one_past_last_token_index] = TITLE_LABEL
+                    if title_match.page_number == page_number:
+                        labels[title_match.first_token_index:title_match.one_past_last_token_index] = TITLE_LABEL
                     # for authors
-                    for author_page_number, author_first_token_index, author_one_past_last_token_index, _ in author_matches:
-                        if author_page_number == page_number:
-                            labels[author_first_token_index:author_one_past_last_token_index] = AUTHOR_LABEL
+                    for author_match in author_matches:
+                        if author_match.page_number == page_number:
+                            labels[author_match.first_token_index:author_match.one_past_last_token_index] = AUTHOR_LABEL
                             # TODO: warn if we're overwriting existing labels
 
                     lab_first_token_index = len(lab_token_labels)
@@ -738,7 +762,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurizing ⛲
 #
 
-FEATURIZED_TOKENS_VERSION = 4 # pre-trained vectors
+FEATURIZED_TOKENS_VERSION = 5 # improved author labeling
 
 def featurized_tokens_file(
     bucket_path: str,
