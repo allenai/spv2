@@ -1095,7 +1095,7 @@ def dump_documents(
                     ])
                 ]
 
-                html_file.write("<tr>")
+                html_file.write("<tr><th>index</th>")
                 for column_name, array, subcolumns in columns:
                     array_width = 1
                     if len(array.shape) > 1:
@@ -1104,7 +1104,7 @@ def dump_documents(
                 html_file.write("</tr>\n")
 
                 # second row of header
-                html_file.write("<tr>")
+                html_file.write("<tr><th></th>")
                 for column_name, array, subcolumns in columns:
                     array_width = 1
                     if len(array.shape) > 1:
@@ -1130,6 +1130,8 @@ def dump_documents(
                         html_file.write("<tr>")
                     else:
                         html_file.write('<tr class="%s">' % color_class)
+
+                    html_file.write("<td>%d</td>" % token_index)
 
                     for column_name, array, subcolumns in columns:
                         values = array[token_index]
