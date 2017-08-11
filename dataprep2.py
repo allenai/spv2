@@ -288,7 +288,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄️
 #
 
-UNLABELED_TOKENS_VERSION = 1
+UNLABELED_TOKENS_VERSION = 2 # compression
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -328,12 +328,16 @@ def unlabeled_tokens_file(bucket_path: str):
             "token_text_features",
             dtype=h5_unicode_type,
             shape=(0,2),    # token, font name
-            maxshape=(None,2))
+            maxshape=(None,2),
+            compression="gzip",
+            compression_opts=9)
         h5_token_numeric_features = h5_file.create_dataset(
             "token_numeric_features",
             dtype=np.float32,
             shape=(0, 6),   # left, right, top, bottom, font_size, font_space_width
-            maxshape=(None, 6))
+            maxshape=(None, 6),
+            compression="gzip",
+            compression_opts=9)
 
         raw_tokens_path = os.path.join(bucket_path, "tokens2.json.bz2")
         for json_doc in json_from_file(raw_tokens_path):
@@ -412,7 +416,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷️
 #
 
-LABELED_TOKENS_VERSION = 9
+LABELED_TOKENS_VERSION = 10 # compression
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -453,17 +457,23 @@ def labeled_tokens_file(bucket_path: str):
                 "token_text_features",
                 dtype=h5_unicode_type,
                 shape=(0,2),    # token, font name
-                maxshape=(len(unlab_token_text_features),2))
+                maxshape=(len(unlab_token_text_features),2),
+                compression="gzip",
+                compression_opts=9)
             lab_token_numeric_features = labeled_file.create_dataset(
                 "token_numeric_features",
                 dtype=np.float32,
                 shape=(0, 6),   # left, right, top, bottom, font_size, font_space_width
-                maxshape=(len(unlab_token_numeric_features), 6))
+                maxshape=(len(unlab_token_numeric_features), 6),
+                compression="gzip",
+                compression_opts=9)
             lab_token_labels = labeled_file.create_dataset(
                 "token_labels",
                 dtype=np.int8,
                 shape=(0,),
-                maxshape=(len(unlab_token_text_features),))
+                maxshape=(len(unlab_token_text_features),),
+                compression="gzip",
+                compression_opts=9)
 
             for unlab_metadata in unlab_doc_metadata:
                 json_metadata = json.loads(unlab_metadata)
@@ -731,7 +741,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = 4 # pre-trained vectors
+FEATURIZED_TOKENS_VERSION = 4 # compression
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -789,14 +799,18 @@ def featurized_tokens_file(
                 "token_hashed_text_features",
                 lab_token_text_features.shape,
                 dtype=np.uint32,
-                data=text_features)
+                data=text_features,
+                compression="gzip",
+                compression_opts=9)
 
             # numeric features
             scaled_numeric_features = featurized_file.create_dataset(
                 "token_scaled_numeric_features",
                 shape=(len(lab_token_text_features), 15),
                 dtype=np.float32,
-                fillvalue=0.0)
+                fillvalue=0.0,
+                compression="gzip",
+                compression_opts=9)
 
             # capitalization features (these are numeric features)
             #  8: First letter is upper (0.5) or not (-0.5)
