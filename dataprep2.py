@@ -11,95 +11,11 @@ import stringmatch
 import subprocess
 import h5py
 import collections
+import gzip
 import typing
 import intervaltree
 
 import settings
-
-#
-# Classes 🏫
-#
-
-class TokenStatistics(object):
-    def __init__(self, filename):
-        (texts, fonts, font_sizes, space_widths) = \
-            token_statistics.load_stats_file_no_coordinates(filename)
-
-        def make_cumulative(counting_dictionary, dtype):
-            result = np.fromiter(
-                counting_dictionary.items(), dtype=[("item", dtype), ("count", 'f4')]
-            )
-            result.sort()
-            result["count"] = np.cumsum(result["count"])
-            total = result["count"][-1]
-            result["count"] /= total
-            return result
-
-        self.cum_font_sizes = make_cumulative(font_sizes, 'f4')
-        self.cum_space_widths = make_cumulative(space_widths, 'f4')
-
-    def get_font_size_percentile(self, font_size):
-        # We have to search for the same data type as we have in the array. Otherwise this is super
-        # slow.
-        font_size = np.asarray(font_size, 'f4')
-        return self.get_font_size_percentiles(font_size)
-
-    def get_font_size_percentiles(self, font_sizes: np.array):
-        assert font_sizes.dtype == np.dtype('f4')
-        indices = self.cum_font_sizes['item'].searchsorted(font_sizes)
-        return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes)-1)]
-
-    def get_space_width_percentile(self, space_width):
-        # We have to search for the same data type as we have in the array. Otherwise this is super
-        # slow.
-        space_width = np.asarray(space_width, 'f4')
-        return self.get_space_width_percentiles(space_width)
-
-    def get_space_width_percentiles(self, space_widths: np.array):
-        assert space_widths.dtype == np.dtype('f4')
-        indices = self.cum_space_widths['item'].searchsorted(space_widths)
-        return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
-
-class VisionOutput(object):
-    BoundingBox = collections.namedtuple("BoundingBox", [
-        "label",
-        "left",
-        "right",
-        "top",
-        "bottom",
-        "confidence"
-    ])
-
-    def __init__(self, file_path):
-        self.boxes = {}
-        with open(file_path) as file:
-            for line in file:
-                line = json.loads(line)
-                sha = line["docSha"]
-                bounding_boxes_for_sha = []
-                for json_page in line["pages"]:
-                    bounding_boxes_for_page = []
-                    for label, left, top, right, bottom, confidence in json_page:
-                        bounding_boxes_for_page.append(
-                            self.BoundingBox(label, left, right, top, bottom, confidence))
-                    bounding_boxes_for_sha.append(bounding_boxes_for_page)
-                if sha in self.boxes:
-                    logging.warning("Duplicate sha %s in %s", sha, file_path)
-                self.boxes[sha] = bounding_boxes_for_sha
-
-    def boxes_for_sha_and_page(self, sha: str, page: int) -> typing.List[BoundingBox]:
-        try:
-            return self.boxes[sha][page]
-        except KeyError:
-            # We don't have boxes for that document.
-            logging.warning("Missing vision output for %s", sha)
-            return list()
-        except IndexError:
-            # We have boxes for that document, but not for that page.
-            return list()
-
-    def pages_for_sha(self, sha: str):
-        return len(self.boxes[sha])
 
 
 #
@@ -144,6 +60,272 @@ def json_from_file(filename):
             except ValueError as e:
                 logging.warning("Error while reading document (%s); skipping", e)
 
+def normalize(s: str) -> str:
+    s = s.lower()
+    s = unicodedata.normalize("NFKC", s)
+    return s
+
+
+#
+# Classes 🏫
+#
+
+class TokenStatistics(object):
+    def __init__(self, filename):
+        self.filename = filename
+        self.tokens = None
+        self.cum_font_sizes = None
+        self.cum_space_widths = None
+        # We load all this stuff lazily.
+
+    def _ensure_loaded(self):
+        if self.tokens is not None:
+            return
+
+        # load the file
+        (texts, fonts, font_sizes, space_widths) = \
+            token_statistics.load_stats_file_no_coordinates(self.filename)
+
+        # prepare normalized tokens
+        self.tokens = {}
+        for token, new_count in texts.items():
+            token = normalize(token)
+            old_count = self.tokens.get(token, 0)
+            self.tokens[token] = old_count + new_count
+        self.tokens = list(self.tokens.items())
+        self.tokens.sort(key=lambda x: -x[1])
+
+        # prepare font sizes and token widths
+        def make_cumulative(counting_dictionary, dtype):
+            result = np.fromiter(
+                counting_dictionary.items(), dtype=[("item", dtype), ("count", 'f4')]
+            )
+            result.sort()
+            result["count"] = np.cumsum(result["count"])
+            total = result["count"][-1]
+            result["count"] /= total
+            return result
+
+        self.cum_font_sizes = make_cumulative(font_sizes, 'f4')
+        self.cum_space_widths = make_cumulative(space_widths, 'f4')
+
+    def get_font_size_percentile(self, font_size):
+        self._ensure_loaded()
+        # We have to search for the same data type as we have in the array. Otherwise this is super
+        # slow.
+        font_size = np.asarray(font_size, 'f4')
+        return self.get_font_size_percentiles(font_size)
+
+    def get_font_size_percentiles(self, font_sizes: np.array):
+        assert font_sizes.dtype == np.dtype('f4')
+        self._ensure_loaded()
+        indices = self.cum_font_sizes['item'].searchsorted(font_sizes)
+        return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes)-1)]
+
+    def get_space_width_percentile(self, space_width):
+        self._ensure_loaded()
+        # We have to search for the same data type as we have in the array. Otherwise this is super
+        # slow.
+        space_width = np.asarray(space_width, 'f4')
+        return self.get_space_width_percentiles(space_width)
+
+    def get_space_width_percentiles(self, space_widths: np.array):
+        assert space_widths.dtype == np.dtype('f4')
+        self._ensure_loaded()
+        indices = self.cum_space_widths['item'].searchsorted(space_widths)
+        return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
+
+    def get_tokens_with_minimum_frequency(self, min_freq: int) -> typing.Generator[str, None, None]:
+        self._ensure_loaded()
+        # We can do this because self.tokens is sorted.
+        for token, count in self.tokens:
+            if count < min_freq:
+                break
+            yield token
+
+class VisionOutput(object):
+    BoundingBox = collections.namedtuple("BoundingBox", [
+        "label",
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "confidence"
+    ])
+
+    def __init__(self, file_path):
+        self.boxes = {}
+        with open(file_path) as file:
+            for line in file:
+                line = json.loads(line)
+                sha = line["docSha"]
+                bounding_boxes_for_sha = []
+                for json_page in line["pages"]:
+                    bounding_boxes_for_page = []
+                    for label, left, top, right, bottom, confidence in json_page:
+                        bounding_boxes_for_page.append(
+                            self.BoundingBox(label, left, right, top, bottom, confidence))
+                    bounding_boxes_for_sha.append(bounding_boxes_for_page)
+                if sha in self.boxes:
+                    logging.warning("Duplicate sha %s in %s", sha, file_path)
+                self.boxes[sha] = bounding_boxes_for_sha
+
+    def boxes_for_sha_and_page(self, sha: str, page: int) -> typing.List[BoundingBox]:
+        try:
+            return self.boxes[sha][page]
+        except KeyError:
+            # We don't have boxes for that document.
+            logging.warning("Missing vision output for %s", sha)
+            return list()
+        except IndexError:
+            # We have boxes for that document, but not for that page.
+            return list()
+
+    def pages_for_sha(self, sha: str):
+        return len(self.boxes[sha])
+
+class GloveVectors(object):
+    def __init__(self, filename: str):
+        # Open the file and get the dimensions in it. Vectors themselves are loaded lazily.
+        self.filename = filename
+        with gzip.open(filename, "rt", encoding="UTF-8") as lines:
+            for line in lines:
+                line = line.split()
+                self.dimensions = len(line) - 1
+                break
+
+        self.vectors = None
+        self.vectors_stddev = None
+        self.word2index = None
+
+    def _ensure_vectors(self):
+        if self.vectors is not None:
+            return
+
+        self.word2index = {}
+        self.vectors = []
+        with zcat_process(self.filename, encoding="UTF-8") as p:
+            for line_number, line in enumerate(p.stdout):
+                line = line.split(" ")
+                word = normalize(line[0])
+                try:
+                    self.word2index[word] = len(self.vectors)
+                    self.vectors.append(np.asarray(line[1:], dtype='float32'))
+                except:
+                    logging.error(
+                        "Error while loading line for '%s' at %s:%d",
+                        word,
+                        self.filename,
+                        line_number)
+                    raise
+        self.vectors = np.stack(self.vectors)
+        self.vectors_stddev = np.std(self.vectors)
+
+    def get_dimensions(self) -> int:
+        return self.dimensions
+
+    def get_vocab_size(self) -> int:
+        self._ensure_vectors()
+        return len(self.vectors)
+
+    def get_vector(self, word: str):
+        self._ensure_vectors()
+        index = self.word2index.get(normalize(word))
+        if index is None:
+            return None
+        else:
+            return self.vectors[index]
+
+    def get_dimensions_with_random(self):
+        return self.get_dimensions() + 1    # 1 for whether we found a vector or not
+
+    def get_vector_or_random(self, word: str):
+        vector = self.get_vector(word)
+        if vector is not None:
+            return np.insert(vector, 0, 0.5)
+        else:
+            seed = mmh3.hash(normalize(word)) % (2**31 - 1)
+            r = np.random.RandomState(seed)
+            vector = r.normal(
+                loc=0.0,
+                scale=self.vectors_stddev,
+                size=self.get_dimensions()+1
+        )
+            vector[0] = -0.5
+            return vector
+
+class CombinedEmbeddings(object):
+    """Combines token statistics and glove vectors to produce embeddings to start training with."""
+
+    OOV = " ⚠ OOV ⚠ " # must be something that the tokenizer would destroy
+    OOV_INDEX = 1     # 0 is the keras masking value
+
+    def __init__(
+        self,
+        tokenstats: TokenStatistics,
+        glove: GloveVectors,
+        min_token_freq: int
+    ):
+        self.tokenstats = tokenstats
+        self.glove = glove
+        self.min_token_freq = min_token_freq
+
+        self.token2index = None
+        self.matrix = None
+
+    def _ensure_loaded(self):
+        if self.token2index is not None:
+            return
+
+        # build token2index
+        self.token2index = {
+            token: index + 2        # index 0 is the keras masking value, index 1 is the OOV token
+            for index, token
+            in enumerate(self.tokenstats.get_tokens_with_minimum_frequency(self.min_token_freq))
+        }
+        self.token2index[self.OOV] = self.OOV_INDEX
+        # check whether there are duplicate indices
+        indices = set(self.token2index.values())
+        assert len(indices) == len(self.token2index)
+        # make sure that 0, the keras masking value, did not make it into the indices
+        assert 0 not in indices
+
+        # build the embedding matrix
+        self.matrix = np.zeros(
+            shape=(len(self.token2index)+1, self.glove.get_dimensions_with_random()),    # +1 for the keras mask
+            dtype=np.float32)
+        for token, index in self.token2index.items():
+            self.matrix[index] = self.glove.get_vector_or_random(token)
+
+        # print out some stats
+        inv_count = np.sum(self.matrix[2:,0]) + (0.5 * (len(self.matrix) - 2))    # the first scalar in the word vector is -0.5 if it's OOV, or 0.5 otherwise
+        oov_count = len(self.matrix[2:]) - inv_count    # 2: compensates for the keras mask and the OOV token
+        assert inv_count + oov_count == len(self.matrix) - 2
+        logging.info(
+            "%d words in vocab, %d of them from glove (%.2f%%)",
+            inv_count + oov_count,
+            inv_count,
+            (100 * inv_count) / (inv_count + oov_count))
+
+    def index_for_token(self, token: str) -> int:
+        self._ensure_loaded()
+        r = self.token2index.get(normalize(token), self.OOV_INDEX)
+        assert r != 0   # we must never return the keras masking value
+        return r
+
+    def dimensions(self):
+        self._ensure_loaded()
+        return self.matrix.shape[1]
+
+    def vocab_size(self):
+        self._ensure_loaded()
+        return self.matrix.shape[0] - 1 # -1 for the keras mask
+
+    def matrix_for_keras(self):
+        self._ensure_loaded()
+        return self.matrix
+
+
 #
 # Unlabeled Tokens 🗄️
 #
@@ -157,7 +339,7 @@ NONE_LABEL = 0
 TITLE_LABEL = POTENTIAL_LABELS.index("title")
 AUTHOR_LABEL = POTENTIAL_LABELS.index("author")
 
-MAX_DOCS_PER_BUCKET = 6000
+MAX_DOCS_PER_BUCKET = 6100
 MAX_PAGE_COUNT = 3
 # The effective page count used in training will be the minimum of this and the same setting in
 # the model settings.
@@ -277,11 +459,13 @@ LABELED_TOKENS_VERSION = 9
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
 _word_characters_re = re.compile(r'[\w]+')
+_leading_punctuation = re.compile(r'^[\.]+')
+_trailing_punctuation = re.compile(r'[\.]+$')
 
-def normalize(s: str) -> str:
-    s = s.lower()
-    s = unicodedata.normalize("NFKC", s)
-    return s
+def trim_punctuation(s: str) -> str:
+    s = _leading_punctuation.sub("", s)
+    s = _trailing_punctuation.sub("", s)
+    return s.strip()
 
 def labeled_tokens_file(bucket_path: str):
     """Returns the h5 file with the labeled tokens"""
@@ -356,6 +540,8 @@ def labeled_tokens_file(bucket_path: str):
                     logging.warning("Found %d gold titles for %s; skipping doc", len(gold_title), doc_id)
                     continue
                 gold_title = " ".join(tokenize(all_inner_text(gold_title[0])))
+                gold_title = trim_punctuation(gold_title)
+                gold_title.replace("\u2026", ". . .")       # replace ellipsis
                 if len(gold_title) <= 4:
                     logging.warning("Title '%s' is too short; skipping doc", gold_title)
                     continue
@@ -587,23 +773,22 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-#
-# Featurizing ☎️️
-#
-
-FEATURIZED_TOKENS_VERSION = 5   # vision output with new bounding box code
+FEATURIZED_TOKENS_VERSION = 6 # vision and glove merged
 
 def featurized_tokens_file(
     bucket_path: str,
     token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
     model_settings: settings.ModelSettings
 ):
     # The hash of this structure becomes part of the filename, so if it changes, we essentially
     # invalidate the cache of featurized data.
     featurizing_hash_components = (
         model_settings.max_page_number,
-        model_settings.token_hash_size,
-        model_settings.font_hash_size
+        model_settings.font_hash_size,
+        model_settings.minimum_token_frequency,
+        # Strings get a different hash every time you run python, so they are pre-hashed with mmh3.
+        mmh3.hash(os.path.basename(model_settings.glove_vectors))
     )
 
     featurized_tokens_path = \
@@ -634,10 +819,16 @@ def featurized_tokens_file(
             # hash font and strings
             # This does all tokens in memory at once. We might have to be clever if that runs out
             # of memory.
-            bytes_to_hash = np.vectorize(mmh3.hash, otypes=[np.uint32])
-            text_features = bytes_to_hash(lab_token_text_features)
-            text_features[:,0] %= model_settings.token_hash_size
-            text_features[:,1] %= model_settings.font_hash_size
+            text_features = np.zeros(
+                shape=lab_token_text_features.shape,
+                dtype=np.int32)
+            # do tokens
+            fn = np.vectorize(embeddings.index_for_token, otypes=[np.uint32])
+            text_features[:,0] = fn(lab_token_text_features[:,0])
+            # do fonts
+            fn = np.vectorize(lambda t: mmh3.hash(normalize(t)), otypes=[np.uint32])
+            text_features[:,1] = fn(lab_token_text_features[:,1]) % model_settings.font_hash_size
+
             text_features += 1  # plus one for keras' masking
             featurized_file.create_dataset(
                 "token_hashed_text_features",
@@ -648,17 +839,35 @@ def featurized_tokens_file(
             # numeric features
             scaled_numeric_features = featurized_file.create_dataset(
                 "token_scaled_numeric_features",
-                shape=(len(lab_token_text_features), 10),
-                    # (left, right, top, bottom (all relative to the page size),
-                    #  font size percentile in corpus,
-                    #  space width percentile in corpus,
-                    #  font size percentile in doc,
-                    #  space width percentile in doc
-                    #  vision output for title,
-                    #  vision output for author)
+                shape=(len(lab_token_text_features), 17),
                 dtype=np.float32,
                 fillvalue=0.0)
 
+            # capitalization features (these are numeric features)
+            #  8: First letter is upper (0.5) or not (-0.5)
+            #  9: Second letter is upper (0.5) or not (-0.5)
+            # 10: Fraction of uppers
+            # 11: First letter is lower (0.5) or not (-0.5)
+            # 12: Second letter is lower (0.5) or not (-0.5)
+            # 13: Fraction of lowers
+            # 14: Fraction of numerics
+            for token_index, token in enumerate(lab_token_text_features[:,0]):
+                feature_index = 8
+                for fn in [str.isupper, str.islower]:
+                    for char_index in [0, 1]:
+                        if len(token) > char_index and fn(token[char_index]):
+                            scaled_numeric_features[token_index, feature_index] = 1.0
+                        feature_index += 1
+                    if len(token) > 0:
+                        scaled_numeric_features[token_index, feature_index] = \
+                            sum(1 for c in token if fn(c)) / len(token)
+                    feature_index += 1
+                scaled_numeric_features[token_index, feature_index] = \
+                    sum(1 for c in token if c.isnumeric()) / len(token)
+                feature_index += 1
+                # The -0.5 offset it applied at the end.
+
+            # sizes and positions (these are also numeric features)
             for json_metadata in lab_doc_metadata:
                 json_metadata = json.loads(json_metadata)
 
@@ -768,13 +977,15 @@ def featurized_tokens_file(
                                 (compute_iofirst(coordinates, bb) for bb in author_bounding_boxes))
 
                         if best_title_iofirst > 0.1 and best_title_iofirst >= best_author_iofirst:
-                            scaled_numeric_features[first_token_index+token_index, 8] = 1.0
+                            scaled_numeric_features[first_token_index+token_index, 15] = 1.0
 
                         if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
-                            scaled_numeric_features[first_token_index+token_index, 9] = 1.0
+                            scaled_numeric_features[first_token_index+token_index, 16] = 1.0
 
-                    # shift everything so we end up with a range of -0.5 - +0.5
-                    scaled_numeric_features[first_token_index:one_past_last_token_index,:] -= 0.5
+                    # The -0.5 offset it applied at the end.
+            
+            # shift everything so we end up with a range of -0.5 - +0.5
+            scaled_numeric_features[:,:] -= 0.5
         except:
             try:
                 os.remove(temp_featurized_tokens_path)
@@ -791,10 +1002,11 @@ def prepare_bucket(
     bucket_number: str,
     pmc_dir: str,
     token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
     model_settings: settings.ModelSettings
 ):
     bucket_path = os.path.join(pmc_dir, bucket_number)
-    featurized_tokens_file(bucket_path, token_stats, model_settings)
+    featurized_tokens_file(bucket_path, token_stats, embeddings, model_settings)
 
 PageBase = collections.namedtuple(
     "Page", [
@@ -844,11 +1056,14 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False, 
     buckets.sort()
 
     token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats2.gz"))
+    glove = GloveVectors(model_settings.glove_vectors)
+    embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
     for bucket in buckets:
         featurized = featurized_tokens_file(
             os.path.join(pmc_dir, bucket),
             token_stats,
+            embeddings,
             model_settings)
             # The file has to stay open, because the document we return refers to it, and needs it
             # to be open. Python's GC will close the file (hopefully).
@@ -880,7 +1095,7 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False, 
             yield Document(
                 doc_metadata["doc_id"],
                 doc_metadata["doc_sha"],
-                doc_metadata["gold_title"],
+                trim_punctuation(doc_metadata["gold_title"]),
                 doc_metadata["gold_authors"],
                 pages)
 
@@ -897,16 +1112,25 @@ def main():
         default="/net/nfs.corp/s2-research/science-parse/pmc/",
         help="directory with the PMC data"
     )
+    parser.add_argument(
+        "--glove-vectors",
+        type=str,
+        default=model_settings.glove_vectors,
+        help="file containing the GloVe vectors"
+    )
     parser.add_argument("bucket_number", type=str, nargs='+', help="buckets to warm the cache for")
     args = parser.parse_args()
 
+    model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     print(model_settings)
 
     token_stats = TokenStatistics(os.path.join(args.pmc_dir, "all.tokenstats2.gz"))
+    glove = GloveVectors(model_settings.glove_vectors)
+    embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
     for bucket_number in args.bucket_number:
         logging.info("Processing bucket %s", bucket_number)
-        prepare_bucket(bucket_number, args.pmc_dir, token_stats, model_settings)
+        prepare_bucket(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
 
 def evaluate_vision():
     logging.getLogger().setLevel(logging.DEBUG)
@@ -1025,4 +1249,4 @@ def print_docs():
         print()
 
 if __name__ == "__main__":
-    print_docs()
+    main()

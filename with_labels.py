@@ -4,6 +4,7 @@ import logging
 import typing
 import re
 import time
+import os
 
 from keras.layers import Embedding, Input, LSTM, Activation, Dense
 from keras.layers.merge import Concatenate
@@ -25,8 +26,10 @@ import unicodedata
 # Make Model 👯
 #
 
-def model_with_labels(model_settings: settings.ModelSettings):
-    """Returns an untrained model that predicts the next token in a stream of PDF tokens."""
+def model_with_labels(
+    model_settings: settings.ModelSettings,
+    embeddings: dataprep2.CombinedEmbeddings
+):
     numeric_inputs = Input(name='numeric_inputs', shape=(None, 2))
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
@@ -61,7 +64,7 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
         logging.error("Error in document %s", doc.doc_id)
         raise
 
-    return numeric_inputs[:,8:10], labels_one_hot
+    return numeric_inputs[:,15:17], labels_one_hot
 
 def page_length_for_doc_page_pair(doc_page_pair) -> int:
     return len(doc_page_pair[1].tokens)
@@ -306,7 +309,7 @@ def evaluate_model(
                     predicted_authors.append(np.take(page.tokens, index_sequence))
 
             def normalize(s: str) -> str:
-                return unicodedata.normalize("NFKC", s)
+                return unicodedata.normalize("NFKC", s).lower()
 
             def normalize_author(a: str) -> str:
                 a = a.split(",", 2)
@@ -401,7 +404,12 @@ def train(
     graph_filename: str=None
 ):
     """Returns a trained model using the data in dir as training data"""
-    model = model_with_labels(model_settings)
+    embeddings = dataprep2.CombinedEmbeddings(
+        dataprep2.TokenStatistics(os.path.join(pmc_dir, "all.tokenstats2.gz")),
+        dataprep2.GloveVectors(model_settings.glove_vectors),
+        model_settings.minimum_token_frequency
+    )
+    model = model_with_labels(model_settings, embeddings)
     model.summary()
 
     if graph_filename is not None:
@@ -422,6 +430,7 @@ def train(
         for time_elapsed, batch_count, ev_result in scored_results:
             print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
 
+    start_time = None
     if training_batches > 0:
         trained_batches = 0
         while trained_batches < training_batches:
@@ -490,6 +499,8 @@ def train(
 
     logging.info("Triggering final evaluation")
     now = time.time()
+    if start_time is None:
+        start_time = now
     final_ev = evaluate_model(
         model, model_settings, pmc_dir, test_batches, log_filename
     )  # TODO: batches != docs
@@ -518,12 +529,6 @@ def main():
         help="directory with the PMC data"
     )
     parser.add_argument(
-        "--token-vector-size",
-        type=int,
-        default=model_settings.token_vector_size,
-        help="the size of the vectors representing tokens"
-    )
-    parser.add_argument(
         "--tokens-per-batch", type=int, default=model_settings.tokens_per_batch, help="the number of tokens in a batch"
     )
     parser.add_argument(
@@ -541,6 +546,12 @@ def main():
         help="file to write the model to after training"
     )
     parser.add_argument(
+        "--glove-vectors",
+        type=str,
+        default=model_settings.glove_vectors,
+        help="file containing the GloVe vectors"
+    )
+    parser.add_argument(
         "--training-batches", default=144000, type=int, help="number of batches to train on"
     )
     parser.add_argument(
@@ -548,8 +559,8 @@ def main():
     )
     args = parser.parse_args()
 
-    model_settings = model_settings._replace(token_vector_size=args.token_vector_size)
     model_settings = model_settings._replace(tokens_per_batch=args.tokens_per_batch)
+    model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     print(model_settings)
 
     model = train(
