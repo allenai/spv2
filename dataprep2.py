@@ -1145,8 +1145,15 @@ def evaluate_vision():
         default="/net/nfs.corp/s2-research/science-parse/pmc/",
         help="directory with the PMC data"
     )
+    parser.add_argument(
+        "--glove-vectors",
+        type=str,
+        default=model_settings.glove_vectors,
+        help="file containing the GloVe vectors"
+    )
     args = parser.parse_args()
 
+    model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     print(model_settings)
 
     y_score = []
@@ -1162,9 +1169,9 @@ def evaluate_vision():
                 shape=(len(page.tokens), len(POTENTIAL_LABELS)),
                 dtype=float
             )
-            vision_scores[:,TITLE_LABEL] = page.scaled_numeric_features[:,8]
-            vision_scores[:,AUTHOR_LABEL] = page.scaled_numeric_features[:,9]
-            vision_scores[:,NONE_LABEL] = -page.scaled_numeric_features[:,8:10].max(axis=1)
+            vision_scores[:,TITLE_LABEL] = page.scaled_numeric_features[:,15]
+            vision_scores[:,AUTHOR_LABEL] = page.scaled_numeric_features[:,16]
+            vision_scores[:,NONE_LABEL] = -page.scaled_numeric_features[:,15:17].max(axis=1)
             y_score.append(vision_scores)
 
             labels_as_ints = page.labels
@@ -1202,9 +1209,16 @@ def print_docs():
         default="/net/nfs.corp/s2-research/science-parse/pmc/",
         help="directory with the PMC data"
     )
+    parser.add_argument(
+        "--glove-vectors",
+        type=str,
+        default=model_settings.glove_vectors,
+        help="file containing the GloVe vectors"
+    )
     parser.add_argument("doc_sha", type=str, nargs='+', help="shas to print features for")
     args = parser.parse_args()
 
+    model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     print(model_settings)
 
     header = [
@@ -1214,16 +1228,23 @@ def print_docs():
         "right",
         "top",
         "bottom",
-        "font_size",
-        "font_space_width",
+        "fs",
+        "sw",
         "left_rel_page",
         "right_rel_page",
         "top_rel_page",
         "bottom_rel_page",
-        "font_size_%corpus",
-        "space_width_%corpus",
-        "font_size_%doc",
-        "space_width_%doc",
+        "fs_corp",
+        "sw_corp",
+        "fs_doc",
+        "sw_doc",
+        "1up",
+        "2up",
+        "f_up",
+        "1low",
+        "2low",
+        "f_low",
+        "f_num",
         "vision_title",
         "vision_author"
     ]
