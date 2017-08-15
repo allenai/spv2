@@ -30,19 +30,69 @@ def model_with_labels(
     model_settings: settings.ModelSettings,
     embeddings: dataprep2.CombinedEmbeddings
 ):
-    numeric_inputs = Input(name='numeric_inputs', shape=(None, 2))
+    PAGENO_VECTOR_SIZE = model_settings.max_page_number * 2
+    pageno_input = Input(name='pageno_input', shape=(None,))
+    logging.info("pageno_input:\t%s", pageno_input.shape)
+    pageno_embedding = \
+        Embedding(
+            name='pageno_embedding',
+            mask_zero=True,
+            input_dim=model_settings.max_page_number+1,    # one for the mask
+            output_dim=PAGENO_VECTOR_SIZE)(pageno_input)
+    logging.info("pageno_embedding:\t%s", pageno_embedding.shape)
+
+    token_input = Input(name='token_input', shape=(None,))
+    logging.info("token_input:\t%s", token_input.shape)
+    token_embedding = \
+        Embedding(
+            name='token_embedding',
+            mask_zero=True,
+            input_dim=embeddings.vocab_size()+1,    # one for the mask
+            output_dim=embeddings.dimensions(),
+            weights=[embeddings.matrix_for_keras()])(token_input)
+    logging.info("token_embedding:\t%s", token_embedding.shape)
+
+    FONT_VECTOR_SIZE = 10
+    font_input = Input(name='font_input', shape=(None,))
+    logging.info("font_input:\t%s", font_input.shape)
+    font_embedding = \
+        Embedding(
+            name='font_embedding',
+            mask_zero=True,
+            input_dim=model_settings.font_hash_size+1,    # one for the mask
+            output_dim=FONT_VECTOR_SIZE)(font_input)
+    logging.info("font_embedding:\t%s", font_embedding.shape)
+
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 17))
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
     logging.info("numeric_masked:\t%s", numeric_masked.shape)
 
-    one_hot_output = TimeDistributed(Dense(len(dataprep2.POTENTIAL_LABELS)))(numeric_masked)
+    pdftokens_combined = Concatenate(
+        name='pdftoken_combined', axis=2
+    )([pageno_embedding, token_embedding, font_embedding, numeric_masked])
+    logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
+
+    churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
+    logging.info("churned_tokens:\t%s", churned_tokens.shape)
+
+    lstm1 = Bidirectional(LSTM(units=512, return_sequences=True))(churned_tokens)
+    logging.info("lstm1:\t%s", lstm1.shape)
+
+    lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
+    logging.info("lstm2:\t%s", lstm2.shape)
+
+    one_hot_output = TimeDistributed(
+        Dense(len(dataprep2.POTENTIAL_LABELS)),
+        name="one_hot_output"
+    )(lstm2)
     logging.info("one_hot_output:\t%s", one_hot_output.shape)
 
-    softmax = TimeDistributed(Activation('softmax'))(one_hot_output)
+    softmax = TimeDistributed(Activation('softmax'), name="softmax")(one_hot_output)
     logging.info("softmax:\t%s", softmax.shape)
 
-    model = Model(inputs=[numeric_inputs], outputs=softmax)
+    model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=softmax)
     model.compile(Adam(), "categorical_crossentropy", metrics=["accuracy"])
     return model
 
@@ -52,6 +102,12 @@ def model_with_labels(
 #
 
 def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
+    page_inputs = np.full(
+        (len(page.tokens),),
+        page.page_number + 1,    # one for keras' mask
+        dtype=np.int32)
+    token_inputs = page.token_hashes
+    font_inputs = page.font_hashes
     numeric_inputs = page.scaled_numeric_features
 
     labels_as_ints = page.labels
@@ -64,7 +120,7 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
         logging.error("Error in document %s", doc.doc_id)
         raise
 
-    return numeric_inputs[:,15:17], labels_one_hot
+    return (page_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
 
 def page_length_for_doc_page_pair(doc_page_pair) -> int:
     return len(doc_page_pair[1].tokens)
@@ -82,7 +138,7 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     #    max_length,
     #    waste * 100)
 
-    batch_inputs = []
+    batch_inputs = [[], [], [], []]
     batch_outputs = []
 
     for doc, page in page_group:
@@ -93,15 +149,21 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
         def pad1D(a):
             return np.pad(a, (0, required_padding), mode='constant')
 
-        featurized_input = \
-            np.pad(featurized_input, ((0, required_padding), (0, 0)), mode='constant')
-        featurized_output = \
-            np.pad(featurized_output, ((0, required_padding), (0, 0)), mode='constant')
+        featurized_input = (
+            pad1D(featurized_input[0]),
+            pad1D(featurized_input[1]),
+            pad1D(featurized_input[2]),
+            np.pad(featurized_input[3], ((0, required_padding), (0, 0)), mode='constant')
+        )
+        featurized_output = np.pad(
+            featurized_output, ((0, required_padding), (0, 0)), mode='constant'
+        )
 
-        batch_inputs.append(featurized_input)
-        batch_outputs.append(featurized_output)
+        for index, input in enumerate(featurized_input):
+            batch_inputs[index].append(input)
+        batch_outputs = np.stack(featurized_output)
 
-    batch_inputs = np.stack(batch_inputs)
+    batch_inputs = list(map(np.stack, batch_inputs))
     batch_outputs = np.stack(batch_outputs)
 
     return batch_inputs, batch_outputs
