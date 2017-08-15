@@ -161,7 +161,7 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
 
         for index, input in enumerate(featurized_input):
             batch_inputs[index].append(input)
-        batch_outputs = np.stack(featurized_output)
+        batch_outputs.append(featurized_output)
 
     batch_inputs = list(map(np.stack, batch_inputs))
     batch_outputs = np.stack(batch_outputs)
