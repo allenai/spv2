@@ -17,6 +17,7 @@ typedef struct {
     int cost;
 } MatchResult;
 MatchResult match(const wchar_t* a, const wchar_t* b);
+float* capitalization_features(const wchar_t* const token);
 ''')
 
 if __name__ == '__main__':

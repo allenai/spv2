@@ -63,7 +63,7 @@ def model_with_labels(
             output_dim=FONT_VECTOR_SIZE)(font_input)
     logging.info("font_embedding:\t%s", font_embedding.shape)
 
-    numeric_inputs = Input(name='numeric_inputs', shape=(None, 15))
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 17))
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
@@ -527,7 +527,7 @@ def train(
                             ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
                         )
                         logging.info(
-                            "Trained on %d batches in %.0f s (%.2f bps). Last batch: %.2f s. %s",
+                            "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
                             trained_batches,
                             now - start_time,
                             (now - start_time) / trained_batches,
