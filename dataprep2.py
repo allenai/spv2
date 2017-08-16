@@ -329,7 +329,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄️
 #
 
-UNLABELED_TOKENS_VERSION = 2 # compression
+UNLABELED_TOKENS_VERSION = "2comp"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -351,7 +351,7 @@ def unlabeled_tokens_file(bucket_path: str):
     unlabeled_tokens_path = \
         os.path.join(
             bucket_path,
-            "unlabeled-tokens-v%d.h5" % UNLABELED_TOKENS_VERSION)
+            "unlabeled-tokens-%s.h5" % UNLABELED_TOKENS_VERSION)
     if os.path.exists(unlabeled_tokens_path):
         return h5py.File(unlabeled_tokens_path, "r")
 
@@ -457,7 +457,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷️
 #
 
-LABELED_TOKENS_VERSION = 10 # compression
+LABELED_TOKENS_VERSION = "10comp"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -475,8 +475,8 @@ def labeled_tokens_file(bucket_path: str):
     labeled_tokens_path = \
         os.path.join(
             bucket_path,
-            "labeled-tokens-v%d.h5" % LABELED_TOKENS_VERSION)
-    if os.path.exists(labeled_tokens_path): # TODO: re-create the file if the unlabeled file is more recent
+            "labeled-tokens-%s.h5" % LABELED_TOKENS_VERSION)
+    if os.path.exists(labeled_tokens_path):
         return h5py.File(labeled_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", labeled_tokens_path)
@@ -782,7 +782,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = 8 # cffi
+FEATURIZED_TOKENS_VERSION = "8cffi"
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -800,12 +800,15 @@ def featurized_tokens_file(
         mmh3.hash(os.path.basename(model_settings.glove_vectors))
     )
 
+    # reverse the tuple, to help the hash function
+    featurizing_hash_components = featurizing_hash_components[::-1]
+
     featurized_tokens_path = \
         os.path.join(
             bucket_path,
-            "featurized-tokens-%02x-v%d.h5" %
+            "featurized-tokens-%02x-%s.h5" %
                 (abs(hash(featurizing_hash_components)), FEATURIZED_TOKENS_VERSION))
-    if os.path.exists(featurized_tokens_path): # TODO: re-create the file if the labeled file is more recent
+    if os.path.exists(featurized_tokens_path):
         return h5py.File(featurized_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", featurized_tokens_path)
