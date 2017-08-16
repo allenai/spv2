@@ -5,5 +5,4 @@ pytest
 h5py
 sklearn
 cffi
-intervaltree
 pydot_ng

@@ -13,7 +13,6 @@ import h5py
 import collections
 import gzip
 import typing
-import intervaltree
 
 import settings
 
@@ -250,7 +249,7 @@ class GloveVectors(object):
                 loc=0.0,
                 scale=self.vectors_stddev,
                 size=self.get_dimensions()+1
-        )
+            )
             vector[0] = -0.5
             return vector
 
@@ -1045,15 +1044,12 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
-def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False, buckets=None):
-    if buckets is None:
-        if test:
-            buckets = range(0xf0, 0x100)
-        else:
-            buckets = range(0x00, 0xf0)
-        buckets = ["%02x" % x for x in buckets]
-    buckets = list(buckets)
-    buckets.sort()
+def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
+    if test:
+        buckets = range(0xf0, 0x100)
+    else:
+        buckets = range(0x00, 0xf0)
+    buckets = ["%02x" % x for x in buckets]
 
     token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats2.gz"))
     glove = GloveVectors(model_settings.glove_vectors)
@@ -1131,143 +1127,6 @@ def main():
     for bucket_number in args.bucket_number:
         logging.info("Processing bucket %s", bucket_number)
         prepare_bucket(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
-
-def evaluate_vision():
-    logging.getLogger().setLevel(logging.DEBUG)
-
-    model_settings = settings.default_model_settings
-
-    import argparse
-    parser = argparse.ArgumentParser(description="Warms the cache for buckets in the pmc directory")
-    parser.add_argument(
-        "--pmc-dir",
-        type=str,
-        default="/net/nfs.corp/s2-research/science-parse/pmc/",
-        help="directory with the PMC data"
-    )
-    parser.add_argument(
-        "--glove-vectors",
-        type=str,
-        default=model_settings.glove_vectors,
-        help="file containing the GloVe vectors"
-    )
-    args = parser.parse_args()
-
-    model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
-    print(model_settings)
-
-    y_score = []
-    y_true = []
-
-    import sklearn.metrics
-    for doc in documents(args.pmc_dir, model_settings, test=True):
-        for page in doc.pages:
-            if len(page.tokens) <= 0:
-                continue
-
-            vision_scores = np.zeros(
-                shape=(len(page.tokens), len(POTENTIAL_LABELS)),
-                dtype=float
-            )
-            vision_scores[:,TITLE_LABEL] = page.scaled_numeric_features[:,15]
-            vision_scores[:,AUTHOR_LABEL] = page.scaled_numeric_features[:,16]
-            vision_scores[:,NONE_LABEL] = -page.scaled_numeric_features[:,15:17].max(axis=1)
-            y_score.append(vision_scores)
-
-            labels_as_ints = page.labels
-            labels_bool = np.zeros(
-                shape=(len(labels_as_ints), len(POTENTIAL_LABELS)),
-                dtype=np.bool)
-            labels_bool[np.arange(len(labels_as_ints)),labels_as_ints] = True
-            y_true.append(labels_bool)
-
-            scores = sklearn.metrics.average_precision_score(labels_bool, vision_scores, average=None)
-            print(
-                "%s\t%d\t%s" % (
-                    doc.doc_id,
-                    page.page_number,
-                    "\t".join(["%.3f" % score for score in scores])))
-
-    y_score = np.concatenate(y_score)
-    y_true = np.concatenate(y_true)
-
-    scores = sklearn.metrics.average_precision_score(y_true, y_score, average=None)
-    print("Areas under the P/R curve:")
-    print("\t".join(map(str, POTENTIAL_LABELS)))
-    print("\t".join(["%.3f" % score for score in scores]))
-
-def print_docs():
-    logging.getLogger().setLevel(logging.DEBUG)
-
-    model_settings = settings.default_model_settings
-
-    import argparse
-    parser = argparse.ArgumentParser(description="Warms the cache for buckets in the pmc directory")
-    parser.add_argument(
-        "--pmc-dir",
-        type=str,
-        default="/net/nfs.corp/s2-research/science-parse/pmc/",
-        help="directory with the PMC data"
-    )
-    parser.add_argument(
-        "--glove-vectors",
-        type=str,
-        default=model_settings.glove_vectors,
-        help="file containing the GloVe vectors"
-    )
-    parser.add_argument("doc_sha", type=str, nargs='+', help="shas to print features for")
-    args = parser.parse_args()
-
-    model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
-    print(model_settings)
-
-    header = [
-        "token",
-        "label",
-        "left",
-        "right",
-        "top",
-        "bottom",
-        "fs",
-        "sw",
-        "left_rel_page",
-        "right_rel_page",
-        "top_rel_page",
-        "bottom_rel_page",
-        "fs_corp",
-        "sw_corp",
-        "fs_doc",
-        "sw_doc",
-        "1up",
-        "2up",
-        "f_up",
-        "1low",
-        "2low",
-        "f_low",
-        "f_num",
-        "vision_title",
-        "vision_author"
-    ]
-    print("\t".join(header))
-    print()
-
-    shas = set(args.doc_sha)
-    buckets = set([sha[:2] for sha in shas])
-    for doc in documents(args.pmc_dir, model_settings, buckets=buckets):
-        if doc.doc_sha not in shas:
-            continue
-        print(doc.doc_id)
-        for page in doc.pages:
-            print("Page %d" % page.page_number)
-            for i in range(len(page.tokens)):
-                line = [page.tokens[i], str(page.labels[i])]
-                for feature in page.numeric_features[i]:
-                    line.append("%.3f" % feature)
-                for feature in page.scaled_numeric_features[i]:
-                    line.append("%.3f" % feature)
-                assert len(line) == len(header)
-                print("\t".join(line))
-        print()
 
 if __name__ == "__main__":
     main()
