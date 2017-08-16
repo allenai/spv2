@@ -142,6 +142,47 @@ class TokenStatistics(object):
                 break
             yield token
 
+class VisionOutput(object):
+    BoundingBox = collections.namedtuple("BoundingBox", [
+        "label",
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "confidence"
+    ])
+
+    def __init__(self, file_path):
+        self.boxes = {}
+        with open(file_path) as file:
+            for line in file:
+                line = json.loads(line)
+                sha = line["docSha"]
+                bounding_boxes_for_sha = []
+                for json_page in line["pages"]:
+                    bounding_boxes_for_page = []
+                    for label, left, top, right, bottom, confidence in json_page:
+                        bounding_boxes_for_page.append(
+                            self.BoundingBox(label, left, right, top, bottom, confidence))
+                    bounding_boxes_for_sha.append(bounding_boxes_for_page)
+                if sha in self.boxes:
+                    logging.warning("Duplicate sha %s in %s", sha, file_path)
+                self.boxes[sha] = bounding_boxes_for_sha
+
+    def boxes_for_sha_and_page(self, sha: str, page: int) -> typing.List[BoundingBox]:
+        try:
+            return self.boxes[sha][page]
+        except KeyError:
+            # We don't have boxes for that document.
+            logging.warning("Missing vision output for %s", sha)
+            return list()
+        except IndexError:
+            # We have boxes for that document, but not for that page.
+            return list()
+
+    def pages_for_sha(self, sha: str):
+        return len(self.boxes[sha])
+
 class GloveVectors(object):
     def __init__(self, filename: str):
         # Open the file and get the dimensions in it. Vectors themselves are loaded lazily.
@@ -731,7 +772,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = 4 # pre-trained vectors
+FEATURIZED_TOKENS_VERSION = 6 # vision and glove merged
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -758,6 +799,9 @@ def featurized_tokens_file(
         return h5py.File(featurized_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", featurized_tokens_path)
+
+    vision_output = VisionOutput(os.path.join(bucket_path, "vision_output.json"))
+
     with labeled_tokens_file(bucket_path) as labeled_tokens:
         temp_featurized_tokens_path = featurized_tokens_path + ".%d.temp" % os.getpid()
         featurized_file = h5py.File(temp_featurized_tokens_path, "w-", libver="latest")
@@ -794,7 +838,7 @@ def featurized_tokens_file(
             # numeric features
             scaled_numeric_features = featurized_file.create_dataset(
                 "token_scaled_numeric_features",
-                shape=(len(lab_token_text_features), 15),
+                shape=(len(lab_token_text_features), 17),
                 dtype=np.float32,
                 fillvalue=0.0)
 
@@ -844,7 +888,7 @@ def featurized_tokens_file(
                     assert values.dtype == np.dtype('f4')
                     return a.searchsorted(values) / len(a)
 
-                for json_page in json_metadata["pages"]:
+                for page_number, json_page in enumerate(json_metadata["pages"]):
                     width, height = json_page["dimensions"]
                     first_token_index = int(json_page["first_token_index"])
                     token_count = int(json_page["token_count"])
@@ -880,8 +924,65 @@ def featurized_tokens_file(
                     scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
                         get_quantiles(space_widths_in_doc, numeric_features[:,5])
 
-                    # The -0.5 offset it applied at the end.
+                    # overlap the tokens' bounding boxes with bounding boxes from vision
+                    bounding_boxes_from_vision = \
+                        vision_output.boxes_for_sha_and_page(json_metadata["doc_sha"], page_number)
+                    title_bounding_boxes = [
+                        (bb.left, bb.top, bb.right, bb.bottom)
+                        for bb in bounding_boxes_from_vision
+                        if bb.label == "title"
+                    ]
+                    author_bounding_boxes = [
+                        (bb.left, bb.top, bb.right, bb.bottom)
+                        for bb in bounding_boxes_from_vision
+                        if bb.label == "author"
+                    ]
 
+                    def compute_intersect(a, b):
+                        # format of bb: [ x1, y1, x2, y2 ]
+                        top = max(a[1], b[1])
+                        bottom = min(a[3], b[3])
+                        left = max(a[0], b[0])
+                        right = min(a[2], b[2])
+                        tb = bottom - top  # top to bottom
+                        lr = right - left  # left to right
+                        if tb < 0 or lr < 0:
+                            intersection = 0
+                        else:
+                            intersection = tb * lr
+                        return intersection
+
+                    def compute_iofirst(a, b):
+                        a_w = a[2] - a[0]
+                        a_h = a[3] - a[1]
+                        a_area = a_w * a_h
+                        if a_area == 0:
+                            return 0
+                        intersection = compute_intersect(a, b)
+                        return intersection / a_area
+
+                    for token_index, coordinates in enumerate(numeric_features[:,0:4]):
+                        left, right, top, bottom = coordinates
+                        coordinates = (left, top, right, bottom)
+
+                        best_title_iofirst = 0
+                        if len(title_bounding_boxes) > 0:
+                            best_title_iofirst = max(
+                                (compute_iofirst(coordinates, bb) for bb in title_bounding_boxes))
+
+                        best_author_iofirst = 0
+                        if len(author_bounding_boxes) > 0:
+                            best_author_iofirst = max(
+                                (compute_iofirst(coordinates, bb) for bb in author_bounding_boxes))
+
+                        if best_title_iofirst > 0.1 and best_title_iofirst >= best_author_iofirst:
+                            scaled_numeric_features[first_token_index+token_index, 15] = 1.0
+
+                        if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
+                            scaled_numeric_features[first_token_index+token_index, 16] = 1.0
+
+                    # The -0.5 offset it applied at the end.
+            
             # shift everything so we end up with a range of -0.5 - +0.5
             scaled_numeric_features[:,:] -= 0.5
         except:
@@ -912,6 +1013,7 @@ PageBase = collections.namedtuple(
         "tokens",
         "token_hashes",
         "font_hashes",
+        "numeric_features",
         "scaled_numeric_features",
         "labels"
     ]
@@ -978,6 +1080,8 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
                         featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
                     font_hashes = \
                         featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                    numeric_features = \
+                        featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
                     scaled_numeric_features = \
                         featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
                     labels = \
