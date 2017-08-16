@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <algorithm>
+#include <cstring>
 
 /* start_pos is inclusive, end_pos is exclusive. */
 struct MatchResult {
