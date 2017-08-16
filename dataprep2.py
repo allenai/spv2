@@ -103,10 +103,21 @@ class TokenStatistics(object):
             result["count"] = np.cumsum(result["count"])
             total = result["count"][-1]
             result["count"] /= total
+            result = np.insert(result, 0, (-np.inf, 0.0))
             return result
 
         self.cum_font_sizes = make_cumulative(font_sizes, 'f4')
         self.cum_space_widths = make_cumulative(space_widths, 'f4')
+
+    @staticmethod
+    def _lookup_percentiles(cum_array, values: np.ndarray):
+        assert values.dtype == np.dtype('f4')
+        indices = cum_array['item'].searchsorted(values).clip(1, len(cum_array) - 1)
+        indices_before = indices - 1
+        return (
+           cum_array['count'][indices] +
+           cum_array['count'][indices_before]
+       ) / 2.0
 
     def get_font_size_percentile(self, font_size):
         self._ensure_loaded()
@@ -118,8 +129,7 @@ class TokenStatistics(object):
     def get_font_size_percentiles(self, font_sizes: np.array):
         assert font_sizes.dtype == np.dtype('f4')
         self._ensure_loaded()
-        indices = self.cum_font_sizes['item'].searchsorted(font_sizes)
-        return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes)-1)]
+        return self._lookup_percentiles(self.cum_font_sizes, font_sizes)
 
     def get_space_width_percentile(self, space_width):
         self._ensure_loaded()
@@ -131,8 +141,7 @@ class TokenStatistics(object):
     def get_space_width_percentiles(self, space_widths: np.array):
         assert space_widths.dtype == np.dtype('f4')
         self._ensure_loaded()
-        indices = self.cum_space_widths['item'].searchsorted(space_widths)
-        return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
+        return self._lookup_percentiles(self.cum_space_widths, space_widths)
 
     def get_tokens_with_minimum_frequency(self, min_freq: int) -> typing.Generator[str, None, None]:
         self._ensure_loaded()
@@ -782,7 +791,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = "8cffi"
+FEATURIZED_TOKENS_VERSION = "9fssw" # font size & space width
 
 def featurized_tokens_file(
     bucket_path: str,
