@@ -71,6 +71,40 @@ def normalize(s: str) -> str:
 # Classes 🏫
 #
 
+def percentile_function_from_values_and_counts(values: np.ndarray, counts: np.ndarray):
+    assert (np.diff(values) >= 0.0).all()   # make sure the values are sorted
+    cum_array = counts.cumsum()
+    if cum_array.dtype != np.float32:
+        cum_array = cum_array.astype(np.float32)
+    total = cum_array[-1]
+    cum_array /= total
+    cum_array = np.insert(cum_array, 0, 0.0)
+    cum_values = np.insert(values, 0, -np.inf)
+
+    def result(vs: np.ndarray) -> np.ndarray:
+        # Let's say we have one document with 2 tokens of size 5.0, and 200 tokens of size 8.0. Then
+        # we would want all tokens with size 8.0 to end up with a feature value around 0.5, because
+        # that's the "normal" font size. If we just take the percentile though, the value in this
+        # example will be 1.0. So instead, we take the percentile of 8.0 including (should be 1.00)
+        # and excluding (should be 0.10), and we average the two values.
+        assert cum_values.dtype == vs.dtype # If this is not true, numpy will cast one of them automatically, resulting in terrible performance.
+        indices = cum_values.searchsorted(vs).clip(1, len(cum_values) - 1)
+        indices_before = indices - 1
+        return (cum_array[indices] + cum_array[indices_before]) / 2.0
+
+    return result
+
+def percentile_function_from_counts(counts: dict):
+    cum_array = np.fromiter(
+        counts.items(), dtype=[("item", np.float32), ("count", np.float32)]
+    )
+    cum_array.sort()
+    return percentile_function_from_values_and_counts(cum_array["item"], cum_array["count"])
+
+def percentile_function_from_values(values: np.ndarray):
+    values, counts = np.unique(values, return_counts=True)
+    return percentile_function_from_values_and_counts(values, counts)
+
 class TokenStatistics(object):
     def __init__(self, filename):
         self.filename = filename
@@ -97,58 +131,32 @@ class TokenStatistics(object):
         self.tokens.sort(key=lambda x: -x[1])
 
         # prepare font sizes and token widths
-        def make_cumulative(counting_dictionary, dtype):
-            result = np.fromiter(
-                counting_dictionary.items(), dtype=[("item", dtype), ("count", 'f4')]
-            )
-            result.sort()
-            result["count"] = np.cumsum(result["count"])
-            total = result["count"][-1]
-            result["count"] /= total
-            result = np.insert(result, 0, (-np.inf, 0.0))
-            return result
-
-        self.cum_font_sizes = make_cumulative(font_sizes, 'f4')
-        self.cum_space_widths = make_cumulative(space_widths, 'f4')
-
-    @staticmethod
-    def _lookup_percentiles(cum_array, values: np.ndarray):
-        assert values.dtype == np.dtype('f4')
-        # Let's say we have one document with 2 tokens of size 5.0, and 200 tokens of size 8.0. Then
-        # we would want all tokens with size 8.0 to end up with a feature value around 0.5, because
-        # that's the "normal" font size. If we just take the percentile though, the value in this
-        # example will be 1.0. So instead, we take the percentile of 8.0 including (should be 1.00)
-        # and excluding (should be 0.10), and we average the two values.
-        indices = cum_array['item'].searchsorted(values).clip(1, len(cum_array) - 1)
-        indices_before = indices - 1
-        return (
-           cum_array['count'][indices] +
-           cum_array['count'][indices_before]
-       ) / 2.0
+        self.percentile_function_for_font_size = percentile_function_from_counts(font_sizes)
+        self.percentile_function_for_space_width = percentile_function_from_counts(space_widths)
 
     def get_font_size_percentile(self, font_size):
         self._ensure_loaded()
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
-        font_size = np.asarray(font_size, 'f4')
+        font_size = np.asarray(font_size, np.float32)
         return self.get_font_size_percentiles(font_size)
 
     def get_font_size_percentiles(self, font_sizes: np.array):
-        assert font_sizes.dtype == np.dtype('f4')
+        assert font_sizes.dtype == np.dtype(np.float32)
         self._ensure_loaded()
-        return self._lookup_percentiles(self.cum_font_sizes, font_sizes)
+        return self.percentile_function_for_font_size(font_sizes)
 
     def get_space_width_percentile(self, space_width):
         self._ensure_loaded()
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
-        space_width = np.asarray(space_width, 'f4')
+        space_width = np.asarray(space_width, np.float32)
         return self.get_space_width_percentiles(space_width)
 
     def get_space_width_percentiles(self, space_widths: np.array):
-        assert space_widths.dtype == np.dtype('f4')
+        assert space_widths.dtype == np.dtype(np.float32)
         self._ensure_loaded()
-        return self._lookup_percentiles(self.cum_space_widths, space_widths)
+        return self.percentile_function_for_space_width(space_widths)
 
     def get_tokens_with_minimum_frequency(self, min_freq: int) -> typing.Generator[str, None, None]:
         self._ensure_loaded()
@@ -822,7 +830,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = "10labl"
+FEATURIZED_TOKENS_VERSION = "11fssw"
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -926,14 +934,12 @@ def featurized_tokens_file(
                 font_sizes_in_doc = \
                     lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 4]
                 font_sizes_in_doc.sort()
+                font_size_percentiles_in_doc = percentile_function_from_values(font_sizes_in_doc)
 
                 space_widths_in_doc = \
                     lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 5]
                 space_widths_in_doc.sort()
-
-                def get_quantiles(a: np.array, values: np.array) -> np.array:
-                    assert values.dtype == np.dtype('f4')
-                    return a.searchsorted(values) / len(a)
+                space_width_percentiles_in_doc = percentile_function_from_values(space_widths_in_doc)
 
                 for page_number, json_page in enumerate(json_metadata["pages"]):
                     width, height = json_page["dimensions"]
@@ -967,9 +973,9 @@ def featurized_tokens_file(
 
                     # font sizes and space widths relative to doc
                     scaled_numeric_features[first_token_index:one_past_last_token_index,6] = \
-                        get_quantiles(font_sizes_in_doc, numeric_features[:,4])
+                        font_size_percentiles_in_doc(numeric_features[:,4])
                     scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
-                        get_quantiles(space_widths_in_doc, numeric_features[:,5])
+                        space_width_percentiles_in_doc(numeric_features[:,5])
 
                     # overlap the tokens' bounding boxes with bounding boxes from vision
                     bounding_boxes_from_vision = \
@@ -1089,46 +1095,46 @@ def documents_for_bucket(
     embeddings: CombinedEmbeddings,
     model_settings: settings.ModelSettings
 ):
-        featurized = featurized_tokens_file(
-            bucket_path,
-            token_stats,
-            embeddings,
-            model_settings)
-            # The file has to stay open, because the document we return refers to it, and needs it
-            # to be open. Python's GC will close the file (hopefully).
+    featurized = featurized_tokens_file(
+        bucket_path,
+        token_stats,
+        embeddings,
+        model_settings)
+        # The file has to stay open, because the document we return refers to it, and needs it
+        # to be open. Python's GC will close the file (hopefully).
 
-        for doc_metadata in featurized["doc_metadata"]:
-            doc_metadata = json.loads(doc_metadata)
-            pages = []
-            for page_number, json_page in enumerate(doc_metadata["pages"]):
-                first_token_index = int(json_page["first_token_index"])
-                token_count = int(json_page["token_count"])
-                last_token_index_plus_one = first_token_index + token_count
+    for doc_metadata in featurized["doc_metadata"]:
+        doc_metadata = json.loads(doc_metadata)
+        pages = []
+        for page_number, json_page in enumerate(doc_metadata["pages"]):
+            first_token_index = int(json_page["first_token_index"])
+            token_count = int(json_page["token_count"])
+            last_token_index_plus_one = first_token_index + token_count
 
-                pages.append(Page(
-                    page_number,
-                    float(json_page["dimensions"][0]),
-                    float(json_page["dimensions"][1]),
-                    tokens = \
-                        featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
-                    token_hashes = \
-                        featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
-                    font_hashes = \
-                        featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
-                    numeric_features = \
-                        featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
-                    scaled_numeric_features = \
-                        featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
-                    labels = \
-                        featurized["token_labels"][first_token_index:last_token_index_plus_one]
-                ))
+            pages.append(Page(
+                page_number,
+                float(json_page["dimensions"][0]),
+                float(json_page["dimensions"][1]),
+                tokens = \
+                    featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
+                token_hashes = \
+                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
+                font_hashes = \
+                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                numeric_features = \
+                    featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                scaled_numeric_features = \
+                    featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                labels = \
+                    featurized["token_labels"][first_token_index:last_token_index_plus_one]
+            ))
 
-            yield Document(
-                doc_metadata["doc_id"],
-                doc_metadata["doc_sha"],
-                trim_punctuation(doc_metadata["gold_title"]),
-                doc_metadata["gold_authors"],
-                pages)
+        yield Document(
+            doc_metadata["doc_id"],
+            doc_metadata["doc_sha"],
+            trim_punctuation(doc_metadata["gold_title"]),
+            doc_metadata["gold_authors"],
+            pages)
 
 def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
     if test:
