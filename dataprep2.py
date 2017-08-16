@@ -112,6 +112,11 @@ class TokenStatistics(object):
     @staticmethod
     def _lookup_percentiles(cum_array, values: np.ndarray):
         assert values.dtype == np.dtype('f4')
+        # Let's say we have one document with 2 tokens of size 5.0, and 200 tokens of size 8.0. Then
+        # we would want all tokens with size 8.0 to end up with a feature value around 0.5, because
+        # that's the "normal" font size. If we just take the percentile though, the value in this
+        # example will be 1.0. So instead, we take the percentile of 8.0 including (should be 1.00)
+        # and excluding (should be 0.10), and we average the two values.
         indices = cum_array['item'].searchsorted(values).clip(1, len(cum_array) - 1)
         indices_before = indices - 1
         return (
