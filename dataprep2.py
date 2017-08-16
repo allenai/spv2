@@ -772,7 +772,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = 6 # vision and glove merged
+FEATURIZED_TOKENS_VERSION = 7 # cffi
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -851,19 +851,9 @@ def featurized_tokens_file(
             # 13: Fraction of lowers
             # 14: Fraction of numerics
             for token_index, token in enumerate(lab_token_text_features[:,0]):
-                feature_index = 8
-                for fn in [str.isupper, str.islower]:
-                    for char_index in [0, 1]:
-                        if len(token) > char_index and fn(token[char_index]):
-                            scaled_numeric_features[token_index, feature_index] = 1.0
-                        feature_index += 1
-                    if len(token) > 0:
-                        scaled_numeric_features[token_index, feature_index] = \
-                            sum(1 for c in token if fn(c)) / len(token)
-                    feature_index += 1
-                scaled_numeric_features[token_index, feature_index] = \
-                    sum(1 for c in token if c.isnumeric()) / len(token)
-                feature_index += 1
+                scaled_numeric_features[token_index, 8:8+7] = \
+                    stringmatch.capitalization_features(token)
+
                 # The -0.5 offset it applied at the end.
 
             # sizes and positions (these are also numeric features)
