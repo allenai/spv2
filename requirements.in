@@ -6,3 +6,4 @@ h5py
 sklearn
 cffi
 pydot_ng
+manhole

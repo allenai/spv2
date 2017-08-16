@@ -578,6 +578,9 @@ def train(
 #
 
 def main():
+    import manhole
+    manhole.install()
+
     logging.getLogger().setLevel(logging.DEBUG)
 
     model_settings = settings.default_model_settings
