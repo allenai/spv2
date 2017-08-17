@@ -5,6 +5,8 @@ import typing
 import re
 import time
 import os
+from queue import Queue
+from threading import Thread
 
 from keras.layers import Embedding, Input, LSTM, Activation, Dense
 from keras.layers.merge import Concatenate
@@ -18,8 +20,32 @@ import sklearn.metrics
 
 import settings
 import dataprep2
-import multiprocessing_generator
 import unicodedata
+
+
+#
+# Helpers 💉
+#
+
+def threaded_generator(g):
+    q = Queue(maxsize=128)
+
+    sentinel = object()
+
+    def fill_queue():
+        try:
+            for value in g:
+                q.put(value)
+        finally:
+            q.put(sentinel)
+
+    thread = Thread(name=repr(g), target=fill_queue)
+    thread.daemon = True
+    thread.start()
+
+    for value in iter(q.get, sentinel):
+        logging.info("Queue size: %d", q.qsize())
+        yield value
 
 
 #
@@ -498,63 +524,58 @@ def train(
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
             train_docs = dataprep2.documents(pmc_dir, model_settings, test=False)
-            with multiprocessing_generator.ParallelGenerator(
-                make_batches(model_settings, train_docs, keep_unlabeled_pages=False),
-                max_lookahead=128
-            ) as training_data:
-            #if True:
-            #    training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
-                for batch in training_data:
-                    if trained_batches == 0:
-                        # It takes a while to get here the first time, since things have to be
-                        # loaded from cache, the page pool has to be filled up, and so on, so we
-                        # don't officially start until we get here for the first time.
-                        start_time = time.time()
-                        time_at_last_eval = start_time
+            training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+            for batch in threaded_generator(training_data):
+                if trained_batches == 0:
+                    # It takes a while to get here the first time, since things have to be
+                    # loaded from cache, the page pool has to be filled up, and so on, so we
+                    # don't officially start until we get here for the first time.
+                    start_time = time.time()
+                    time_at_last_eval = start_time
 
-                    batch_start_time = time.time()
-                    x, y = batch
-                    metrics = model.train_on_batch(x, y)
+                batch_start_time = time.time()
+                x, y = batch
+                metrics = model.train_on_batch(x, y)
 
-                    trained_batches += 1
-                    if trained_batches >= training_batches:
-                        logging.info("Training done!")
-                        break
+                trained_batches += 1
+                if trained_batches >= training_batches:
+                    logging.info("Training done!")
+                    break
 
-                    now = time.time()
-                    if trained_batches % 1 == 0:
-                        metric_string = ", ".join(
-                            ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
-                        )
-                        logging.info(
-                            "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
-                            trained_batches,
-                            now - start_time,
-                            (now - start_time) / trained_batches,
-                            now - batch_start_time,
-                            metric_string)
-                    time_since_last_eval = now - time_at_last_eval
-                    if time_since_last_eval > 60 * 60:
-                        logging.info(
-                            "It's been %.0f seconds since the last eval. Triggering another one.",
-                            time_since_last_eval)
+                now = time.time()
+                if trained_batches % 1 == 0:
+                    metric_string = ", ".join(
+                        ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
+                    )
+                    logging.info(
+                        "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
+                        trained_batches,
+                        now - start_time,
+                        (now - start_time) / trained_batches,
+                        now - batch_start_time,
+                        metric_string)
+                time_since_last_eval = now - time_at_last_eval
+                if time_since_last_eval > 60 * 60:
+                    logging.info(
+                        "It's been %.0f seconds since the last eval. Triggering another one.",
+                        time_since_last_eval)
 
-                        eval_start_time = time.time()
+                    eval_start_time = time.time()
 
-                        if output_filename is not None:
-                            logging.info("Writing temporary model to %s", output_filename)
-                            model.save(output_filename, overwrite=True)
-                        ev_result = evaluate_model(
-                            model, model_settings, pmc_dir, test_batches, log_filename
-                        )  # TODO: batches != docs
-                        scored_results.append((now - start_time, trained_batches, ev_result))
-                        print_scored_results(now - start_time)
+                    if output_filename is not None:
+                        logging.info("Writing temporary model to %s", output_filename)
+                        model.save(output_filename, overwrite=True)
+                    ev_result = evaluate_model(
+                        model, model_settings, pmc_dir, test_batches, log_filename
+                    )  # TODO: batches != docs
+                    scored_results.append((now - start_time, trained_batches, ev_result))
+                    print_scored_results(now - start_time)
 
-                        eval_end_time = time.time()
-                        # adjust start time to ignore the time we spent evaluating
-                        start_time += eval_end_time - eval_start_time
+                    eval_end_time = time.time()
+                    # adjust start time to ignore the time we spent evaluating
+                    start_time += eval_end_time - eval_start_time
 
-                        time_at_last_eval = eval_end_time
+                    time_at_last_eval = eval_end_time
         if output_filename is not None:
             logging.info("Writing temporary final model to %s", output_filename)
             model.save(output_filename, overwrite=True)
