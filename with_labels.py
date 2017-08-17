@@ -39,13 +39,10 @@ def threaded_generator(g):
         finally:
             q.put(sentinel)
 
-    thread = Thread(name=repr(g), target=fill_queue)
-    thread.daemon = True
+    thread = Thread(name=repr(g), target=fill_queue, daemon=True)
     thread.start()
 
-    for value in iter(q.get, sentinel):
-        logging.info("Queue size: %d", q.qsize())
-        yield value
+    yield from iter(q.get, sentinel)
 
 
 #
