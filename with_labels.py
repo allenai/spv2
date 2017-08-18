@@ -14,6 +14,7 @@ from keras.layers.wrappers import TimeDistributed, Bidirectional
 from keras.models import Model
 from keras.layers import Masking
 from keras.optimizers import Adam
+from keras_contrib.layers import CRF
 
 import sklearn
 import sklearn.metrics
@@ -106,16 +107,10 @@ def model_with_labels(
     lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
     logging.info("lstm2:\t%s", lstm2.shape)
 
-    one_hot_output = TimeDistributed(
-        Dense(len(dataprep2.POTENTIAL_LABELS)),
-        name="one_hot_output"
-    )(lstm2)
-    logging.info("one_hot_output:\t%s", one_hot_output.shape)
+    crf = CRF(units=3)(lstm2)
+    logging.info("crf:\t%s", crf.shape)
 
-    softmax = TimeDistributed(Activation('softmax'), name="softmax")(one_hot_output)
-    logging.info("softmax:\t%s", softmax.shape)
-
-    model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=softmax)
+    model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=crf)
     model.compile(Adam(), "categorical_crossentropy", metrics=["accuracy"])
     return model
 
