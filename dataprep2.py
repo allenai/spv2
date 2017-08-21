@@ -13,6 +13,8 @@ import h5py
 import collections
 import gzip
 import typing
+import sys
+import html
 
 import settings
 
@@ -69,6 +71,40 @@ def normalize(s: str) -> str:
 # Classes 🏫
 #
 
+def percentile_function_from_values_and_counts(values: np.ndarray, counts: np.ndarray):
+    assert (np.diff(values) >= 0.0).all()   # make sure the values are sorted
+    cum_array = counts.cumsum()
+    if cum_array.dtype != np.float32:
+        cum_array = cum_array.astype(np.float32)
+    total = cum_array[-1]
+    cum_array /= total
+    cum_array = np.insert(cum_array, 0, 0.0)
+    cum_values = np.insert(values, 0, -np.inf)
+
+    def result(vs: np.ndarray) -> np.ndarray:
+        # Let's say we have one document with 2 tokens of size 5.0, and 200 tokens of size 8.0. Then
+        # we would want all tokens with size 8.0 to end up with a feature value around 0.5, because
+        # that's the "normal" font size. If we just take the percentile though, the value in this
+        # example will be 1.0. So instead, we take the percentile of 8.0 including (should be 1.00)
+        # and excluding (should be 0.10), and we average the two values.
+        assert cum_values.dtype == vs.dtype # If this is not true, numpy will cast one of them automatically, resulting in terrible performance.
+        indices = cum_values.searchsorted(vs).clip(1, len(cum_values) - 1)
+        indices_before = indices - 1
+        return (cum_array[indices] + cum_array[indices_before]) / 2.0
+
+    return result
+
+def percentile_function_from_counts(counts: dict):
+    cum_array = np.fromiter(
+        counts.items(), dtype=[("item", np.float32), ("count", np.float32)]
+    )
+    cum_array.sort()
+    return percentile_function_from_values_and_counts(cum_array["item"], cum_array["count"])
+
+def percentile_function_from_values(values: np.ndarray):
+    values, counts = np.unique(values, return_counts=True)
+    return percentile_function_from_values_and_counts(values, counts)
+
 class TokenStatistics(object):
     def __init__(self, filename):
         self.filename = filename
@@ -95,44 +131,32 @@ class TokenStatistics(object):
         self.tokens.sort(key=lambda x: -x[1])
 
         # prepare font sizes and token widths
-        def make_cumulative(counting_dictionary, dtype):
-            result = np.fromiter(
-                counting_dictionary.items(), dtype=[("item", dtype), ("count", 'f4')]
-            )
-            result.sort()
-            result["count"] = np.cumsum(result["count"])
-            total = result["count"][-1]
-            result["count"] /= total
-            return result
-
-        self.cum_font_sizes = make_cumulative(font_sizes, 'f4')
-        self.cum_space_widths = make_cumulative(space_widths, 'f4')
+        self.percentile_function_for_font_size = percentile_function_from_counts(font_sizes)
+        self.percentile_function_for_space_width = percentile_function_from_counts(space_widths)
 
     def get_font_size_percentile(self, font_size):
         self._ensure_loaded()
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
-        font_size = np.asarray(font_size, 'f4')
+        font_size = np.asarray(font_size, np.float32)
         return self.get_font_size_percentiles(font_size)
 
     def get_font_size_percentiles(self, font_sizes: np.array):
-        assert font_sizes.dtype == np.dtype('f4')
+        assert font_sizes.dtype == np.dtype(np.float32)
         self._ensure_loaded()
-        indices = self.cum_font_sizes['item'].searchsorted(font_sizes)
-        return self.cum_font_sizes['count'][indices.clip(0, len(self.cum_font_sizes)-1)]
+        return self.percentile_function_for_font_size(font_sizes)
 
     def get_space_width_percentile(self, space_width):
         self._ensure_loaded()
         # We have to search for the same data type as we have in the array. Otherwise this is super
         # slow.
-        space_width = np.asarray(space_width, 'f4')
+        space_width = np.asarray(space_width, np.float32)
         return self.get_space_width_percentiles(space_width)
 
     def get_space_width_percentiles(self, space_widths: np.array):
-        assert space_widths.dtype == np.dtype('f4')
+        assert space_widths.dtype == np.dtype(np.float32)
         self._ensure_loaded()
-        indices = self.cum_space_widths['item'].searchsorted(space_widths)
-        return self.cum_space_widths['count'][indices.clip(0, len(self.cum_space_widths)-1)]
+        return self.percentile_function_for_space_width(space_widths)
 
     def get_tokens_with_minimum_frequency(self, min_freq: int) -> typing.Generator[str, None, None]:
         self._ensure_loaded()
@@ -329,7 +353,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄️
 #
 
-UNLABELED_TOKENS_VERSION = 1
+UNLABELED_TOKENS_VERSION = "2comp"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -351,7 +375,7 @@ def unlabeled_tokens_file(bucket_path: str):
     unlabeled_tokens_path = \
         os.path.join(
             bucket_path,
-            "unlabeled-tokens-v%d.h5" % UNLABELED_TOKENS_VERSION)
+            "unlabeled-tokens-%s.h5" % UNLABELED_TOKENS_VERSION)
     if os.path.exists(unlabeled_tokens_path):
         return h5py.File(unlabeled_tokens_path, "r")
 
@@ -369,12 +393,16 @@ def unlabeled_tokens_file(bucket_path: str):
             "token_text_features",
             dtype=h5_unicode_type,
             shape=(0,2),    # token, font name
-            maxshape=(None,2))
+            maxshape=(None,2),
+            compression="gzip",
+            compression_opts=9)
         h5_token_numeric_features = h5_file.create_dataset(
             "token_numeric_features",
             dtype=np.float32,
             shape=(0, 6),   # left, right, top, bottom, font_size, font_space_width
-            maxshape=(None, 6))
+            maxshape=(None, 6),
+            compression="gzip",
+            compression_opts=9)
 
         raw_tokens_path = os.path.join(bucket_path, "tokens2.json.bz2")
         for json_doc in json_from_file(raw_tokens_path):
@@ -450,10 +478,10 @@ def unlabeled_tokens_file(bucket_path: str):
 
 
 #
-# Labeling 🏷️
+# Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = 9
+LABELED_TOKENS_VERSION = "11eval"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -471,8 +499,8 @@ def labeled_tokens_file(bucket_path: str):
     labeled_tokens_path = \
         os.path.join(
             bucket_path,
-            "labeled-tokens-v%d.h5" % LABELED_TOKENS_VERSION)
-    if os.path.exists(labeled_tokens_path): # TODO: re-create the file if the unlabeled file is more recent
+            "labeled-tokens-%s.h5" % LABELED_TOKENS_VERSION)
+    if os.path.exists(labeled_tokens_path):
         return h5py.File(labeled_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", labeled_tokens_path)
@@ -494,17 +522,23 @@ def labeled_tokens_file(bucket_path: str):
                 "token_text_features",
                 dtype=h5_unicode_type,
                 shape=(0,2),    # token, font name
-                maxshape=(len(unlab_token_text_features),2))
+                maxshape=(len(unlab_token_text_features),2),
+                compression="gzip",
+                compression_opts=9)
             lab_token_numeric_features = labeled_file.create_dataset(
                 "token_numeric_features",
                 dtype=np.float32,
                 shape=(0, 6),   # left, right, top, bottom, font_size, font_space_width
-                maxshape=(len(unlab_token_numeric_features), 6))
+                maxshape=(len(unlab_token_numeric_features), 6),
+                compression="gzip",
+                compression_opts=9)
             lab_token_labels = labeled_file.create_dataset(
                 "token_labels",
                 dtype=np.int8,
                 shape=(0,),
-                maxshape=(len(unlab_token_text_features),))
+                maxshape=(len(unlab_token_text_features),),
+                compression="gzip",
+                compression_opts=9)
 
             for unlab_metadata in unlab_doc_metadata:
                 json_metadata = json.loads(unlab_metadata)
@@ -581,7 +615,18 @@ def labeled_tokens_file(bucket_path: str):
 
                 # find titles and authors in the document
                 title_match = None
-                author_matches = [None] * len(gold_authors)
+                author_matches = []
+                for author_index in range(len(gold_authors)):
+                    author_matches.append([])
+
+                FuzzyMatch = collections.namedtuple("FuzzyMatch", [
+                    "page_number",
+                    "first_token_index",
+                    "one_past_last_token_index",
+                    "cost",
+                    "matched_string"
+                ])
+
                 for page_number in range(effective_page_count):
                     json_page = json_metadata["pages"][page_number]
                     page_first_token_index = int(json_page["first_token_index"])
@@ -608,9 +653,9 @@ def labeled_tokens_file(bucket_path: str):
                     page_text = "".join(page_text)
                     assert page_text_length == len(page_text)
 
-                    def find_string_in_page(string):
+                    def find_string_in_page(string: str) -> typing.Optional[FuzzyMatch]:
                         fuzzy_match = stringmatch.match(normalize(string), page_text)
-                        if fuzzy_match.cost > len(string) // 3:
+                        if fuzzy_match.cost > ((len(string) - string.count(" ")) // 5):
                             return None
 
                         start = fuzzy_match.start_pos
@@ -631,7 +676,15 @@ def labeled_tokens_file(bucket_path: str):
 
                         assert first_token_index != one_past_last_token_index
 
-                        return page_number, first_token_index, one_past_last_token_index, fuzzy_match.cost
+                        matched_string = tokens[first_token_index:one_past_last_token_index]
+                        matched_string = " ".join(matched_string)
+
+                        return FuzzyMatch(
+                            page_number,
+                            first_token_index,
+                            one_past_last_token_index,
+                            fuzzy_match.cost,
+                            matched_string)
 
                     #
                     # find title
@@ -639,7 +692,7 @@ def labeled_tokens_file(bucket_path: str):
 
                     title_match_on_this_page = find_string_in_page(gold_title)
                     if title_match_on_this_page is not None:
-                        if title_match is None or title_match_on_this_page[3] < title_match[3]:
+                        if title_match is None or title_match_on_this_page.cost < title_match.cost:
                             title_match = title_match_on_this_page
 
                     #
@@ -663,36 +716,42 @@ def labeled_tokens_file(bucket_path: str):
                                 "%s %s" % (initials(given_names, ""), surnames),
                                 "%s , %s" % (surnames, given_names),
                                 "%s %s" % (given_names[0], surnames),
-                                "%s . %s" % (given_names[0], surnames),
-                                }
+                                "%s . %s" % (given_names[0], surnames)}
 
                         for author_variant in author_variants:
                             new_match = find_string_in_page(author_variant)
                             if new_match is None:
                                 continue
 
-                            old_match = author_matches[author_index]
-                            if old_match is None:
-                                author_matches[author_index] = new_match
-                                continue
+                            author_matches[author_index].append(new_match)
 
-                            old_match_cost = old_match[3]
-                            new_match_cost = new_match[3]
-                            if old_match_cost < new_match_cost:
-                                continue
-
-                            old_match_length = old_match[2] - old_match[1]
-                            new_match_length = new_match[2] - new_match[1]
-                            if new_match_length < old_match_length:
-                                continue
-
-                            author_matches[author_index] = new_match
+                # find the definitive author labels from the lists of potential matches we have now
+                # all author matches have to be on the same page
+                page_numbers_with_author_matches = \
+                    set((match.page_number for match in author_matches[0]))
+                for matches in author_matches[1:]:
+                    page_numbers_with_author_matches &= set((match.page_number for match in matches))
+                if len(page_numbers_with_author_matches) <= 0:
+                    logging.warning("Could not find all authors on one page in %s; skipping doc", doc_id)
+                    continue
+                page_number_with_author_matches = min(page_numbers_with_author_matches)
+                for author_index in range(len(author_matches)):
+                    author_matches[author_index] = [
+                        match
+                        for match in author_matches[author_index]
+                        if match.page_number == page_number_with_author_matches]
+                # for the remaining matches, get the best
+                def cost_author_match(match: FuzzyMatch):
+                    return 8 * match.cost - len(match.matched_string)
+                for author_index in range(len(author_matches)):
+                    author_matches[author_index] = \
+                        min(author_matches[author_index], key=cost_author_match)
 
                 if title_match is None:
                     logging.warning("Could not find title '%s' in %s; skipping doc", gold_title, doc_id)
                     continue
 
-                if any((a is None for a in author_matches)):
+                if any((matches is None for matches in author_matches)):
                     logging.warning("Could not find all authors in %s; skipping doc", doc_id)
                     continue
 
@@ -739,13 +798,12 @@ def labeled_tokens_file(bucket_path: str):
                     # create labels
                     labels = np.zeros(token_count, dtype=np.int8)
                     # for title
-                    title_page_number, title_first_token_index, title_one_past_last_token_index, _ = title_match
-                    if title_page_number == page_number:
-                        labels[title_first_token_index:title_one_past_last_token_index] = TITLE_LABEL
+                    if title_match.page_number == page_number:
+                        labels[title_match.first_token_index:title_match.one_past_last_token_index] = TITLE_LABEL
                     # for authors
-                    for author_page_number, author_first_token_index, author_one_past_last_token_index, _ in author_matches:
-                        if author_page_number == page_number:
-                            labels[author_first_token_index:author_one_past_last_token_index] = AUTHOR_LABEL
+                    for author_match in author_matches:
+                        if author_match.page_number == page_number:
+                            labels[author_match.first_token_index:author_match.one_past_last_token_index] = AUTHOR_LABEL
                             # TODO: warn if we're overwriting existing labels
 
                     lab_first_token_index = len(lab_token_labels)
@@ -772,7 +830,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = 7 # cffi
+FEATURIZED_TOKENS_VERSION = "11fssw"
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -790,12 +848,15 @@ def featurized_tokens_file(
         mmh3.hash(os.path.basename(model_settings.glove_vectors))
     )
 
+    # reverse the tuple, to help the hash function
+    featurizing_hash_components = featurizing_hash_components[::-1]
+
     featurized_tokens_path = \
         os.path.join(
             bucket_path,
-            "featurized-tokens-%02x-v%d.h5" %
+            "featurized-tokens-%02x-%s.h5" %
                 (abs(hash(featurizing_hash_components)), FEATURIZED_TOKENS_VERSION))
-    if os.path.exists(featurized_tokens_path): # TODO: re-create the file if the labeled file is more recent
+    if os.path.exists(featurized_tokens_path):
         return h5py.File(featurized_tokens_path, "r")
 
     logging.info("%s does not exist, will recreate", featurized_tokens_path)
@@ -833,14 +894,18 @@ def featurized_tokens_file(
                 "token_hashed_text_features",
                 lab_token_text_features.shape,
                 dtype=np.uint32,
-                data=text_features)
+                data=text_features,
+                compression="gzip",
+                compression_opts=9)
 
             # numeric features
             scaled_numeric_features = featurized_file.create_dataset(
                 "token_scaled_numeric_features",
                 shape=(len(lab_token_text_features), 17),
                 dtype=np.float32,
-                fillvalue=0.0)
+                fillvalue=0.0,
+                compression="gzip",
+                compression_opts=9)
 
             # capitalization features (these are numeric features)
             #  8: First letter is upper (0.5) or not (-0.5)
@@ -869,14 +934,12 @@ def featurized_tokens_file(
                 font_sizes_in_doc = \
                     lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 4]
                 font_sizes_in_doc.sort()
+                font_size_percentiles_in_doc = percentile_function_from_values(font_sizes_in_doc)
 
                 space_widths_in_doc = \
                     lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 5]
                 space_widths_in_doc.sort()
-
-                def get_quantiles(a: np.array, values: np.array) -> np.array:
-                    assert values.dtype == np.dtype('f4')
-                    return a.searchsorted(values) / len(a)
+                space_width_percentiles_in_doc = percentile_function_from_values(space_widths_in_doc)
 
                 for page_number, json_page in enumerate(json_metadata["pages"]):
                     width, height = json_page["dimensions"]
@@ -910,9 +973,9 @@ def featurized_tokens_file(
 
                     # font sizes and space widths relative to doc
                     scaled_numeric_features[first_token_index:one_past_last_token_index,6] = \
-                        get_quantiles(font_sizes_in_doc, numeric_features[:,4])
+                        font_size_percentiles_in_doc(numeric_features[:,4])
                     scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
-                        get_quantiles(space_widths_in_doc, numeric_features[:,5])
+                        space_width_percentiles_in_doc(numeric_features[:,5])
 
                     # overlap the tokens' bounding boxes with bounding boxes from vision
                     bounding_boxes_from_vision = \
@@ -972,7 +1035,7 @@ def featurized_tokens_file(
                             scaled_numeric_features[first_token_index+token_index, 16] = 1.0
 
                     # The -0.5 offset it applied at the end.
-            
+
             # shift everything so we end up with a range of -0.5 - +0.5
             scaled_numeric_features[:,:] -= 0.5
         except:
@@ -987,19 +1050,11 @@ def featurized_tokens_file(
         os.rename(temp_featurized_tokens_path, featurized_tokens_path)
         return h5py.File(featurized_tokens_path, "r")
 
-def prepare_bucket(
-    bucket_number: str,
-    pmc_dir: str,
-    token_stats: TokenStatistics,
-    embeddings: CombinedEmbeddings,
-    model_settings: settings.ModelSettings
-):
-    bucket_path = os.path.join(pmc_dir, bucket_number)
-    featurized_tokens_file(bucket_path, token_stats, embeddings, model_settings)
-
 PageBase = collections.namedtuple(
     "Page", [
         "page_number",
+        "width",
+        "height",
         "tokens",
         "token_hashes",
         "font_hashes",
@@ -1034,6 +1089,53 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
+def documents_for_bucket(
+    bucket_path: str,
+    token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
+    model_settings: settings.ModelSettings
+):
+    featurized = featurized_tokens_file(
+        bucket_path,
+        token_stats,
+        embeddings,
+        model_settings)
+        # The file has to stay open, because the document we return refers to it, and needs it
+        # to be open. Python's GC will close the file (hopefully).
+
+    for doc_metadata in featurized["doc_metadata"]:
+        doc_metadata = json.loads(doc_metadata)
+        pages = []
+        for page_number, json_page in enumerate(doc_metadata["pages"]):
+            first_token_index = int(json_page["first_token_index"])
+            token_count = int(json_page["token_count"])
+            last_token_index_plus_one = first_token_index + token_count
+
+            pages.append(Page(
+                page_number,
+                float(json_page["dimensions"][0]),
+                float(json_page["dimensions"][1]),
+                tokens = \
+                    featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
+                token_hashes = \
+                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
+                font_hashes = \
+                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                numeric_features = \
+                    featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                scaled_numeric_features = \
+                    featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                labels = \
+                    featurized["token_labels"][first_token_index:last_token_index_plus_one]
+            ))
+
+        yield Document(
+            doc_metadata["doc_id"],
+            doc_metadata["doc_sha"],
+            trim_punctuation(doc_metadata["gold_title"]),
+            doc_metadata["gold_authors"],
+            pages)
+
 def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
     if test:
         buckets = range(0xf0, 0x100)
@@ -1046,52 +1148,242 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
     for bucket in buckets:
-        featurized = featurized_tokens_file(
+        yield from documents_for_bucket(
             os.path.join(pmc_dir, bucket),
             token_stats,
             embeddings,
             model_settings)
-            # The file has to stay open, because the document we return refers to it, and needs it
-            # to be open. Python's GC will close the file (hopefully).
 
-        for doc_metadata in featurized["doc_metadata"]:
-            doc_metadata = json.loads(doc_metadata)
-            pages = []
-            for page_number, json_page in enumerate(doc_metadata["pages"]):
-                first_token_index = int(json_page["first_token_index"])
-                token_count = int(json_page["token_count"])
-                last_token_index_plus_one = first_token_index + token_count
+def prepare_bucket(
+    bucket_number: str,
+    pmc_dir: str,
+    token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
+    model_settings: settings.ModelSettings
+):
+    bucket_path = os.path.join(pmc_dir, bucket_number)
+    featurized_tokens_file(bucket_path, token_stats, embeddings, model_settings)
 
-                pages.append(Page(
-                    page_number,
-                    tokens = \
-                        featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
-                    token_hashes = \
-                        featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
-                    font_hashes = \
-                        featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
-                    numeric_features = \
-                        featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
-                    scaled_numeric_features = \
-                        featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
-                    labels = \
-                        featurized["token_labels"][first_token_index:last_token_index_plus_one]
-                ))
+def dump_documents(
+    bucket_number: str,
+    pmc_dir: str,
+    token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
+    model_settings: settings.ModelSettings
+):
+    bucket_path = os.path.join(pmc_dir, bucket_number)
+    for doc in documents_for_bucket(bucket_path, token_stats, embeddings, model_settings):
+        pdf_path = os.path.join(bucket_path, "docs", doc.doc_id)
+        assert pdf_path.endswith(".pdf")
+        html_path = pdf_path[:-3] + "html"
+        logging.info("Dumping %s", html_path)
+        with open(html_path, "w") as html_file:
+            html_file.write("<html>\n"
+                            "<head>\n")
+            html_file.write("<title>%s</title>" % html.escape(doc.doc_sha))
+            html_file.write('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">\n')
+            html_file.write('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa" crossorigin="anonymous"></script>\n')
+            html_file.write('<style> td { text-align:right; } </style>\n')
+            html_file.write("</head>\n"
+                            "<body>\n")
+            html_file.write('<h1><a href="%s">%s</a></h1>\n' % (
+                os.path.basename(pdf_path),
+                html.escape(doc.doc_id)))
 
-            yield Document(
-                doc_metadata["doc_id"],
-                doc_metadata["doc_sha"],
-                trim_punctuation(doc_metadata["gold_title"]),
-                doc_metadata["gold_authors"],
-                pages)
+            html_file.write("<p>Gold title: <b>%s</b></p>\n" % html.escape(doc.gold_title))
+            for given_names, surnames in doc.gold_authors:
+                html_file.write("<p>Gold author: <b>%s %s</b></p>\n" % (
+                    html.escape(given_names),
+                    html.escape(surnames)))
+
+            for page in doc.pages:
+                html_file.write("<h2>Page %d</h2>\n" % page.page_number)
+                html_file.write('<table class="table table-condensed">\n')
+
+                # get statistics for numeric features
+                numeric_features_min = np.min(page.numeric_features, axis=0)
+                numeric_features_max = np.max(page.numeric_features, axis=0)
+
+                numeric_features_min[0:2] = 0.0
+                numeric_features_max[0:2] = page.width
+                numeric_features_min[2:4] = 0.0
+                numeric_features_max[2:4] = page.height
+
+                # first row of header
+                columns = [
+                    ("token", page.tokens, None),
+                    ("token_hash", page.token_hashes, None),
+                    ("label", page.labels, None),
+                    ("font_hash", page.font_hashes, None),
+                    ("scaled_numeric_features", page.scaled_numeric_features, [
+                        "left",
+                        "right",
+                        "top",
+                        "bottom",
+                        "fs_corp",
+                        "sw_corp",
+                        "fs_doc",
+                        "sw_doc",
+                        "1up",
+                        "2up",
+                        "f_up",
+                        "1low",
+                        "2low",
+                        "f_low",
+                        "f_num",
+                        "v_title",
+                        "v_auth"
+                    ]),
+                    ("numeric_features", page.numeric_features, [
+                        "left",
+                        "right",
+                        "top",
+                        "bottom",
+                        "fs",
+                        "sw"
+                    ])
+                ]
+
+                html_file.write("<tr><th>index</th>")
+                for column_name, array, subcolumns in columns:
+                    array_width = 1
+                    if len(array.shape) > 1:
+                        array_width = array.shape[1]
+                    html_file.write('<th colspan="%d">%s</th>' % (array_width, column_name))
+                html_file.write("</tr>\n")
+
+                # second row of header
+                html_file.write("<tr><th></th>")
+                for column_name, array, subcolumns in columns:
+                    array_width = 1
+                    if len(array.shape) > 1:
+                        array_width = array.shape[1]
+                    if subcolumns is None:
+                        assert array_width == 1
+                        html_file.write("<th></th>")
+                    else:
+                        assert array_width == len(subcolumns)
+                        for subcolumn in subcolumns:
+                            html_file.write('<th>%s</th>' % subcolumn)
+                html_file.write("</tr>\n")
+
+                label2color_class = [None, "success", "info"]
+                # We're abusing these CSS classes from Bootstrap to color rows according to their
+                # label.
+
+                for token_index in range(len(page.tokens)):
+                    label = page.labels[token_index]
+
+                    color_class = label2color_class[label]
+                    if color_class is None:
+                        html_file.write("<tr>")
+                    else:
+                        html_file.write('<tr class="%s">' % color_class)
+
+                    html_file.write("<td>%d</td>" % token_index)
+
+                    for column_name, array, subcolumns in columns:
+                        values = array[token_index]
+                        if len(array.shape) == 1:
+                            values = [values]
+
+                        def formatter_fn(v, i: int):
+                            return str(v)
+                        color_fn = lambda v, i: None
+                        color_class_fn = lambda v, i: None
+                        if column_name == "scaled_numeric_features":
+                            formatter_fn = lambda v, i: "%.3f" % v
+                            def color_fn(v, i: int) -> str:
+                                top = (255, 255, 170)
+                                bottom = (128, 170, 255)
+                                v = v + 0.5
+
+                                color = (
+                                    int(top[0] * v + bottom[0] * (1 - v)),
+                                    int(top[1] * v + bottom[1] * (1 - v)),
+                                    int(top[2] * v + bottom[2] * (1 - v)),
+                                )
+                                # You're not supposed to scale colors like this, but it's good
+                                # enough.
+                                return "rgb(%d, %d, %d)" % color
+                        elif column_name == "token_hash":
+                            def color_class_fn(v, i: int):
+                                if v == 0:  # masking value, should never happen
+                                    return "danger"
+                                elif v == 1:  # oov token
+                                    return "warning"
+                                else:
+                                    return None
+                        elif column_name == "numeric_features":
+                            def formatter_fn(v, i: int) -> str:
+                                if i == 5: # space width
+                                    return "%.3f" % v
+                                else:
+                                    return str(v)
+                            def color_fn(v, i: int) -> str:
+                                top = (255, 170, 170)
+                                bottom = (170, 255, 192)
+
+                                if numeric_features_min[i] == numeric_features_max[i]:
+                                    color = bottom
+                                else:
+                                    v -= numeric_features_min[i]
+                                    v /= (numeric_features_max[i] - numeric_features_min[i])
+
+                                    color = (
+                                        int(top[0] * v + bottom[0] * (1 - v)),
+                                        int(top[1] * v + bottom[1] * (1 - v)),
+                                        int(top[2] * v + bottom[2] * (1 - v)),
+                                    )
+                                    # You're not supposed to scale colors like this, but it's good
+                                    # enough.
+                                return "rgb(%d, %d, %d)" % color
+
+                        for i, value in enumerate(values):
+                            color = color_fn(value, i)
+                            color_class = color_class_fn(value, i)
+
+                            # start the open the tag
+                            html_file.write('<td')
+                            if color_class is not None:
+                                html_file.write(' class="%s"' % color_class)
+                            if color is not None:
+                                html_file.write(' style="background-color: %s"' % color)
+                            # end the open tag
+                            html_file.write(">")
+
+                            html_file.write(html.escape(formatter_fn(value, i)))
+                            html_file.write("</td>")
+                    html_file.write("</tr>\n")
+
+                html_file.write('</table>\n')
+
+            html_file.write("</body>\n")
+            html_file.write("</html>\n")
+
 
 def main():
     logging.getLogger().setLevel(logging.DEBUG)
 
+    # find which command to run
+    commands = {
+        "warm": "Warms the cache for buckets in the PMC directory",
+        "dump": "Dumps labeled and featurized documents to HTML"
+    }
+
+    command = None
+    if len(sys.argv) > 1:
+        command = sys.argv[1].lower()
+        del sys.argv[1]
+    if command is None or command not in commands.keys():
+        progname = sys.argv[0]
+        print("%s {%s}" % (progname, ", ".join(commands.keys())))
+        return 1
+
     model_settings = settings.default_model_settings
 
     import argparse
-    parser = argparse.ArgumentParser(description="Warms the cache for buckets in the pmc directory")
+    parser = argparse.ArgumentParser(description=commands[command])
     parser.add_argument(
         "--pmc-dir",
         type=str,
@@ -1104,7 +1396,7 @@ def main():
         default=model_settings.glove_vectors,
         help="file containing the GloVe vectors"
     )
-    parser.add_argument("bucket_number", type=str, nargs='+', help="buckets to warm the cache for")
+    parser.add_argument("bucket_number", type=str, nargs='+', help="buckets to process")
     args = parser.parse_args()
 
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
@@ -1116,7 +1408,10 @@ def main():
 
     for bucket_number in args.bucket_number:
         logging.info("Processing bucket %s", bucket_number)
-        prepare_bucket(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
+        if command == "warm":
+            prepare_bucket(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
+        elif command == "dump":
+            dump_documents(bucket_number, args.pmc_dir, token_stats, embeddings, model_settings)
 
 if __name__ == "__main__":
     main()
