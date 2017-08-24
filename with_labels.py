@@ -289,6 +289,7 @@ def make_batches(
 #
 
 _multiple_spaces_re = re.compile("\s+")
+_adjacent_capitals_re = re.compile("([A-Z])([A-Z])")
 
 def evaluate_model(
     model,
@@ -376,8 +377,13 @@ def evaluate_model(
                         labeled_title = labeled_title_on_page
 
                 indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
-                for index_sequence in continuous_index_sequences(indices_labeled_author):
-                    labeled_authors.append(np.take(page.tokens, index_sequence))
+                # authors must all come from the same page
+                labeled_authors_on_page = [
+                    np.take(page.tokens, index_sequence)
+                    for index_sequence in continuous_index_sequences(indices_labeled_author)
+                ]
+                if len(labeled_authors_on_page) > len(labeled_authors):
+                    labeled_authors = labeled_authors_on_page
 
                 # find predicted titles and authors
                 page_predictions = page_raw_predictions.argmax(axis=1)
@@ -390,8 +396,23 @@ def evaluate_model(
                         predicted_title = predicted_title_on_page
 
                 indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-                for index_sequence in continuous_index_sequences(indices_predicted_author):
-                    predicted_authors.append(np.take(page.tokens, index_sequence))
+
+                # authors must all be in the same font
+                if len(indices_predicted_author) > 0:
+                    author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
+                    author_fonts_on_page, author_font_counts_on_page = \
+                        np.unique(author_fonts_on_page, return_counts=True)
+                    author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
+                    indices_predicted_author = \
+                        [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
+
+                # authors must all come from the same page
+                predicted_authors_on_page = [
+                    np.take(page.tokens, index_sequence)
+                    for index_sequence in continuous_index_sequences(indices_predicted_author)
+                ]
+                if len(predicted_authors_on_page) > len(predicted_authors):
+                    predicted_authors = predicted_authors_on_page
 
             def normalize(s: str) -> str:
                 return unicodedata.normalize("NFKC", s).lower()
@@ -401,7 +422,16 @@ def evaluate_model(
                 if len(a) == 1:
                     a = a[0]
                 else:
-                    return "%s %s" % (a[1], a[0])
+                    a = "%s %s" % (a[1], a[0])
+
+                # Put spaces between adjacent capital letters, so that "HJ Farnsworth" becomes
+                # "H J Farnsworth".
+                while True:
+                    new_a = re.sub(_adjacent_capitals_re, "\\1 \\2", a)
+                    if new_a == a:
+                        break
+                    a = new_a
+
                 a = normalize(a)
                 a = a.replace(".", " ")
                 a = _multiple_spaces_re.sub(" ", a)
