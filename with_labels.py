@@ -289,6 +289,7 @@ def make_batches(
 #
 
 _multiple_spaces_re = re.compile("\s+")
+_adjacent_capitals_re = re.compile("([A-Z])([A-Z])")
 
 def evaluate_model(
     model,
@@ -421,7 +422,16 @@ def evaluate_model(
                 if len(a) == 1:
                     a = a[0]
                 else:
-                    return "%s %s" % (a[1], a[0])
+                    a = "%s %s" % (a[1], a[0])
+
+                # Put spaces between adjacent capital letters, so that "HJ Farnsworth" becomes
+                # "H J Farnsworth".
+                while True:
+                    new_a = re.sub(_adjacent_capitals_re, "\\1 \\2", a)
+                    if new_a == a:
+                        break
+                    a = new_a
+
                 a = normalize(a)
                 a = a.replace(".", " ")
                 a = _multiple_spaces_re.sub(" ", a)
