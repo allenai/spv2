@@ -353,7 +353,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄️
 #
 
-UNLABELED_TOKENS_VERSION = "2comp"
+UNLABELED_TOKENS_VERSION = "3corr"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -404,7 +404,7 @@ def unlabeled_tokens_file(bucket_path: str):
             compression="gzip",
             compression_opts=9)
 
-        raw_tokens_path = os.path.join(bucket_path, "tokens2.json.bz2")
+        raw_tokens_path = os.path.join(bucket_path, "tokens3.json.bz2")
         for json_doc in json_from_file(raw_tokens_path):
             # find the proper doc id
             doc_id = json_doc["docId"]
