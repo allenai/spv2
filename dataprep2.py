@@ -1164,7 +1164,7 @@ def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
         buckets = range(0x00, 0xf0)
     buckets = ["%02x" % x for x in buckets]
 
-    token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats2.gz"))
+    token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
     glove = GloveVectors(model_settings.glove_vectors)
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
