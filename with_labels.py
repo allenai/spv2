@@ -302,18 +302,27 @@ def evaluate_model(
     # Load and prepare documents
     #
 
-    test_docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
-    if test_doc_count is not None:
-        test_docs = list(itertools.islice(test_docs, 0, test_doc_count))
-        if len(test_docs) < test_doc_count:
+    def test_docs() -> typing.Generator[dataprep2.Document, None, None]:
+        docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
+        if test_doc_count is not None:
+            docs = list(itertools.islice(docs, 0, test_doc_count))
+
+        yielded_doc_count = 0
+        for doc in docs:
+            yield doc
+            yielded_doc_count += 1
+
+        if test_doc_count is not None and yielded_doc_count < test_doc_count:
             logging.warning(
                 "Requested %d %s documents, but we only have %d",
                 test_doc_count,
                 doc_set.name,
-                len(test_docs))
+                yielded_doc_count)
+        else:
+            logging.info("Evaluating on %d documents", yielded_doc_count)
 
     page_pool = PagePool()
-    for doc in test_docs:
+    for doc in test_docs():
         for page in doc.pages:
             page_pool.add(doc, page)
 
@@ -342,7 +351,7 @@ def evaluate_model(
     author_prs = []
 
     with open(log_filename, "w") as log_file:
-        for doc in test_docs:
+        for doc in test_docs():
             log_file.write("\nDocument %s\n" % doc.doc_id)
 
             def continuous_index_sequences(indices: np.array):
