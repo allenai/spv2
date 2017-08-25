@@ -482,6 +482,7 @@ def evaluate_model(
 
 
 def train(
+    start_weights_filename,
     pmc_dir: str,
     output_filename: str,
     training_batches: int=100000,
@@ -496,6 +497,9 @@ def train(
     )
     model = model_with_labels(model_settings, embeddings)
     model.summary()
+
+    if start_weights_filename is not None:
+        model.load_weights(start_weights_filename)
 
     best_model_filename = output_filename + ".best"
 
@@ -650,6 +654,12 @@ def main():
         "--tokens-per-batch", type=int, default=model_settings.tokens_per_batch, help="the number of tokens in a batch"
     )
     parser.add_argument(
+        "--start-weights",
+        type=str,
+        default=None,
+        help="filename of existing model to start training from"
+    )
+    parser.add_argument(
         "-o",
         metavar="file",
         dest="output",
@@ -676,6 +686,7 @@ def main():
     print(model_settings)
 
     model = train(
+        args.start_weights,
         args.pmc_dir,
         args.output,
         args.training_batches,
