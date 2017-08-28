@@ -626,8 +626,9 @@ def train(
 #
 
 def main():
-    import manhole
-    manhole.install()
+    if(os.name() != 'nt'):
+        import manhole
+        manhole.install()
 
     logging.getLogger().setLevel(logging.DEBUG)
 

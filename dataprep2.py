@@ -12,6 +12,7 @@ import subprocess
 import h5py
 import collections
 import gzip
+import bz2
 import typing
 import sys
 import html
@@ -23,38 +24,9 @@ import settings
 # Helpers 💁
 #
 
-for potential_zcat in ["gzcat", "zcat", None]:
-    assert potential_zcat, "Could not find zcat or equivalent executable"
-    try:
-        subprocess.run(
-            [potential_zcat, "--version"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL  # apple gzcat prints to stderr for no reason
-        )
-    except FileNotFoundError:
-        continue
-    _zcat = potential_zcat
-    break
-
-def zcat_process(filename: str, encoding=None) -> subprocess.Popen:
-    """Starts a zcat process that writes the decompressed file to stdout. It's annoying that we
-    have to load zipped files this way, but it's about 40% faster than the gzip module 🙄."""
-    return subprocess.Popen(
-        [_zcat, filename],
-        stdout=subprocess.PIPE,
-        close_fds=True,
-        encoding=encoding)
-
-def bzcat_process(filename: str, encoding=None) -> subprocess.Popen:
-    return subprocess.Popen(
-        ["bzcat", filename],
-        stdout=subprocess.PIPE,
-        close_fds=True,
-        encoding=encoding)
 
 def json_from_file(filename):
-    with bzcat_process(filename, encoding="UTF-8") as p:
+    with bz2.open(filename, "rt", encoding="UTF-8") as p:
         for line in p.stdout:
             try:
                 yield json.loads(line)
@@ -227,8 +199,8 @@ class GloveVectors(object):
 
         self.word2index = {}
         self.vectors = []
-        with zcat_process(self.filename, encoding="UTF-8") as p:
-            for line_number, line in enumerate(p.stdout):
+        with gzip.open(self.filename, "rt", encoding="UTF-8") as lines:
+            for line in lines:
                 line = line.split(" ")
                 word = normalize(line[0])
                 try:
