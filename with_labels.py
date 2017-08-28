@@ -626,7 +626,7 @@ def train(
 #
 
 def main():
-    if(os.name() != 'nt'):
+    if(os.name != 'nt'):
         import manhole
         manhole.install()
 
