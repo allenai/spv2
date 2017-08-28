@@ -12,6 +12,7 @@ import subprocess
 import h5py
 import collections
 import gzip
+import bz2
 import typing
 import sys
 import html
@@ -25,7 +26,7 @@ import settings
 
 
 def json_from_file(filename):
-    with gzip.open(filename, "rb") as p:
+    with bz2.open(filename, "rt", encoding="UTF-8") as p:
         for line in p.stdout:
             try:
                 yield json.loads(line)
