@@ -16,6 +16,7 @@ import bz2
 import typing
 import sys
 import html
+from enum import Enum
 
 import settings
 
@@ -1129,11 +1130,22 @@ def documents_for_bucket(
             doc_metadata["gold_authors"],
             pages)
 
-def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
-    if test:
+class DocumentSet(Enum):
+    TRAIN = 1
+    TEST = 2
+    VALIDATE = 3
+
+def documents(
+    pmc_dir: str,
+    model_settings: settings.ModelSettings,
+    document_set:DocumentSet = DocumentSet.TRAIN
+):
+    if document_set is DocumentSet.TEST:
         buckets = range(0xf0, 0x100)
+    elif document_set is DocumentSet.VALIDATE:
+        buckets = range(0xe0, 0xf0)
     else:
-        buckets = range(0x00, 0xf0)
+        buckets = range(0x00, 0xe0)
     buckets = ["%02x" % x for x in buckets]
 
     token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
