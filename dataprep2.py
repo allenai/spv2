@@ -199,10 +199,8 @@ class GloveVectors(object):
 
         self.word2index = {}
         self.vectors = []
-        line_number = 0
         with gzip.open(self.filename, "rt", encoding="UTF-8") as lines:
             for line in lines:
-                line_number += 1
                 line = line.split(" ")
                 word = normalize(line[0])
                 try:
