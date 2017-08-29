@@ -14,13 +14,13 @@ object PDFRenderer {
     startPage: Option[Int] = None,
     endPage: Option[Int] = None,
     dpi: Option[Int] = None,
-    inputfile: String = null)
-      extends CommandConfig
+    inputfile: String = null
+  ) extends CommandConfig
 
   case class PreprocessPdfConfig(
     outputFileName: String = null,
-    inputNames: Seq[String] = Seq())
-      extends CommandConfig
+    inputNames: Seq[String] = Seq()
+  ) extends CommandConfig
 
   val parser = new scopt.OptionParser[PDFRendererConfig]("PDFRenderer") {
     cmd("PDFToImage")
@@ -76,9 +76,10 @@ object PDFRenderer {
               commandConfig = c.commandConfig.asInstanceOf[PreprocessPdfConfig].copy(
                 inputNames = c.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames ++ x))
           }))
-    checkConfig(config =>
-      if (config.commandConfig == null) failure("You must specify a subcommand")
-      else success)
+    checkConfig { config =>
+      if (config.commandConfig == null) failure("You must specify a command.")
+      else success
+    }
   }
 
   def main(args: Array[String]): Unit = {

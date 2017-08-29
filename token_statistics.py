@@ -7,10 +7,7 @@ import logging
 import sys
 import gzip
 
-# This depends on an old version of dataprep. Before running it again, it will have to be updated to
-# run against dataprep2.py.
-#import dataprep
-
+import dataprep2
 
 #
 # Main program 🎛
@@ -18,8 +15,6 @@ import gzip
 
 def _pdftoken_file_to_stats(file):
     # count occurrences
-    docs = dataprep.documents_from_file(file)
-
     texts = {}
     fonts = {}
     font_sizes = {}
@@ -33,19 +28,26 @@ def _pdftoken_file_to_stats(file):
         counts[item] = counts.get(item, 0) + 1
 
     doc_count = 0
-
     start = time.time()
-    for doc in docs:
-        for page in doc.pages:
-            for token in page.tokens:
-                add_to_counts(token.text, texts)
-                add_to_counts(token.font, fonts)
-                add_to_counts(token.font_size, font_sizes)
-                add_to_counts(token.space_width, space_widths)
-                add_to_counts(token.left, lefts)
-                add_to_counts(token.right, rights)
-                add_to_counts(token.top, tops)
-                add_to_counts(token.bottom, bottoms)
+    for json_doc in dataprep2.json_from_file(file):
+        for json_page in json_doc["pages"]:
+            try:
+                json_tokens = json_page["tokens"]
+            except KeyError:
+                json_tokens = []
+
+            def sanitize_string(s: str) -> str:
+                return s.replace("\0", "\ufffd")
+
+            for json_token in json_tokens:
+                add_to_counts(sanitize_string(json_token["text"]), texts)
+                add_to_counts(sanitize_string(json_token["font"]), fonts)
+                add_to_counts(float(json_token["left"]), lefts)
+                add_to_counts(float(json_token["right"]), rights)
+                add_to_counts(float(json_token["top"]), tops)
+                add_to_counts(float(json_token["bottom"]), bottoms)
+                add_to_counts(float(json_token["fontSize"]), font_sizes)
+                add_to_counts(float(json_token["fontSpaceWidth"]), space_widths)
         doc_count += 1
         if doc_count % 100 == 0:
             now = time.time()
@@ -80,7 +82,7 @@ def save_stats_file(
         rights: dict,
         tops: dict,
         bottoms: dict):
-    with open(filename, "wb") as f:
+    with gzip.open(filename, "wb") as f:
         pickle.dump(texts, f)
         pickle.dump(fonts, f)
         pickle.dump(font_sizes, f)

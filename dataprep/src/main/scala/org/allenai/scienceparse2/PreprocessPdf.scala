@@ -121,7 +121,14 @@ object PreprocessPdf extends Logging {
               token += tp
             }
           } else {
-            token += tp
+            // if the token so far is made of digits, add a token break
+            val tokenText = token.map(_.getUnicode).mkString
+            if(tokenText.isEmpty || allDigits.findFirstMatchIn(tokenText).isEmpty) {
+              token += tp
+            } else {
+              finishToken()
+              token += tp
+            }
           }
         }
         finishToken()

@@ -12,9 +12,11 @@ import subprocess
 import h5py
 import collections
 import gzip
+import bz2
 import typing
 import sys
 import html
+from enum import Enum
 
 import settings
 
@@ -23,39 +25,10 @@ import settings
 # Helpers 💁
 #
 
-for potential_zcat in ["gzcat", "zcat", None]:
-    assert potential_zcat, "Could not find zcat or equivalent executable"
-    try:
-        subprocess.run(
-            [potential_zcat, "--version"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL  # apple gzcat prints to stderr for no reason
-        )
-    except FileNotFoundError:
-        continue
-    _zcat = potential_zcat
-    break
-
-def zcat_process(filename: str, encoding=None) -> subprocess.Popen:
-    """Starts a zcat process that writes the decompressed file to stdout. It's annoying that we
-    have to load zipped files this way, but it's about 40% faster than the gzip module 🙄."""
-    return subprocess.Popen(
-        [_zcat, filename],
-        stdout=subprocess.PIPE,
-        close_fds=True,
-        encoding=encoding)
-
-def bzcat_process(filename: str, encoding=None) -> subprocess.Popen:
-    return subprocess.Popen(
-        ["bzcat", filename],
-        stdout=subprocess.PIPE,
-        close_fds=True,
-        encoding=encoding)
 
 def json_from_file(filename):
-    with bzcat_process(filename, encoding="UTF-8") as p:
-        for line in p.stdout:
+    with bz2.open(filename, "rt", encoding="UTF-8") as p:
+        for line in p:
             try:
                 yield json.loads(line)
             except ValueError as e:
@@ -227,8 +200,8 @@ class GloveVectors(object):
 
         self.word2index = {}
         self.vectors = []
-        with zcat_process(self.filename, encoding="UTF-8") as p:
-            for line_number, line in enumerate(p.stdout):
+        with gzip.open(self.filename, "rt", encoding="UTF-8") as lines:
+            for line_number, line in enumerate(lines):
                 line = line.split(" ")
                 word = normalize(line[0])
                 try:
@@ -353,7 +326,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄️
 #
 
-UNLABELED_TOKENS_VERSION = "2comp"
+UNLABELED_TOKENS_VERSION = "3corr"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -404,7 +377,7 @@ def unlabeled_tokens_file(bucket_path: str):
             compression="gzip",
             compression_opts=9)
 
-        raw_tokens_path = os.path.join(bucket_path, "tokens2.json.bz2")
+        raw_tokens_path = os.path.join(bucket_path, "tokens3.json.bz2")
         for json_doc in json_from_file(raw_tokens_path):
             # find the proper doc id
             doc_id = json_doc["docId"]
@@ -481,7 +454,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "11eval"
+LABELED_TOKENS_VERSION = "12corr"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -624,7 +597,8 @@ def labeled_tokens_file(bucket_path: str):
                     "first_token_index",
                     "one_past_last_token_index",
                     "cost",
-                    "matched_string"
+                    "matched_string",
+                    "average_font_size"
                 ])
 
                 for page_number in range(effective_page_count):
@@ -633,6 +607,7 @@ def labeled_tokens_file(bucket_path: str):
                     token_count = int(json_page["token_count"])
 
                     tokens = unlab_token_text_features[page_first_token_index:page_first_token_index+token_count,0]
+                    font_sizes = unlab_token_numeric_features[page_first_token_index:page_first_token_index+token_count,4]
 
                     # concatenate the document into one big string, but keep a way to refer back to
                     # the tokens
@@ -653,45 +628,63 @@ def labeled_tokens_file(bucket_path: str):
                     page_text = "".join(page_text)
                     assert page_text_length == len(page_text)
 
-                    def find_string_in_page(string: str) -> typing.Optional[FuzzyMatch]:
-                        fuzzy_match = stringmatch.match(normalize(string), page_text)
-                        if fuzzy_match.cost > ((len(string) - string.count(" ")) // 5):
-                            return None
+                    def find_string_in_page(string: str) -> typing.Generator[FuzzyMatch, None, None]:
+                        string = normalize(string)
 
-                        start = fuzzy_match.start_pos
-                        first_token_index = None
-                        while not first_token_index and start >= 0:
-                            first_token_index = start_pos_to_token_index.get(start, None)
-                            start -= 1
-                        if not first_token_index:
-                            first_token_index = 0
+                        offset = 0
+                        while offset < len(page_text):
+                            fuzzy_match = stringmatch.match(string, page_text[offset:])
+                            if fuzzy_match.cost > ((len(string) - string.count(" ")) // 5):
+                                # stringmatch.match() returns results in increasing order of cost.
+                                # Once the cost is too high, it'll never get better, so we can
+                                # bail here.
+                                return
 
-                        end = fuzzy_match.end_pos
-                        one_past_last_token_index = None
-                        while one_past_last_token_index is None and end < len(page_text):
-                            one_past_last_token_index = start_pos_to_token_index.get(end, None)
-                            end += 1
-                        if one_past_last_token_index is None:
-                            one_past_last_token_index = token_count
+                            start = fuzzy_match.start_pos + offset
+                            first_token_index = None
+                            while not first_token_index and start >= 0:
+                                first_token_index = start_pos_to_token_index.get(start, None)
+                                start -= 1
+                            if not first_token_index:
+                                first_token_index = 0
 
-                        assert first_token_index != one_past_last_token_index
+                            end = fuzzy_match.end_pos + offset
+                            one_past_last_token_index = None
+                            while one_past_last_token_index is None and end < len(page_text):
+                                one_past_last_token_index = start_pos_to_token_index.get(end, None)
+                                end += 1
+                            if one_past_last_token_index is None:
+                                one_past_last_token_index = token_count
 
-                        matched_string = tokens[first_token_index:one_past_last_token_index]
-                        matched_string = " ".join(matched_string)
+                            assert first_token_index != one_past_last_token_index
 
-                        return FuzzyMatch(
-                            page_number,
-                            first_token_index,
-                            one_past_last_token_index,
-                            fuzzy_match.cost,
-                            matched_string)
+                            matched_string = tokens[first_token_index:one_past_last_token_index]
+                            matched_string = " ".join(matched_string)
+
+                            yield FuzzyMatch(
+                                page_number,
+                                first_token_index,
+                                one_past_last_token_index,
+                                fuzzy_match.cost,
+                                matched_string,
+                                np.average(font_sizes[first_token_index:one_past_last_token_index])
+                            )
+
+                            offset += fuzzy_match.end_pos
 
                     #
                     # find title
                     #
 
-                    title_match_on_this_page = find_string_in_page(gold_title)
-                    if title_match_on_this_page is not None:
+                    def title_match_sort_key(match: FuzzyMatch):
+                        return (
+                            match.cost,
+                            -match.average_font_size,
+                            match.first_token_index
+                        )
+                    title_matches_on_this_page = list(find_string_in_page(gold_title))
+                    if len(title_matches_on_this_page) > 0:
+                        title_match_on_this_page = min(title_matches_on_this_page, key=title_match_sort_key)
                         if title_match is None or title_match_on_this_page.cost < title_match.cost:
                             title_match = title_match_on_this_page
 
@@ -719,11 +712,7 @@ def labeled_tokens_file(bucket_path: str):
                                 "%s . %s" % (given_names[0], surnames)}
 
                         for author_variant in author_variants:
-                            new_match = find_string_in_page(author_variant)
-                            if new_match is None:
-                                continue
-
-                            author_matches[author_index].append(new_match)
+                            author_matches[author_index].extend(find_string_in_page(author_variant))
 
                 # find the definitive author labels from the lists of potential matches we have now
                 # all author matches have to be on the same page
@@ -742,7 +731,12 @@ def labeled_tokens_file(bucket_path: str):
                         if match.page_number == page_number_with_author_matches]
                 # for the remaining matches, get the best
                 def cost_author_match(match: FuzzyMatch):
-                    return 8 * match.cost - len(match.matched_string)
+                    return (
+                        match.cost,                 # pick the best match first
+                        -len(match.matched_string), # for equal cost matches, pick the longest one first
+                        -match.average_font_size,   # still the same, pick the one with the bigger font
+                        match.first_token_index     # finally, prefer the first one
+                    )
                 for author_index in range(len(author_matches)):
                     author_matches[author_index] = \
                         min(author_matches[author_index], key=cost_author_match)
@@ -830,7 +824,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = "11fssw"
+FEATURIZED_TOKENS_VERSION = "12corr"
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -1136,14 +1130,25 @@ def documents_for_bucket(
             doc_metadata["gold_authors"],
             pages)
 
-def documents(pmc_dir: str, model_settings: settings.ModelSettings, test=False):
-    if test:
+class DocumentSet(Enum):
+    TRAIN = 1
+    TEST = 2
+    VALIDATE = 3
+
+def documents(
+    pmc_dir: str,
+    model_settings: settings.ModelSettings,
+    document_set:DocumentSet = DocumentSet.TRAIN
+):
+    if document_set is DocumentSet.TEST:
         buckets = range(0xf0, 0x100)
+    elif document_set is DocumentSet.VALIDATE:
+        buckets = range(0xe0, 0xf0)
     else:
-        buckets = range(0x00, 0xf0)
+        buckets = range(0x00, 0xe0)
     buckets = ["%02x" % x for x in buckets]
 
-    token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats2.gz"))
+    token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
     glove = GloveVectors(model_settings.glove_vectors)
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 

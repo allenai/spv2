@@ -285,28 +285,41 @@ def make_batches(
 #
 
 _multiple_spaces_re = re.compile("\s+")
+_adjacent_capitals_re = re.compile("([A-Z])([A-Z])")
 
 def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
     pmc_dir: str,
-    test_doc_count: int,
-    log_filename: str
+    log_filename: str,
+    doc_set: dataprep2.DocumentSet = dataprep2.DocumentSet.TEST,
+    test_doc_count: int = None
 ):
     #
     # Load and prepare documents
     #
 
-    test_docs = dataprep2.documents(pmc_dir, model_settings, test=True)
-    test_docs = list(itertools.islice(test_docs, 0, test_doc_count))
-    if len(test_docs) < test_doc_count:
-        logging.warning(
-            "Requested %d test documents, but we only have %d",
-            test_doc_count,
-            len(test_docs))
+    def test_docs() -> typing.Generator[dataprep2.Document, None, None]:
+        docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
+        if test_doc_count is not None:
+            docs = list(itertools.islice(docs, 0, test_doc_count))
+
+        yielded_doc_count = 0
+        for doc in docs:
+            yield doc
+            yielded_doc_count += 1
+
+        if test_doc_count is not None and yielded_doc_count < test_doc_count:
+            logging.warning(
+                "Requested %d %s documents, but we only have %d",
+                test_doc_count,
+                doc_set.name,
+                yielded_doc_count)
+        else:
+            logging.info("Evaluating on %d documents", yielded_doc_count)
 
     page_pool = PagePool()
-    for doc in test_docs:
+    for doc in test_docs():
         for page in doc.pages:
             page_pool.add(doc, page)
 
@@ -335,7 +348,7 @@ def evaluate_model(
     author_prs = []
 
     with open(log_filename, "w") as log_file:
-        for doc in test_docs:
+        for doc in test_docs():
             log_file.write("\nDocument %s\n" % doc.doc_id)
 
             def continuous_index_sequences(indices: np.array):
@@ -372,8 +385,13 @@ def evaluate_model(
                         labeled_title = labeled_title_on_page
 
                 indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
-                for index_sequence in continuous_index_sequences(indices_labeled_author):
-                    labeled_authors.append(np.take(page.tokens, index_sequence))
+                # authors must all come from the same page
+                labeled_authors_on_page = [
+                    np.take(page.tokens, index_sequence)
+                    for index_sequence in continuous_index_sequences(indices_labeled_author)
+                ]
+                if len(labeled_authors_on_page) > len(labeled_authors):
+                    labeled_authors = labeled_authors_on_page
 
                 # find predicted titles and authors
                 page_predictions = page_raw_predictions.argmax(axis=1)
@@ -386,8 +404,23 @@ def evaluate_model(
                         predicted_title = predicted_title_on_page
 
                 indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-                for index_sequence in continuous_index_sequences(indices_predicted_author):
-                    predicted_authors.append(np.take(page.tokens, index_sequence))
+
+                # authors must all be in the same font
+                if len(indices_predicted_author) > 0:
+                    author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
+                    author_fonts_on_page, author_font_counts_on_page = \
+                        np.unique(author_fonts_on_page, return_counts=True)
+                    author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
+                    indices_predicted_author = \
+                        [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
+
+                # authors must all come from the same page
+                predicted_authors_on_page = [
+                    np.take(page.tokens, index_sequence)
+                    for index_sequence in continuous_index_sequences(indices_predicted_author)
+                ]
+                if len(predicted_authors_on_page) > len(predicted_authors):
+                    predicted_authors = predicted_authors_on_page
 
             def normalize(s: str) -> str:
                 return unicodedata.normalize("NFKC", s).lower()
@@ -397,7 +430,16 @@ def evaluate_model(
                 if len(a) == 1:
                     a = a[0]
                 else:
-                    return "%s %s" % (a[1], a[0])
+                    a = "%s %s" % (a[1], a[0])
+
+                # Put spaces between adjacent capital letters, so that "HJ Farnsworth" becomes
+                # "H J Farnsworth".
+                while True:
+                    new_a = re.sub(_adjacent_capitals_re, "\\1 \\2", a)
+                    if new_a == a:
+                        break
+                    a = new_a
+
                 a = normalize(a)
                 a = a.replace(".", " ")
                 a = _multiple_spaces_re.sub(" ", a)
@@ -477,12 +519,10 @@ def evaluate_model(
 def train(
     start_weights_filename,
     pmc_dir: str,
+    output_filename: str,
     training_batches: int=100000,
     test_batches: int=10000,
-    model_settings: settings.ModelSettings=settings.default_model_settings,
-    output_filename: str=None,
-    log_filename: str=None,
-    graph_filename: str=None
+    model_settings: settings.ModelSettings=settings.default_model_settings
 ):
     """Returns a trained model using the data in dir as training data"""
     embeddings = dataprep2.CombinedEmbeddings(
@@ -493,12 +533,13 @@ def train(
     model = model_with_labels(model_settings, embeddings)
     model.summary()
 
-    if graph_filename is not None:
-        from keras.utils import plot_model
-        plot_model(model, graph_filename, show_shapes=True)
-
     if start_weights_filename is not None:
         model.load_weights(start_weights_filename)
+
+    best_model_filename = output_filename + ".best"
+
+    from keras.utils import plot_model
+    plot_model(model, output_filename + ".png", show_shapes=True)
 
     scored_results = []
     def print_scored_results(training_time = None):
@@ -510,13 +551,23 @@ def train(
         print("time\tbatch_count\tauc_none\tauc_titles\tauc_authors\ttitle_p\ttitle_r\tauthor_p\tauthor_r")
         for time_elapsed, batch_count, ev_result in scored_results:
             print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
+    def get_combined_scores() -> typing.List[float]:
+        def f1(p: float, r: float) -> float:
+            return (2.0 * p * r) / (p + r)
+        def combined_score(ev_result) -> float:
+            _, _, _, title_p, title_r, author_p, author_r = ev_result
+            return (f1(title_p, title_r) + f1(author_p, author_r)) / 2
+        return [combined_score(ev_result) for _, _, ev_result in scored_results]
 
     start_time = None
     if training_batches > 0:
         trained_batches = 0
         while trained_batches < training_batches:
             logging.info("Starting new epoch")
-            train_docs = dataprep2.documents(pmc_dir, model_settings, test=False)
+            train_docs = dataprep2.documents(
+                pmc_dir,
+                model_settings,
+                document_set=dataprep2.DocumentSet.TRAIN)
             training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
             for batch in threaded_generator(training_data):
                 if trained_batches == 0:
@@ -555,32 +606,59 @@ def train(
 
                     eval_start_time = time.time()
 
-                    if output_filename is not None:
-                        logging.info("Writing temporary model to %s", output_filename)
-                        model.save(output_filename, overwrite=True)
+                    logging.info("Writing temporary model to %s", output_filename)
+                    model.save(output_filename, overwrite=True)
                     ev_result = evaluate_model(
-                        model, model_settings, pmc_dir, test_batches, log_filename
+                        model,
+                        model_settings,
+                        pmc_dir,
+                        output_filename + ".log",
+                        dataprep2.DocumentSet.TEST,
+                        test_batches
                     )  # TODO: batches != docs
                     scored_results.append((now - start_time, trained_batches, ev_result))
                     print_scored_results(now - start_time)
+
+                    # check if this one is better than the last one
+                    combined_scores = get_combined_scores()
+                    if combined_scores[-1] == max(combined_scores):
+                        logging.info(
+                            "High score (%.3f)! Saving model to %s",
+                            max(combined_scores),
+                            best_model_filename)
+                        model.save(best_model_filename, overwrite=True)
 
                     eval_end_time = time.time()
                     # adjust start time to ignore the time we spent evaluating
                     start_time += eval_end_time - eval_start_time
 
                     time_at_last_eval = eval_end_time
-        if output_filename is not None:
-            logging.info("Writing temporary final model to %s", output_filename)
-            model.save(output_filename, overwrite=True)
 
-    logging.info("Triggering final evaluation")
-    now = time.time()
-    if start_time is None:
-        start_time = now
+                    # check if we've stopped improving
+                    best_score = max(combined_scores)
+                    if all([score < best_score for score in combined_scores[-3:]]):
+                        logging.info("No improvement for three hours. Stopping training.")
+                        trained_batches = training_batches  # Signaling to the outer loop that we're done.
+                        break
+
+        logging.info("Writing temporary final model to %s", output_filename)
+        model.save(output_filename, overwrite=True)
+
+    if len(scored_results) > 0:
+        model.load_weights(best_model_filename)
+    else:
+        logging.warning("Training finished in less than an hour, so I never ran on the test set. I'll go ahead and treat the current model as the best model.")
+        model.save(best_model_filename, overwrite=True)
+
+    logging.info("Triggering final evaluation on validation set")
     final_ev = evaluate_model(
-        model, model_settings, pmc_dir, test_batches, log_filename
-    )  # TODO: batches != docs
-    scored_results.append((now - start_time, training_batches, final_ev))
+        model,
+        model_settings,
+        pmc_dir,
+        output_filename + ".log",
+        dataprep2.DocumentSet.VALIDATE
+    )
+    scored_results.append((float('inf'), training_batches, final_ev))
 
     print_scored_results()
 
@@ -592,8 +670,9 @@ def train(
 #
 
 def main():
-    import manhole
-    manhole.install()
+    if(os.name != 'nt'):
+        import manhole
+        manhole.install()
 
     logging.getLogger().setLevel(logging.DEBUG)
 
@@ -645,12 +724,10 @@ def main():
     model = train(
         args.start_weights,
         args.pmc_dir,
+        args.output,
         args.training_batches,
         args.test_batches,
-        model_settings,
-        args.output,
-        args.output + ".log",
-        args.output + ".png"
+        model_settings
     )
 
     model.save(args.output, overwrite=True)
