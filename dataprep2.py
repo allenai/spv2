@@ -28,7 +28,7 @@ import settings
 
 def json_from_file(filename):
     with bz2.open(filename, "rt", encoding="UTF-8") as p:
-        for line in p.stdout:
+        for line in p:
             try:
                 yield json.loads(line)
             except ValueError as e:
@@ -201,7 +201,7 @@ class GloveVectors(object):
         self.word2index = {}
         self.vectors = []
         with gzip.open(self.filename, "rt", encoding="UTF-8") as lines:
-            for line in lines:
+            for line_number, line in enumerate(lines):
                 line = line.split(" ")
                 word = normalize(line[0])
                 try:
