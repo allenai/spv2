@@ -33,3 +33,15 @@ message Document {
     required PDFMetadata metadata = 2;
     repeated Page pages = 3;
 }
+
+message Error {
+    required string message = 1;
+    optional string stack_trace = 2;
+}
+
+message Attempt {
+    oneof attempt {
+        Document doc = 1;
+        Error error = 2;
+    }
+}

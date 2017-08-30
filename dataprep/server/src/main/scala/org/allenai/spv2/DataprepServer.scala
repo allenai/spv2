@@ -10,6 +10,7 @@ import com.amazonaws.services.s3.AmazonS3ClientBuilder
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
 import org.allenai.common.ParIterator._
+import org.allenai.spv2.document.{ Attempt, Error }
 import org.apache.commons.compress.archivers.ArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream
@@ -116,7 +117,7 @@ class DataprepServer extends AbstractHandler with Logging {
             val outputFile = tempDir.resolve(tempFileSha + ".pdf")
             Files.move(tempFile, outputFile, StandardCopyOption.REPLACE_EXISTING)
             logger.info(s"Extracted ${entry.getName} to $outputFile")
-            outputFile
+            Success(outputFile)
           }.toList
       }
 
@@ -144,7 +145,7 @@ class DataprepServer extends AbstractHandler with Logging {
       val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
       Files.move(tempFile, renamedFile)
       response.setHeader("Location", s"${request.getRequestURI}/$tempFileSha.pdf")
-      writeResponse(Seq(renamedFile), response)
+      writeResponse(Seq(Success(renamedFile)), response)
     } finally {
       FileUtils.deleteDirectory(tempDir.toFile)
     }
@@ -159,35 +160,37 @@ class DataprepServer extends AbstractHandler with Logging {
     val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
     try {
       val files = request.getReader.lines().iterator().asScala.parMap { line =>
-        val pdfSha1 = MessageDigest.getInstance("SHA-1")
-        pdfSha1.reset()
+        Try {
+          val pdfSha1 = MessageDigest.getInstance("SHA-1")
+          pdfSha1.reset()
 
-        line match {
-          case s3UrlPattern(bucket, key) =>
-            Resource.using(s3.getObject(bucket, key).getObjectContent) { is =>
-              val pdfSha1Stream = new DigestInputStream(is, pdfSha1)
-              val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
-              try {
-                Files.copy(pdfSha1Stream, tempFile, StandardCopyOption.REPLACE_EXISTING)
-                val pdfSha1Bytes = pdfSha1.digest()
-                val tempFileSha = Utilities.toHex(pdfSha1Bytes)
-                val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
-                Files.move(tempFile, renamedFile, StandardCopyOption.REPLACE_EXISTING)
-                logger.info(s"Downloaded $line to $renamedFile")
-                renamedFile
-              } finally {
-                Files.deleteIfExists(tempFile)
+          line match {
+            case s3UrlPattern(bucket, key) =>
+              Resource.using(s3.getObject(bucket, key).getObjectContent) { is =>
+                val pdfSha1Stream = new DigestInputStream(is, pdfSha1)
+                val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
+                try {
+                  Files.copy(pdfSha1Stream, tempFile, StandardCopyOption.REPLACE_EXISTING)
+                  val pdfSha1Bytes = pdfSha1.digest()
+                  val tempFileSha = Utilities.toHex(pdfSha1Bytes)
+                  val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
+                  Files.move(tempFile, renamedFile, StandardCopyOption.REPLACE_EXISTING)
+                  logger.info(s"Downloaded $line to $renamedFile")
+                  renamedFile
+                } finally {
+                  Files.deleteIfExists(tempFile)
+                }
               }
-            }
-          case httpUrlPattern(url) =>
-            val request = Http(url).timeout(10000, 60000)
-            val pdfBytes = withRetries(() => request.asBytes).body
-            val pdfSha1Bytes = pdfSha1.digest(pdfBytes)
-            val fileSha = Utilities.toHex(pdfSha1Bytes)
-            val file = tempDir.resolve(fileSha + ".pdf")
-            Files.copy(new ByteArrayInputStream(pdfBytes), file)
-            logger.info(s"Downloaded $url to $file")
-            file
+            case httpUrlPattern(url) =>
+              val request = Http(url).timeout(10000, 60000)
+              val pdfBytes = withRetries(() => request.asBytes).body
+              val pdfSha1Bytes = pdfSha1.digest(pdfBytes)
+              val fileSha = Utilities.toHex(pdfSha1Bytes)
+              val file = tempDir.resolve(fileSha + ".pdf")
+              Files.copy(new ByteArrayInputStream(pdfBytes), file)
+              logger.info(s"Downloaded $url to $file")
+              file
+          }
         }
       }.toList
       writeResponse(files, response)
@@ -196,13 +199,17 @@ class DataprepServer extends AbstractHandler with Logging {
     }
   }
 
-  private def writeResponse(files: Seq[Path], response: HttpServletResponse): Unit = {
+  private def writeResponse(files: Seq[Try[Path]], response: HttpServletResponse): Unit = {
     response.setContentType("application/json")
-    files.iterator.parMap { file =>
-      val doc = Resource.using(Files.newInputStream(file)) { is =>
-        PreprocessPdf.getDocument(is, file.getFileName.toString)
-      }
-      JsonFormat.toJsonString(doc)
+    files.iterator.parMap {
+      case Success(file) =>
+        val attempt = Resource.using(Files.newInputStream(file)) { is =>
+          PreprocessPdf.tryGetDocument(is, file.getFileName.toString)
+        }
+        JsonFormat.toJsonString(attempt)
+      case Failure(e) =>
+        val error = Error(e.getMessage, Some(Utilities.stackTraceAsString(e)))
+        JsonFormat.toJsonString(Attempt().withError(error))
     }.foreach(response.getWriter.println)
   }
 

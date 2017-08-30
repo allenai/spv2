@@ -1,5 +1,6 @@
 package org.allenai.spv2
 
+import java.io.{ PrintWriter, StringWriter }
 import java.security.MessageDigest
 
 object Utilities {
@@ -15,5 +16,11 @@ object Utilities {
     digest.reset()
     digest.update(bytes)
     toHex(digest.digest())
+  }
+
+  def stackTraceAsString(e: Throwable): String = {
+    val writer = new StringWriter()
+    e.printStackTrace(new PrintWriter(writer))
+    writer.toString
   }
 }

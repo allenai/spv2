@@ -9,7 +9,7 @@ import java.util.{ Calendar, NoSuchElementException, List => JavaList }
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
 import org.allenai.common.ParIterator._
-import org.allenai.spv2.document.{ Document, PDFMetadata, Page, Token }
+import org.allenai.spv2.document._
 import org.apache.pdfbox.cos.COSName
 import org.apache.pdfbox.pdmodel.{ PDDocument, PDPage }
 import org.apache.pdfbox.text.{ PDFTextStripper, TextPosition }
@@ -248,6 +248,17 @@ object PreprocessPdf extends Logging {
       }
 
       Document(docId, metadata, CaptureTextStripper.getPages(pdDoc))
+    }
+  }
+
+  def tryGetDocument(is: InputStream, docId: String): Attempt = {
+    try {
+      val doc = getDocument(is, docId)
+      Attempt().withDoc(doc)
+    } catch {
+      case NonFatal(e) =>
+        val error = Error(e.getMessage, Some(Utilities.stackTraceAsString(e)))
+        Attempt().withError(error)
     }
   }
 
