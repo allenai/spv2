@@ -1,4 +1,4 @@
-package org.allenai.scienceparse2;
+package org.allenai.spv2;
 
 import java.io.IOException;
 import java.io.InputStream;

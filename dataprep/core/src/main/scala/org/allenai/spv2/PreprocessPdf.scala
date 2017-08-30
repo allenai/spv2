@@ -1,7 +1,7 @@
-package org.allenai.scienceparse2
+package org.allenai.spv2
 
 import java.io._
-import java.nio.file.{ Files, Paths, StandardOpenOption }
+import java.nio.file.{ Files, Paths }
 import java.text.Normalizer
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.{ Calendar, NoSuchElementException, List => JavaList }
@@ -9,7 +9,7 @@ import java.util.{ Calendar, NoSuchElementException, List => JavaList }
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
 import org.allenai.common.ParIterator._
-import org.allenai.scienceparse2.document.{ Document, PDFMetadata, Page, Token }
+import org.allenai.spv2.document.{ Document, PDFMetadata, Page, Token }
 import org.apache.pdfbox.cos.COSName
 import org.apache.pdfbox.pdmodel.{ PDDocument, PDPage }
 import org.apache.pdfbox.text.{ PDFTextStripper, TextPosition }
@@ -251,10 +251,7 @@ object PreprocessPdf extends Logging {
     }
   }
 
-  /** Extract text and tokens from inputNames and save output to outputFileName.
-    *
-    * Use "-"
-    */
+  /** Extract text and tokens from inputNames and save output to outputFileName. */
   def extractText(outputFileName: String, inputNames: Seq[String]): Unit = {
     Resource.using {
       if(outputFileName == "-")
@@ -335,7 +332,7 @@ object PreprocessPdf extends Logging {
           val elapsedMs = System.currentTimeMillis() - startTime
           val dps = 1000.0 * newFinishedCount.toDouble / elapsedMs
           if(outputFileName != "-")
-            println(f"Finished $newFinishedCount documents. $dps%.2f dps")
+            logger.info(f"Finished $newFinishedCount documents. $dps%.2f dps")
         }
       }
     }

@@ -1,4 +1,4 @@
-package org.allenai.scienceparse2;
+package org.allenai.spv2;
 
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3Client;

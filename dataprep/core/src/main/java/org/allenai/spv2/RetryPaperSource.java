@@ -1,4 +1,4 @@
-package org.allenai.scienceparse2;
+package org.allenai.spv2;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

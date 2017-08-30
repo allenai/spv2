@@ -1,8 +1,8 @@
-package org.allenai.scienceparse2
+package org.allenai.spv2
 
 import org.apache.pdfbox.tools.PDFToImage
 
-object PDFRenderer {
+object DataprepCli {
   // see org.apache.pdfbox.tools.PDFToImage for all possible arguments.
   trait CommandConfig
 
