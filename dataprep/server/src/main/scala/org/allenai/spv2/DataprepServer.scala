@@ -6,7 +6,7 @@ import java.nio.file.{ Files, Path, StandardCopyOption }
 import java.security.{ DigestInputStream, MessageDigest }
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
-import com.amazonaws.services.s3.{ AmazonS3Client, AmazonS3ClientBuilder }
+import com.amazonaws.services.s3.AmazonS3ClientBuilder
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
 import org.allenai.common.ParIterator._
