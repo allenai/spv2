@@ -1,10 +1,12 @@
 package org.allenai.spv2
 
+import java.io.ByteArrayInputStream
+import java.net.SocketTimeoutException
 import java.nio.file.{ Files, Path, StandardCopyOption }
 import java.security.{ DigestInputStream, MessageDigest }
-import java.util.zip.GZIPInputStream
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
+import com.amazonaws.services.s3.{ AmazonS3Client, AmazonS3ClientBuilder }
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
 import org.allenai.common.ParIterator._
@@ -18,6 +20,9 @@ import org.eclipse.jetty.server.handler.AbstractHandler
 
 import scala.util.control.NonFatal
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.collection.JavaConverters._
+import scala.util.{ Failure, Random, Success, Try }
+import scalaj.http.{ Http, HttpResponse }
 
 object DataprepServer extends Logging {
   def main(args: Array[String]): Unit = {
@@ -145,8 +150,50 @@ class DataprepServer extends AbstractHandler with Logging {
     }
   }
 
+  private val s3UrlPattern = """^s3://([-\w]+)/(.*)$""".r
+  private val httpUrlPattern = """^(https?://.*)$""".r
+  private lazy val s3 = AmazonS3ClientBuilder.defaultClient()
+
   private def handleUrls(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    ???
+    // handles URLs, one per line
+    val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
+    try {
+      val files = request.getReader.lines().iterator().asScala.parMap { line =>
+        val pdfSha1 = MessageDigest.getInstance("SHA-1")
+        pdfSha1.reset()
+
+        line match {
+          case s3UrlPattern(bucket, key) =>
+            Resource.using(s3.getObject(bucket, key).getObjectContent) { is =>
+              val pdfSha1Stream = new DigestInputStream(is, pdfSha1)
+              val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
+              try {
+                Files.copy(pdfSha1Stream, tempFile, StandardCopyOption.REPLACE_EXISTING)
+                val pdfSha1Bytes = pdfSha1.digest()
+                val tempFileSha = Utilities.toHex(pdfSha1Bytes)
+                val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
+                Files.move(tempFile, renamedFile, StandardCopyOption.REPLACE_EXISTING)
+                logger.info(s"Downloaded $line to $renamedFile")
+                renamedFile
+              } finally {
+                Files.deleteIfExists(tempFile)
+              }
+            }
+          case httpUrlPattern(url) =>
+            val request = Http(url).timeout(10000, 60000)
+            val pdfBytes = withRetries(() => request.asBytes).body
+            val pdfSha1Bytes = pdfSha1.digest(pdfBytes)
+            val fileSha = Utilities.toHex(pdfSha1Bytes)
+            val file = tempDir.resolve(fileSha + ".pdf")
+            Files.copy(new ByteArrayInputStream(pdfBytes), file)
+            logger.info(s"Downloaded $url to $file")
+            file
+        }
+      }.toList
+      writeResponse(files, response)
+    } finally {
+      FileUtils.deleteDirectory(tempDir.toFile)
+    }
   }
 
   private def writeResponse(files: Seq[Path], response: HttpServletResponse): Unit = {
@@ -157,5 +204,34 @@ class DataprepServer extends AbstractHandler with Logging {
       }
       JsonFormat.toJsonString(doc)
     }.foreach(response.getWriter.println)
+  }
+
+  private val random = new Random
+  private val defaultMaxRetries = 10
+  private def withRetries[T](f: () => HttpResponse[T], retries: Int = defaultMaxRetries): HttpResponse[T] = if (retries <= 0) {
+    f()
+  } else {
+    val backOff = defaultMaxRetries - retries + 1 // define a back off multiplier
+    val sleepTime = (random.nextInt(5000) + 5000) * backOff
+    // sleep between 5 * backOff and 10 * backOff seconds
+    // If something goes wrong, we sleep a random amount of time, to make sure that we don't slam
+    // the server, get timeouts, wait for exactly the same amount of time on all threads, and then
+    // slam the server again.
+
+    Try(f()) match {
+      case Failure(e: SocketTimeoutException) =>
+        logger.warn(s"$e while querying. $retries retries left.")
+        Thread.sleep(sleepTime)
+        withRetries(f, retries - 1)
+
+      case Success(response) if response.isServerError =>
+        logger.warn(s"Got response code ${response.statusLine} while querying. $retries retries left.")
+        Thread.sleep(sleepTime)
+        withRetries(f, retries - 1)
+
+      case Failure(e) => throw e
+
+      case Success(response) => response
+    }
   }
 }
