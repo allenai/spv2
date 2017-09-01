@@ -670,7 +670,7 @@ def train(
 #
 
 def main():
-    if(os.name != 'nt'):
+    if os.name != 'nt':
         import manhole
         manhole.install()
 
@@ -687,7 +687,10 @@ def main():
         help="directory with the PMC data"
     )
     parser.add_argument(
-        "--tokens-per-batch", type=int, default=model_settings.tokens_per_batch, help="the number of tokens in a batch"
+        "--tokens-per-batch",
+        type=int,
+        default=model_settings.tokens_per_batch,
+        help="the number of tokens in a batch"
     )
     parser.add_argument(
         "--start-weights",
