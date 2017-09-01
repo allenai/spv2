@@ -27,7 +27,14 @@ import settings
 
 
 def json_from_file(filename):
-    with bz2.open(filename, "rt", encoding="UTF-8") as p:
+    if filename.endswith(".bz2"):
+        open_fn = bz2.open
+    elif filename.endswith(".gz"):
+        open_fn = gzip.open
+    else:
+        open_fn = open
+
+    with open_fn(filename, "rt", encoding="UTF-8") as p:
         for line in p:
             try:
                 yield json.loads(line)
@@ -151,20 +158,21 @@ class VisionOutput(object):
 
     def __init__(self, file_path):
         self.boxes = {}
-        with open(file_path) as file:
-            for line in file:
-                line = json.loads(line)
-                sha = line["docSha"]
-                bounding_boxes_for_sha = []
-                for json_page in line["pages"]:
-                    bounding_boxes_for_page = []
-                    for label, left, top, right, bottom, confidence in json_page:
-                        bounding_boxes_for_page.append(
-                            self.BoundingBox(label, left, right, top, bottom, confidence))
-                    bounding_boxes_for_sha.append(bounding_boxes_for_page)
-                if sha in self.boxes:
-                    logging.warning("Duplicate sha %s in %s", sha, file_path)
-                self.boxes[sha] = bounding_boxes_for_sha
+        if file_path is not None:
+            with open(file_path) as file:
+                for line in file:
+                    line = json.loads(line)
+                    sha = line["docSha"]
+                    bounding_boxes_for_sha = []
+                    for json_page in line["pages"]:
+                        bounding_boxes_for_page = []
+                        for label, left, top, right, bottom, confidence in json_page:
+                            bounding_boxes_for_page.append(
+                                self.BoundingBox(label, left, right, top, bottom, confidence))
+                        bounding_boxes_for_sha.append(bounding_boxes_for_page)
+                    if sha in self.boxes:
+                        logging.warning("Duplicate sha %s in %s", sha, file_path)
+                    self.boxes[sha] = bounding_boxes_for_sha
 
     def boxes_for_sha_and_page(self, sha: str, page: int) -> typing.List[BoundingBox]:
         try:
@@ -323,7 +331,7 @@ class CombinedEmbeddings(object):
 
 
 #
-# Unlabeled Tokens 🗄️
+# Unlabeled Tokens 🗄
 #
 
 UNLABELED_TOKENS_VERSION = "3corr"
@@ -342,20 +350,10 @@ MAX_PAGE_COUNT = 3
 MAX_PAGES_PER_BUCKET = MAX_DOCS_PER_BUCKET * MAX_PAGE_COUNT
 
 _sha1_re = re.compile(r'^[0-9a-f]{40}$')
+_sha1DotPdf_re = re.compile(r'^[0-9a-f]{40}\.pdf$')
 
-def unlabeled_tokens_file(bucket_path: str):
-    """Returns h5 file with unlabeled tokens"""
-    unlabeled_tokens_path = \
-        os.path.join(
-            bucket_path,
-            "unlabeled-tokens-%s.h5" % UNLABELED_TOKENS_VERSION)
-    if os.path.exists(unlabeled_tokens_path):
-        return h5py.File(unlabeled_tokens_path, "r")
-
-    logging.info("%s does not exist, will recreate", unlabeled_tokens_path)
-
-    temp_unlabeled_tokens_path = unlabeled_tokens_path + ".%d.temp" % os.getpid()
-    h5_file = h5py.File(temp_unlabeled_tokens_path, "w-", libver="latest")
+def make_unlabeled_tokens_file(json_file_name: str, output_file_name: str):
+    h5_file = h5py.File(output_file_name, "w-", libver="latest")
     try:
         h5_doc_metadata = h5_file.create_dataset(
             "doc_metadata",
@@ -377,18 +375,27 @@ def unlabeled_tokens_file(bucket_path: str):
             compression="gzip",
             compression_opts=9)
 
-        raw_tokens_path = os.path.join(bucket_path, "tokens3.json.bz2")
-        for json_doc in json_from_file(raw_tokens_path):
+        for json_doc in json_from_file(json_file_name):
+            # If this is an attempt instead of a doc, it will have a doc field, which is what we want.
+            error = json_doc.get("error", None)
+            if error is not None:
+                logging.warning("Can't prepare failed document")
+                continue
+            json_doc = json_doc.get("doc", json_doc)
+
             # find the proper doc id
             doc_id = json_doc["docId"]
-            doc_id = doc_id.split("/")
-            for i, id_element in enumerate(doc_id):
-                if _sha1_re.match(id_element) is not None:
-                    doc_id = doc_id[i:]
-                    break
-            doc_sha = doc_id[0]
+            if _sha1DotPdf_re.match(doc_id) is not None:
+                doc_sha = doc_id[:40]
+            else:
+                doc_id = doc_id.split("/")
+                for i, id_element in enumerate(doc_id):
+                    if _sha1_re.match(id_element) is not None:
+                        doc_id = doc_id[i:]
+                        break
+                doc_sha = doc_id[0]
+                doc_id = "/".join(doc_id)
             assert _sha1_re.match(doc_sha) is not None
-            doc_id = "/".join(doc_id)
 
             doc_in_h5 = {}  # the structure we are stuffing into doc_metadata
             doc_in_h5["doc_id"] = doc_id
@@ -437,15 +444,30 @@ def unlabeled_tokens_file(bucket_path: str):
             doc_index = len(h5_doc_metadata)
             h5_doc_metadata.resize(doc_index + 1, axis=0)
             h5_doc_metadata[doc_index] = json.dumps(doc_in_h5)
+        h5_file.close()
     except:
+        # If something fails, try cleaning up after ourselves
         try:
-            os.remove(temp_unlabeled_tokens_path)
+            os.remove(output_file_name)
         except FileNotFoundError:
             pass
         raise
 
-    # close, rename, and open as read-only
-    h5_file.close()
+def unlabeled_tokens_file(bucket_path: str):
+    """Returns h5 file with unlabeled tokens"""
+    unlabeled_tokens_path = \
+        os.path.join(
+            bucket_path,
+            "unlabeled-tokens-%s.h5" % UNLABELED_TOKENS_VERSION)
+    if os.path.exists(unlabeled_tokens_path):
+        return h5py.File(unlabeled_tokens_path, "r")
+
+    logging.info("%s does not exist, will recreate", unlabeled_tokens_path)
+
+    temp_unlabeled_tokens_path = unlabeled_tokens_path + ".%d.temp" % os.getpid()
+    make_unlabeled_tokens_file(
+        os.path.join(bucket_path, "tokens3.json.bz2"),
+        temp_unlabeled_tokens_path)
     os.rename(temp_unlabeled_tokens_path, unlabeled_tokens_path)
     return h5py.File(unlabeled_tokens_path, "r")
 
@@ -824,7 +846,200 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
+
+#
+# Featurized Tokens 👣
+#
+
 FEATURIZED_TOKENS_VERSION = "12corr"
+
+def make_featurized_tokens_file(
+    output_file_name: str,
+    input_file: h5py.File,
+    token_stats: TokenStatistics,
+    embeddings: CombinedEmbeddings,
+    vision_output: VisionOutput,
+    model_settings: settings.ModelSettings
+):
+    featurized_file = h5py.File(output_file_name, "w-", libver="latest")
+    try:
+        lab_doc_metadata = input_file["doc_metadata"]
+        lab_token_text_features = input_file["token_text_features"]
+        lab_token_numeric_features = input_file["token_numeric_features"]
+
+        # since we don't add or remove pages, we can link to datasets in the original file
+        for name in ["doc_metadata", "token_labels", "token_text_features", "token_numeric_features"]:
+            featurized_file[name] = \
+                h5py.ExternalLink(os.path.basename(input_file.filename), "/" + name)
+
+        # hash font and strings
+        # This does all tokens in memory at once. We might have to be clever if that runs out
+        # of memory.
+        text_features = np.zeros(
+            shape=lab_token_text_features.shape,
+            dtype=np.int32)
+        # do tokens
+        fn = np.vectorize(embeddings.index_for_token, otypes=[np.uint32])
+        text_features[:,0] = fn(lab_token_text_features[:,0])
+        # do fonts
+        fn = np.vectorize(lambda t: mmh3.hash(normalize(t)), otypes=[np.uint32])
+        text_features[:,1] = fn(lab_token_text_features[:,1]) % model_settings.font_hash_size
+
+        text_features += 1  # plus one for keras' masking
+        featurized_file.create_dataset(
+            "token_hashed_text_features",
+            lab_token_text_features.shape,
+            dtype=np.uint32,
+            data=text_features,
+            compression="gzip",
+            compression_opts=9)
+
+        # numeric features
+        scaled_numeric_features = featurized_file.create_dataset(
+            "token_scaled_numeric_features",
+            shape=(len(lab_token_text_features), 17),
+            dtype=np.float32,
+            fillvalue=0.0,
+            compression="gzip",
+            compression_opts=9)
+
+        # capitalization features (these are numeric features)
+        #  8: First letter is upper (0.5) or not (-0.5)
+        #  9: Second letter is upper (0.5) or not (-0.5)
+        # 10: Fraction of uppers
+        # 11: First letter is lower (0.5) or not (-0.5)
+        # 12: Second letter is lower (0.5) or not (-0.5)
+        # 13: Fraction of lowers
+        # 14: Fraction of numerics
+        for token_index, token in enumerate(lab_token_text_features[:,0]):
+            scaled_numeric_features[token_index, 8:8+7] = \
+                stringmatch.capitalization_features(token)
+
+            # The -0.5 offset it applied at the end.
+
+        # sizes and positions (these are also numeric features)
+        for json_metadata in lab_doc_metadata:
+            json_metadata = json.loads(json_metadata)
+
+            # make ordered lists of space widths and font sizes in the document
+            doc_first_token_index = int(json_metadata["pages"][0]["first_token_index"])
+            doc_token_count = 0
+            for json_page in json_metadata["pages"]:
+                doc_token_count += int(json_page["token_count"])
+
+            font_sizes_in_doc = \
+                lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 4]
+            font_sizes_in_doc.sort()
+            font_size_percentiles_in_doc = percentile_function_from_values(font_sizes_in_doc)
+
+            space_widths_in_doc = \
+                lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 5]
+            space_widths_in_doc.sort()
+            space_width_percentiles_in_doc = percentile_function_from_values(space_widths_in_doc)
+
+            for page_number, json_page in enumerate(json_metadata["pages"]):
+                width, height = json_page["dimensions"]
+                first_token_index = int(json_page["first_token_index"])
+                token_count = int(json_page["token_count"])
+                one_past_last_token_index = first_token_index + token_count
+
+                numeric_features = \
+                    lab_token_numeric_features[first_token_index:one_past_last_token_index,:]
+
+                # set token dimensions
+                # dimensions are (left, right, top, bottom)
+                if width <= 0.0:
+                    scaled_numeric_features[first_token_index:one_past_last_token_index,0:2] = 0.0
+                else:
+                    # squash left and right into 0.0 - 1.0
+                    scaled_numeric_features[first_token_index:one_past_last_token_index,0:2] = \
+                        numeric_features[:,0:2] / width
+                if height <= 0.0:
+                    scaled_numeric_features[first_token_index:one_past_last_token_index,2:4] = 0.0
+                else:
+                    # squash top and bottom into 0.0 - 1.0
+                    scaled_numeric_features[first_token_index:one_past_last_token_index,2:4] = \
+                        numeric_features[:,2:4] / height
+
+                # font sizes and space widths relative to corpus
+                scaled_numeric_features[first_token_index:one_past_last_token_index,4] = \
+                    token_stats.get_font_size_percentiles(numeric_features[:,4])
+                scaled_numeric_features[first_token_index:one_past_last_token_index,5] = \
+                    token_stats.get_space_width_percentiles(numeric_features[:,5])
+
+                # font sizes and space widths relative to doc
+                scaled_numeric_features[first_token_index:one_past_last_token_index,6] = \
+                    font_size_percentiles_in_doc(numeric_features[:,4])
+                scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
+                    space_width_percentiles_in_doc(numeric_features[:,5])
+
+                # overlap the tokens' bounding boxes with bounding boxes from vision
+                bounding_boxes_from_vision = \
+                    vision_output.boxes_for_sha_and_page(json_metadata["doc_sha"], page_number)
+                title_bounding_boxes = [
+                    (bb.left, bb.top, bb.right, bb.bottom)
+                    for bb in bounding_boxes_from_vision
+                    if bb.label == "title"
+                ]
+                author_bounding_boxes = [
+                    (bb.left, bb.top, bb.right, bb.bottom)
+                    for bb in bounding_boxes_from_vision
+                    if bb.label == "author"
+                ]
+
+                def compute_intersect(a, b):
+                    # format of bb: [ x1, y1, x2, y2 ]
+                    top = max(a[1], b[1])
+                    bottom = min(a[3], b[3])
+                    left = max(a[0], b[0])
+                    right = min(a[2], b[2])
+                    tb = bottom - top  # top to bottom
+                    lr = right - left  # left to right
+                    if tb < 0 or lr < 0:
+                        intersection = 0
+                    else:
+                        intersection = tb * lr
+                    return intersection
+
+                def compute_iofirst(a, b):
+                    a_w = a[2] - a[0]
+                    a_h = a[3] - a[1]
+                    a_area = a_w * a_h
+                    if a_area == 0:
+                        return 0
+                    intersection = compute_intersect(a, b)
+                    return intersection / a_area
+
+                for token_index, coordinates in enumerate(numeric_features[:,0:4]):
+                    left, right, top, bottom = coordinates
+                    coordinates = (left, top, right, bottom)
+
+                    best_title_iofirst = 0
+                    if len(title_bounding_boxes) > 0:
+                        best_title_iofirst = max(
+                            (compute_iofirst(coordinates, bb) for bb in title_bounding_boxes))
+
+                    best_author_iofirst = 0
+                    if len(author_bounding_boxes) > 0:
+                        best_author_iofirst = max(
+                            (compute_iofirst(coordinates, bb) for bb in author_bounding_boxes))
+
+                    if best_title_iofirst > 0.1 and best_title_iofirst >= best_author_iofirst:
+                        scaled_numeric_features[first_token_index+token_index, 15] = 1.0
+
+                    if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
+                        scaled_numeric_features[first_token_index+token_index, 16] = 1.0
+
+                        # The -0.5 offset it applied at the end.
+
+        # shift everything so we end up with a range of -0.5 - +0.5
+        scaled_numeric_features[:,:] -= 0.5
+    except:
+        try:
+            os.remove(output_file_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -857,192 +1072,21 @@ def featurized_tokens_file(
 
     vision_output = VisionOutput(os.path.join(bucket_path, "vision_output.json"))
 
-    with labeled_tokens_file(bucket_path) as labeled_tokens:
-        temp_featurized_tokens_path = featurized_tokens_path + ".%d.temp" % os.getpid()
-        featurized_file = h5py.File(temp_featurized_tokens_path, "w-", libver="latest")
-        try:
-            lab_doc_metadata = labeled_tokens["doc_metadata"]
-            lab_token_text_features = labeled_tokens["token_text_features"]
-            lab_token_numeric_features = labeled_tokens["token_numeric_features"]
+    temp_featurized_tokens_path = featurized_tokens_path + ".%d.temp" % os.getpid()
+    make_featurized_tokens_file(
+        temp_featurized_tokens_path,
+        labeled_tokens_file(bucket_path),
+        token_stats,
+        embeddings,
+        vision_output,
+        model_settings)
+    os.rename(temp_featurized_tokens_path, featurized_tokens_path)
+    return h5py.File(featurized_tokens_path, "r")
 
-            # since we don't add or remove pages, we can link to datasets in the original file
-            for name in ["doc_metadata", "token_labels", "token_text_features", "token_numeric_features"]:
-                featurized_file[name] = \
-                    h5py.ExternalLink(os.path.basename(labeled_tokens.filename), "/" + name)
 
-            # hash font and strings
-            # This does all tokens in memory at once. We might have to be clever if that runs out
-            # of memory.
-            text_features = np.zeros(
-                shape=lab_token_text_features.shape,
-                dtype=np.int32)
-            # do tokens
-            fn = np.vectorize(embeddings.index_for_token, otypes=[np.uint32])
-            text_features[:,0] = fn(lab_token_text_features[:,0])
-            # do fonts
-            fn = np.vectorize(lambda t: mmh3.hash(normalize(t)), otypes=[np.uint32])
-            text_features[:,1] = fn(lab_token_text_features[:,1]) % model_settings.font_hash_size
-
-            text_features += 1  # plus one for keras' masking
-            featurized_file.create_dataset(
-                "token_hashed_text_features",
-                lab_token_text_features.shape,
-                dtype=np.uint32,
-                data=text_features,
-                compression="gzip",
-                compression_opts=9)
-
-            # numeric features
-            scaled_numeric_features = featurized_file.create_dataset(
-                "token_scaled_numeric_features",
-                shape=(len(lab_token_text_features), 17),
-                dtype=np.float32,
-                fillvalue=0.0,
-                compression="gzip",
-                compression_opts=9)
-
-            # capitalization features (these are numeric features)
-            #  8: First letter is upper (0.5) or not (-0.5)
-            #  9: Second letter is upper (0.5) or not (-0.5)
-            # 10: Fraction of uppers
-            # 11: First letter is lower (0.5) or not (-0.5)
-            # 12: Second letter is lower (0.5) or not (-0.5)
-            # 13: Fraction of lowers
-            # 14: Fraction of numerics
-            for token_index, token in enumerate(lab_token_text_features[:,0]):
-                scaled_numeric_features[token_index, 8:8+7] = \
-                    stringmatch.capitalization_features(token)
-
-                # The -0.5 offset it applied at the end.
-
-            # sizes and positions (these are also numeric features)
-            for json_metadata in lab_doc_metadata:
-                json_metadata = json.loads(json_metadata)
-
-                # make ordered lists of space widths and font sizes in the document
-                doc_first_token_index = int(json_metadata["pages"][0]["first_token_index"])
-                doc_token_count = 0
-                for json_page in json_metadata["pages"]:
-                    doc_token_count += int(json_page["token_count"])
-
-                font_sizes_in_doc = \
-                    lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 4]
-                font_sizes_in_doc.sort()
-                font_size_percentiles_in_doc = percentile_function_from_values(font_sizes_in_doc)
-
-                space_widths_in_doc = \
-                    lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 5]
-                space_widths_in_doc.sort()
-                space_width_percentiles_in_doc = percentile_function_from_values(space_widths_in_doc)
-
-                for page_number, json_page in enumerate(json_metadata["pages"]):
-                    width, height = json_page["dimensions"]
-                    first_token_index = int(json_page["first_token_index"])
-                    token_count = int(json_page["token_count"])
-                    one_past_last_token_index = first_token_index + token_count
-
-                    numeric_features = \
-                        lab_token_numeric_features[first_token_index:one_past_last_token_index,:]
-
-                    # set token dimensions
-                    # dimensions are (left, right, top, bottom)
-                    if width <= 0.0:
-                        scaled_numeric_features[first_token_index:one_past_last_token_index,0:2] = 0.0
-                    else:
-                        # squash left and right into 0.0 - 1.0
-                        scaled_numeric_features[first_token_index:one_past_last_token_index,0:2] = \
-                            numeric_features[:,0:2] / width
-                    if height <= 0.0:
-                        scaled_numeric_features[first_token_index:one_past_last_token_index,2:4] = 0.0
-                    else:
-                        # squash top and bottom into 0.0 - 1.0
-                        scaled_numeric_features[first_token_index:one_past_last_token_index,2:4] = \
-                            numeric_features[:,2:4] / height
-
-                    # font sizes and space widths relative to corpus
-                    scaled_numeric_features[first_token_index:one_past_last_token_index,4] = \
-                        token_stats.get_font_size_percentiles(numeric_features[:,4])
-                    scaled_numeric_features[first_token_index:one_past_last_token_index,5] = \
-                        token_stats.get_space_width_percentiles(numeric_features[:,5])
-
-                    # font sizes and space widths relative to doc
-                    scaled_numeric_features[first_token_index:one_past_last_token_index,6] = \
-                        font_size_percentiles_in_doc(numeric_features[:,4])
-                    scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
-                        space_width_percentiles_in_doc(numeric_features[:,5])
-
-                    # overlap the tokens' bounding boxes with bounding boxes from vision
-                    bounding_boxes_from_vision = \
-                        vision_output.boxes_for_sha_and_page(json_metadata["doc_sha"], page_number)
-                    title_bounding_boxes = [
-                        (bb.left, bb.top, bb.right, bb.bottom)
-                        for bb in bounding_boxes_from_vision
-                        if bb.label == "title"
-                    ]
-                    author_bounding_boxes = [
-                        (bb.left, bb.top, bb.right, bb.bottom)
-                        for bb in bounding_boxes_from_vision
-                        if bb.label == "author"
-                    ]
-
-                    def compute_intersect(a, b):
-                        # format of bb: [ x1, y1, x2, y2 ]
-                        top = max(a[1], b[1])
-                        bottom = min(a[3], b[3])
-                        left = max(a[0], b[0])
-                        right = min(a[2], b[2])
-                        tb = bottom - top  # top to bottom
-                        lr = right - left  # left to right
-                        if tb < 0 or lr < 0:
-                            intersection = 0
-                        else:
-                            intersection = tb * lr
-                        return intersection
-
-                    def compute_iofirst(a, b):
-                        a_w = a[2] - a[0]
-                        a_h = a[3] - a[1]
-                        a_area = a_w * a_h
-                        if a_area == 0:
-                            return 0
-                        intersection = compute_intersect(a, b)
-                        return intersection / a_area
-
-                    for token_index, coordinates in enumerate(numeric_features[:,0:4]):
-                        left, right, top, bottom = coordinates
-                        coordinates = (left, top, right, bottom)
-
-                        best_title_iofirst = 0
-                        if len(title_bounding_boxes) > 0:
-                            best_title_iofirst = max(
-                                (compute_iofirst(coordinates, bb) for bb in title_bounding_boxes))
-
-                        best_author_iofirst = 0
-                        if len(author_bounding_boxes) > 0:
-                            best_author_iofirst = max(
-                                (compute_iofirst(coordinates, bb) for bb in author_bounding_boxes))
-
-                        if best_title_iofirst > 0.1 and best_title_iofirst >= best_author_iofirst:
-                            scaled_numeric_features[first_token_index+token_index, 15] = 1.0
-
-                        if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
-                            scaled_numeric_features[first_token_index+token_index, 16] = 1.0
-
-                    # The -0.5 offset it applied at the end.
-
-            # shift everything so we end up with a range of -0.5 - +0.5
-            scaled_numeric_features[:,:] -= 0.5
-        except:
-            try:
-                os.remove(temp_featurized_tokens_path)
-            except FileNotFoundError:
-                pass
-            raise
-
-        # close, rename, and open as read-only
-        featurized_file.close()
-        os.rename(temp_featurized_tokens_path, featurized_tokens_path)
-        return h5py.File(featurized_tokens_path, "r")
+#
+# Handling Documents 👜
+#
 
 PageBase = collections.namedtuple(
     "Page", [
