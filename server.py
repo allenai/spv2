@@ -72,7 +72,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
             # make unlabeled tokens file
             unlabeled_tokens_file_name = os.path.join(temp_dir, "unlabeled-tokens.h5")
-            dataprep2.make_unlabeled_tokens_file(json_file_name, unlabeled_tokens_file_name)
+            dataprep2.make_unlabeled_tokens_file(
+                json_file_name,
+                unlabeled_tokens_file_name,
+                ignore_errors=True)
+            errors = [line for line in dataprep2.json_from_file(json_file_name) if "error" in line]
             os.remove(json_file_name)
 
             # make featurized file
@@ -107,11 +111,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 for doc, title, authors in results:
                     result_json = {
                         "docId": doc.doc_id,
+                        "docSha": doc.doc_sha,
                         "title": title,
                         "authors": authors
                     }
+                    result_json = {"doc": result_json}
                     json.dump(result_json, response_body)
                     response_body.write("\n")
+                for error in errors:
+                    json.dump(error, response_body)
+                    response_body.write("\n")
+
                 response_body.reset()
 
 

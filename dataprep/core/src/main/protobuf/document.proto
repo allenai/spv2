@@ -35,6 +35,7 @@ message Document {
 }
 
 message Error {
+    required string docId = 3;
     required string message = 1;
     optional string stack_trace = 2;
 }

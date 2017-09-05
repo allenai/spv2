@@ -257,7 +257,7 @@ object PreprocessPdf extends Logging {
       Attempt().withDoc(doc)
     } catch {
       case NonFatal(e) =>
-        val error = Error(e.getMessage, Some(Utilities.stackTraceAsString(e)))
+        val error = Error(docId = docId, e.getMessage, Some(Utilities.stackTraceAsString(e)))
         Attempt().withError(error)
     }
   }
