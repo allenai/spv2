@@ -1029,7 +1029,7 @@ def make_featurized_tokens_file(
                     if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
                         scaled_numeric_features[first_token_index+token_index, 16] = 1.0
 
-                        # The -0.5 offset it applied at the end.
+                # The -0.5 offset it applied at the end.
 
         # shift everything so we end up with a range of -0.5 - +0.5
         scaled_numeric_features[:,:] -= 0.5
