@@ -8,7 +8,6 @@ import re
 import xml.etree.ElementTree as ET
 import unicodedata
 import stringmatch
-import subprocess
 import h5py
 import collections
 import gzip
