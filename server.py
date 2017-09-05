@@ -7,6 +7,8 @@ import tempfile
 import os
 import h5py
 import logging
+import json
+import codecs
 
 import dataprep2
 import settings
@@ -74,17 +76,44 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             os.remove(json_file_name)
 
             # make featurized file
-            featurized_tokens_file_name = os.path.join(temp_dir, "featurized-tokens.h5")
-            dataprep2.make_featurized_tokens_file(
-                featurized_tokens_file_name,
-                h5py.File(unlabeled_tokens_file_name, "r"),
-                self.server.token_stats,
-                self.server.embeddings,
-                dataprep2.VisionOutput(None),   # TODO: put in real vision output
-                self.server.model_settings
-            )
+            with h5py.File(unlabeled_tokens_file_name, "r") as unlabeled_tokens_file:
+                featurized_tokens_file_name = os.path.join(temp_dir, "featurized-tokens.h5")
+                dataprep2.make_featurized_tokens_file(
+                    featurized_tokens_file_name,
+                    unlabeled_tokens_file,
+                    self.server.token_stats,
+                    self.server.embeddings,
+                    dataprep2.VisionOutput(None),   # TODO: put in real vision output
+                    self.server.model_settings
+                )
+                # We don't delete the unlabeled file here because the featurized one contains references
+                # to it.
 
-            self.send_response(200, str(os.path.getsize(unlabeled_tokens_file_name))) # DEBUG
+            with h5py.File(featurized_tokens_file_name) as featurized_tokens_file:
+                def get_docs():
+                    return dataprep2.documents_for_featurized_tokens(
+                        featurized_tokens_file,
+                        include_labels=False)
+                results = with_labels.run_model(
+                    self.server.model,
+                    self.server.model_settings,
+                    get_docs)
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+
+                response_body = codecs.getwriter("UTF-8")(self.wfile, "UTF-8")
+                for doc, title, authors in results:
+                    result_json = {
+                        "docId": doc.doc_id,
+                        "title": title,
+                        "authors": authors
+                    }
+                    json.dump(result_json, response_body)
+                    response_body.write("\n")
+                response_body.reset()
+
 
 class Server(http.server.HTTPServer):
     def __init__(self, model, token_stats, embeddings, model_settings):

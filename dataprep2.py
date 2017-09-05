@@ -1126,6 +1126,51 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
+def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels:bool = True):
+    for doc_metadata in featurized_tokens["doc_metadata"]:
+        doc_metadata = json.loads(doc_metadata)
+        pages = []
+        for page_number, json_page in enumerate(doc_metadata["pages"]):
+            first_token_index = int(json_page["first_token_index"])
+            token_count = int(json_page["token_count"])
+            last_token_index_plus_one = first_token_index + token_count
+
+            if include_labels:
+                labels = featurized_tokens["token_labels"][first_token_index:last_token_index_plus_one]
+            else:
+                labels = None
+
+            pages.append(Page(
+                page_number,
+                float(json_page["dimensions"][0]),
+                float(json_page["dimensions"][1]),
+                tokens = \
+                    featurized_tokens["token_text_features"][first_token_index:last_token_index_plus_one, 0],
+                token_hashes = \
+                    featurized_tokens["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
+                font_hashes = \
+                    featurized_tokens["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                numeric_features = \
+                    featurized_tokens["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                scaled_numeric_features = \
+                    featurized_tokens["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                labels = labels
+            ))
+
+        if include_labels:
+            gold_title = trim_punctuation(doc_metadata["gold_title"])
+            gold_authors = doc_metadata["gold_authors"]
+        else:
+            gold_title = None
+            gold_authors = None
+
+        yield Document(
+            doc_metadata["doc_id"],
+            doc_metadata["doc_sha"],
+            gold_title,
+            gold_authors,
+            pages)
+
 def documents_for_bucket(
     bucket_path: str,
     token_stats: TokenStatistics,
@@ -1139,39 +1184,7 @@ def documents_for_bucket(
         model_settings)
         # The file has to stay open, because the document we return refers to it, and needs it
         # to be open. Python's GC will close the file (hopefully).
-
-    for doc_metadata in featurized["doc_metadata"]:
-        doc_metadata = json.loads(doc_metadata)
-        pages = []
-        for page_number, json_page in enumerate(doc_metadata["pages"]):
-            first_token_index = int(json_page["first_token_index"])
-            token_count = int(json_page["token_count"])
-            last_token_index_plus_one = first_token_index + token_count
-
-            pages.append(Page(
-                page_number,
-                float(json_page["dimensions"][0]),
-                float(json_page["dimensions"][1]),
-                tokens = \
-                    featurized["token_text_features"][first_token_index:last_token_index_plus_one, 0],
-                token_hashes = \
-                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
-                font_hashes = \
-                    featurized["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
-                numeric_features = \
-                    featurized["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
-                scaled_numeric_features = \
-                    featurized["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
-                labels = \
-                    featurized["token_labels"][first_token_index:last_token_index_plus_one]
-            ))
-
-        yield Document(
-            doc_metadata["doc_id"],
-            doc_metadata["doc_sha"],
-            trim_punctuation(doc_metadata["gold_title"]),
-            doc_metadata["gold_authors"],
-            pages)
+    yield from documents_for_featurized_tokens(featurized)
 
 class DocumentSet(Enum):
     TRAIN = 1

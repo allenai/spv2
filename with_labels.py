@@ -131,13 +131,14 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
 
     labels_as_ints = page.labels
     labels_one_hot = np.zeros(
-        shape=(len(labels_as_ints), len(dataprep2.POTENTIAL_LABELS)),
+        shape=(len(page.tokens), len(dataprep2.POTENTIAL_LABELS)),
         dtype=np.float32)
-    try:
-        labels_one_hot[np.arange(len(labels_as_ints)),labels_as_ints] = 1
-    except:
-        logging.error("Error in document %s", doc.doc_id)
-        raise
+    if page.labels is not None:
+        try:
+            labels_one_hot[np.arange(len(page.tokens)),labels_as_ints] = 1
+        except:
+            logging.error("Error in document %s", doc.doc_id)
+            raise
 
     return (page_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
 
@@ -287,6 +288,85 @@ def make_batches(
 _multiple_spaces_re = re.compile("\s+")
 _adjacent_capitals_re = re.compile("([A-Z])([A-Z])")
 
+def _continuous_index_sequences(indices: np.array):
+    """Given an array like this: [1,2,3,5,6,7,10], this returns continuously increasing
+    subsequences, like this: [[1,2,3], [5,6,7], [10]]"""
+    if len(indices) <= 0:
+        return []
+    else:
+        return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
+
+def _longest_continuous_index_sequence(indices):
+    """Given an array of indices, this returns the longest continuously increasing
+    subsequence in the array."""
+    return max(_continuous_index_sequences(indices), key=len)
+
+def run_model(
+    model,
+    model_settings: settings.ModelSettings,
+    get_docs
+):
+    page_pool = PagePool()
+    for doc in get_docs():
+        for page in doc.pages:
+            page_pool.add(doc, page)
+
+    docpage_to_results = {}
+    while len(page_pool) > 0:
+        slice = page_pool.get_slice(model_settings.tokens_per_batch)
+        x, y = batch_from_page_group(model_settings, slice)
+        raw_predictions_for_slice = model.predict_on_batch(x)
+
+        for index, docpage in enumerate(slice):
+            doc, page = docpage
+
+            key = (doc.doc_id, page.page_number)
+            assert key not in docpage_to_results
+            docpage_to_results[key] = raw_predictions_for_slice[index,:len(page.tokens)]
+
+    for doc in get_docs():
+        logging.info("Processing %s", doc.doc_id)
+
+        predicted_title = np.empty(shape=(0,), dtype=np.unicode)
+        predicted_authors = []
+
+        for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
+            page_raw_predictions = docpage_to_results[(doc.doc_id, page.page_number)]
+
+            # find predicted titles and authors
+            page_predictions = page_raw_predictions.argmax(axis=1)
+
+            indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
+            if len(indices_predicted_title) > 0:
+                predicted_title_on_page = _longest_continuous_index_sequence(indices_predicted_title)
+                if len(predicted_title_on_page) > len(predicted_title):
+                    predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
+                    predicted_title = predicted_title_on_page
+
+            indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
+
+            # authors must all be in the same font
+            if len(indices_predicted_author) > 0:
+                author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
+                author_fonts_on_page, author_font_counts_on_page = \
+                    np.unique(author_fonts_on_page, return_counts=True)
+                author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
+                indices_predicted_author = \
+                    [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
+
+            # authors must all come from the same page
+            predicted_authors_on_page = [
+                np.take(page.tokens, index_sequence)
+                for index_sequence in _continuous_index_sequences(indices_predicted_author)
+            ]
+            if len(predicted_authors_on_page) > len(predicted_authors):
+                predicted_authors = predicted_authors_on_page
+
+        predicted_title = " ".join(predicted_title)
+        predicted_authors = [" ".join(ats) for ats in predicted_authors]
+        yield (doc, predicted_title, predicted_authors)
+
+
 def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
@@ -351,19 +431,6 @@ def evaluate_model(
         for doc in test_docs():
             log_file.write("\nDocument %s\n" % doc.doc_id)
 
-            def continuous_index_sequences(indices: np.array):
-                """Given an array like this: [1,2,3,5,6,7,10], this returns continuously increasing
-                subsequences, like this: [[1,2,3], [5,6,7], [10]]"""
-                if len(indices) <= 0:
-                    return []
-                else:
-                    return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
-
-            def longest_continuous_index_sequence(indices):
-                """Given an array of indices, this returns the longest continuously increasing
-                subsequence in the array."""
-                return max(continuous_index_sequences(indices), key=len)
-
             labeled_title = np.empty(shape=(0,), dtype=np.unicode)
             labeled_authors = []
 
@@ -379,7 +446,7 @@ def evaluate_model(
 
                 indices_labeled_title = np.where(page_labels == dataprep2.TITLE_LABEL)[0]
                 if len(indices_labeled_title) > 0:
-                    labeled_title_on_page = longest_continuous_index_sequence(indices_labeled_title)
+                    labeled_title_on_page = _longest_continuous_index_sequence(indices_labeled_title)
                     if len(labeled_title_on_page) > len(labeled_title):
                         labeled_title_on_page = np.take(page.tokens, labeled_title_on_page)
                         labeled_title = labeled_title_on_page
@@ -388,7 +455,7 @@ def evaluate_model(
                 # authors must all come from the same page
                 labeled_authors_on_page = [
                     np.take(page.tokens, index_sequence)
-                    for index_sequence in continuous_index_sequences(indices_labeled_author)
+                    for index_sequence in _continuous_index_sequences(indices_labeled_author)
                 ]
                 if len(labeled_authors_on_page) > len(labeled_authors):
                     labeled_authors = labeled_authors_on_page
@@ -398,7 +465,7 @@ def evaluate_model(
 
                 indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
                 if len(indices_predicted_title) > 0:
-                    predicted_title_on_page = longest_continuous_index_sequence(indices_predicted_title)
+                    predicted_title_on_page = _longest_continuous_index_sequence(indices_predicted_title)
                     if len(predicted_title_on_page) > len(predicted_title):
                         predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
                         predicted_title = predicted_title_on_page
@@ -417,7 +484,7 @@ def evaluate_model(
                 # authors must all come from the same page
                 predicted_authors_on_page = [
                     np.take(page.tokens, index_sequence)
-                    for index_sequence in continuous_index_sequences(indices_predicted_author)
+                    for index_sequence in _continuous_index_sequences(indices_predicted_author)
                 ]
                 if len(predicted_authors_on_page) > len(predicted_authors):
                     predicted_authors = predicted_authors_on_page
