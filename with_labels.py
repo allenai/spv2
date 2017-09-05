@@ -87,7 +87,7 @@ def model_with_labels(
             output_dim=FONT_VECTOR_SIZE)(font_input)
     logging.info("font_embedding:\t%s", font_embedding.shape)
 
-    numeric_inputs = Input(name='numeric_inputs', shape=(None, 17))
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 15)) # DEBUG: put back the vision features
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
@@ -127,7 +127,7 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
         dtype=np.int32)
     token_inputs = page.token_hashes
     font_inputs = page.font_hashes
-    numeric_inputs = page.scaled_numeric_features
+    numeric_inputs = page.scaled_numeric_features[:,:15] # DEBUG: put back the vision features
 
     labels_as_ints = page.labels
     labels_one_hot = np.zeros(
