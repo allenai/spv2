@@ -16,6 +16,9 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.io.FileUtils
+import org.apache.pdfbox.pdmodel.PDDocument
+import org.apache.pdfbox.rendering.{ ImageType, PDFRenderer }
+import org.apache.pdfbox.tools.imageio.ImageIOUtil
 import org.eclipse.jetty.server.{ Request, Server }
 import org.eclipse.jetty.server.handler.AbstractHandler
 
@@ -40,11 +43,12 @@ object DataprepServer extends Logging {
 
 class DataprepServer extends AbstractHandler with Logging {
   private val routes: Map[String, (HttpServletRequest, HttpServletResponse) => Unit] = Map(
-    "/v1/tar" -> handleTar,
-    "/v1/targz" -> handleTargz,
-    "/v1/zip" -> handleZip,
-    "/v1/pdf" -> handlePdf,
-    "/v1/urls" -> handleUrls
+    "/v1/json/tar" -> handleTar,
+    "/v1/json/targz" -> handleTargz,
+    "/v1/json/zip" -> handleZip,
+    "/v1/json/pdf" -> handlePdf,
+    "/v1/json/urls" -> handleUrls,
+    "/v1/png/pdf" -> handleMakingPng
   )
 
   override def handle(
@@ -159,7 +163,7 @@ class DataprepServer extends AbstractHandler with Logging {
         val tempFileSha = Utilities.toHex(pdfSha1Bytes)
         val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
         Files.move(tempFile, renamedFile)
-        response.setHeader("Location", s"${request.getRequestURI}/$tempFileSha.pdf")
+        response.setHeader("Location", s"${request.getRequestURI}/$tempFileSha.json")
         PreprocessingSuccess(filename, tempFileSha, renamedFile)
       } catch {
         case NonFatal(e) => PreprocessingFailure(filename, e)
@@ -260,6 +264,31 @@ class DataprepServer extends AbstractHandler with Logging {
       case Failure(e) => throw e
 
       case Success(response) => response
+    }
+  }
+
+  private def handleMakingPng(request: HttpServletRequest, response: HttpServletResponse): Unit = {
+    try {
+      val pdfShaDigest = MessageDigest.getInstance("SHA-1")
+      pdfShaDigest.reset()
+      val pdfSha1Stream = new DigestInputStream(request.getInputStream, pdfShaDigest)
+      val document = PDDocument.load(pdfSha1Stream)
+      val pdfShaBytes = pdfShaDigest.digest()
+      val pdfSha = Utilities.toHex(pdfShaBytes)
+
+      if(document.getNumberOfPages <= 0) {
+        response.sendError(400, "PDF has no pages")
+      } else {
+        val renderer = new PDFRenderer(document)
+        val dpi = 100
+        val image = renderer.renderImageWithDPI(0, dpi, ImageType.RGB)
+        response.setHeader("Location", s"${request.getRequestURI}/$pdfSha.png")
+        ImageIOUtil.writeImage(image, "png", response.getOutputStream, dpi)
+      }
+    } catch {
+      case NonFatal(e) =>
+        logger.error("Error while making PNG", e)
+        response.sendError(500, e.getMessage)
     }
   }
 }

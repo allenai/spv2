@@ -28,7 +28,13 @@ def _send_all(source, dest, nbytes: int = None):
     dest.flush()
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
-    allowed_paths = {"/v1/tar", "/v1/targz", "/v1/zip", "/v1/pdf", "/v1/urls"}
+    allowed_paths = {
+        "/v1/json/tar",
+        "/v1/json/targz",
+        "/v1/json/zip",
+        "/v1/json/pdf",
+        "/v1/json/urls"
+    }
 
     def do_GET(self):
         if self.path in self.allowed_paths:
