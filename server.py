@@ -103,19 +103,23 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     self.server.model_settings,
                     get_docs)
 
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-
+                started_sending = False
                 response_body = codecs.getwriter("UTF-8")(self.wfile, "UTF-8")
                 for doc, title, authors in results:
                     result_json = {
-                        "docId": doc.doc_id,
+                        "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
                         "title": title,
                         "authors": authors
                     }
                     result_json = {"doc": result_json}
+
+                    if not started_sending:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        started_sending = True
+
                     json.dump(result_json, response_body)
                     response_body.write("\n")
                 for error in errors:

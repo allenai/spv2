@@ -379,34 +379,36 @@ def make_unlabeled_tokens_file(json_file_name: str, output_file_name: str, ignor
             # If this is an attempt instead of a doc, it will have a doc field, which is what we want.
             error = json_doc.get("error", None)
             if error is not None:
-                doc_id = error.get("docId", "UNKNOWN")
+                doc_name = error.get("docName", "UNKNOWN")
                 if ignore_errors:
-                    logging.warning("Can't prepare failed document for %s." % doc_id)
+                    logging.warning("Can't prepare failed document for %s." % doc_name)
                     continue
                 else:
-                    raise ValueError("Got error JSON for doc %s" % doc_id)
+                    raise ValueError("Got error JSON for doc %s" % doc_name)
             json_doc = json_doc.get("doc", json_doc)
 
             # find the proper doc id
-            doc_id = json_doc["docId"]
-            if _sha1DotPdf_re.match(doc_id) is not None:
-                doc_sha = doc_id[:40]
-            else:
-                doc_sha = _sha1FromS2Url.match(doc_id)
-                if doc_sha is not None:
-                    doc_sha = doc_sha.group(1) + doc_sha.group(2)
+            doc_name = json_doc["docName"]
+            doc_sha = json_doc.get("docSha", None)
+            if doc_sha is None:
+                if _sha1DotPdf_re.match(doc_name) is not None:
+                    doc_sha = doc_name[:40]
                 else:
-                    doc_id = doc_id.split("/")
-                    for i, id_element in enumerate(doc_id):
-                        if _sha1_re.match(id_element) is not None:
-                            doc_id = doc_id[i:]
-                            break
-                    doc_sha = doc_id[0]
-                    doc_id = "/".join(doc_id)
-            assert _sha1_re.match(doc_sha) is not None
+                    doc_sha = _sha1FromS2Url.match(doc_name)
+                    if doc_sha is not None:
+                        doc_sha = doc_sha.group(1) + doc_sha.group(2)
+                    else:
+                        doc_name = doc_name.split("/")
+                        for i, id_element in enumerate(doc_name):
+                            if _sha1_re.match(id_element) is not None:
+                                doc_name = doc_name[i:]
+                                break
+                        doc_sha = doc_name[0]
+                        doc_name = "/".join(doc_name)
+            assert _sha1_re.match(doc_sha) is not None, doc_sha
 
             doc_in_h5 = {}  # the structure we are stuffing into doc_metadata
-            doc_in_h5["doc_id"] = doc_id
+            doc_in_h5["doc_id"] = doc_name
             doc_in_h5["doc_sha"] = doc_sha
             pages_in_h5 = []
 

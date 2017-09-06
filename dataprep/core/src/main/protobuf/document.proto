@@ -29,13 +29,14 @@ message PDFMetadata {
 }
 
 message Document {
-    required string docId = 1;
-    required PDFMetadata metadata = 2;
-    repeated Page pages = 3;
+    required string docName = 1;
+    required string docSha = 2;
+    required PDFMetadata metadata = 3;
+    repeated Page pages = 4;
 }
 
 message Error {
-    required string docId = 3;
+    required string docName = 3;
     required string message = 1;
     optional string stack_trace = 2;
 }

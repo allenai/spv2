@@ -2,6 +2,7 @@ package org.allenai.spv2
 
 import java.io._
 import java.nio.file.{ Files, Paths }
+import java.security.{ DigestInputStream, MessageDigest }
 import java.text.Normalizer
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.{ Calendar, NoSuchElementException, List => JavaList }
@@ -194,11 +195,11 @@ object PreprocessPdf extends Logging {
 
   def getDocument(docId: String): Document = {
     Resource.using(ScholarBucketPaperSource.getInstanceWithRetries.getPdf(docId)) { is =>
-      getDocument(is, docId)
+      getDocument(is, docId + ".pdf", docId)
     }
   }
 
-  def getDocument(is: InputStream, docId: String): Document = {
+  def getDocument(is: InputStream, docName: String, docSha: String): Document = {
     Resource.using(PDDocument.load(is)) { pdDoc =>
       val metadata = {
         val info = pdDoc.getDocumentInformation
@@ -247,17 +248,17 @@ object PreprocessPdf extends Logging {
         )
       }
 
-      Document(docId, metadata, CaptureTextStripper.getPages(pdDoc))
+      Document(docName, docSha, metadata, CaptureTextStripper.getPages(pdDoc))
     }
   }
 
-  def tryGetDocument(is: InputStream, docId: String): Attempt = {
+  def tryGetDocument(is: InputStream, docName: String, docSha: String): Attempt = {
     try {
-      val doc = getDocument(is, docId)
+      val doc = getDocument(is, docName, docSha)
       Attempt().withDoc(doc)
     } catch {
       case NonFatal(e) =>
-        val error = Error(docId = docId, e.getMessage, Some(Utilities.stackTraceAsString(e)))
+        val error = Error(docName = docName, e.getMessage, Some(Utilities.stackTraceAsString(e)))
         Attempt().withError(error)
     }
   }
@@ -330,9 +331,14 @@ object PreprocessPdf extends Logging {
       val finishedCount = new AtomicInteger()
       inputNames.iterator.flatMap(stringToInputStreams).parForeach { case (name, is) =>
         try {
-          val document = getDocument(is, name)
+          val pdfShaDigest = MessageDigest.getInstance("SHA-1")
+          pdfShaDigest.reset()
+          val document = getDocument(new DigestInputStream(is, pdfShaDigest), name, "dummySha")
+          val pdfShaBytes = pdfShaDigest.digest()
+          val pdfSha = Utilities.toHex(pdfShaBytes)
+
           writer.synchronized {
-            writer.println(JsonFormat.toJsonString(document))
+            writer.println(JsonFormat.toJsonString(document.withDocSha(pdfSha)))
           }
         } catch {
           case NonFatal(e) =>

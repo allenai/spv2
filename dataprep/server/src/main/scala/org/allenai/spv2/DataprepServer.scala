@@ -89,7 +89,11 @@ class DataprepServer extends AbstractHandler with Logging {
     handleArchive(request, response, "zip", new ZipArchiveInputStream(request.getInputStream))
   }
 
-  private case class PreprocessingResult(docId: String, preprocessedFile: Try[Path])
+  private trait PreprocessingResult {
+    def docName: String
+  }
+  private case class PreprocessingSuccess(docName: String, docSha: String, file: Path) extends PreprocessingResult
+  private case class PreprocessingFailure(docName: String, e: Throwable) extends PreprocessingResult
 
   private def handleArchive(
     request: HttpServletRequest,
@@ -112,21 +116,21 @@ class DataprepServer extends AbstractHandler with Logging {
           filterNot(_.isDirectory).
           filter(_.getName.endsWith(".pdf")).
           map { entry =>
-            PreprocessingResult(entry.getName,
-              Try {
-                logger.info(s"Extracting ${entry.getName}")
-                val pdfSha1Stream = new DigestInputStream(tarIs, pdfSha1)
-                val tempFile = tempDir.resolve("in-progress.pdf")
-                Files.copy(pdfSha1Stream, tempFile)
-                val pdfSha1Bytes = pdfSha1.digest()
-                tarSha1.update(pdfSha1Bytes)
-                val tempFileSha = Utilities.toHex(pdfSha1Bytes)
-                val outputFile = tempDir.resolve(tempFileSha + ".pdf")
-                Files.move(tempFile, outputFile, StandardCopyOption.REPLACE_EXISTING)
-                logger.info(s"Extracted ${entry.getName} to $outputFile")
-                outputFile
-              }
-            )
+            try {
+              logger.info(s"Extracting ${entry.getName}")
+              val pdfSha1Stream = new DigestInputStream(tarIs, pdfSha1)
+              val tempFile = tempDir.resolve("in-progress.pdf")
+              Files.copy(pdfSha1Stream, tempFile)
+              val pdfSha1Bytes = pdfSha1.digest()
+              tarSha1.update(pdfSha1Bytes)
+              val tempFileSha = Utilities.toHex(pdfSha1Bytes)
+              val outputFile = tempDir.resolve(tempFileSha + ".pdf")
+              Files.move(tempFile, outputFile, StandardCopyOption.REPLACE_EXISTING)
+              logger.info(s"Extracted ${entry.getName} to $outputFile")
+              PreprocessingSuccess(entry.getName, tempFileSha, outputFile)
+            } catch {
+              case NonFatal(e) => PreprocessingFailure(entry.getName, e)
+            }
           }.toList
       }
 
@@ -148,7 +152,7 @@ class DataprepServer extends AbstractHandler with Logging {
     val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
     try {
       val filename = "single-document.pdf"
-      val preprocessingResult = PreprocessingResult(filename, Try {
+      val preprocessingResult = try {
         val tempFile = tempDir.resolve(filename)
         Files.copy(pdfSha1Stream, tempFile)
         val pdfSha1Bytes = pdfSha1.digest()
@@ -156,8 +160,10 @@ class DataprepServer extends AbstractHandler with Logging {
         val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
         Files.move(tempFile, renamedFile)
         response.setHeader("Location", s"${request.getRequestURI}/$tempFileSha.pdf")
-        renamedFile
-      })
+        PreprocessingSuccess(filename, tempFileSha, renamedFile)
+      } catch {
+        case NonFatal(e) => PreprocessingFailure(filename, e)
+      }
       writeResponse(Seq(preprocessingResult), response)
     } finally {
       FileUtils.deleteDirectory(tempDir.toFile)
@@ -173,7 +179,7 @@ class DataprepServer extends AbstractHandler with Logging {
     val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
     try {
       val preprocessingResults = request.getReader.lines().iterator().asScala.parMap { line =>
-        PreprocessingResult(line, Try {
+        try {
           val pdfSha1 = MessageDigest.getInstance("SHA-1")
           pdfSha1.reset()
 
@@ -189,7 +195,7 @@ class DataprepServer extends AbstractHandler with Logging {
                   val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
                   Files.move(tempFile, renamedFile, StandardCopyOption.REPLACE_EXISTING)
                   logger.info(s"Downloaded $line to $renamedFile")
-                  renamedFile
+                  PreprocessingSuccess(line, tempFileSha, renamedFile)
                 } finally {
                   Files.deleteIfExists(tempFile)
                 }
@@ -202,9 +208,11 @@ class DataprepServer extends AbstractHandler with Logging {
               val file = tempDir.resolve(fileSha + ".pdf")
               Files.copy(new ByteArrayInputStream(pdfBytes), file)
               logger.info(s"Downloaded $url to $file")
-              file
+              PreprocessingSuccess(line, fileSha, file)
           }
-        })
+        } catch {
+          case NonFatal(e) => PreprocessingFailure(line, e)
+        }
       }.toList
       writeResponse(preprocessingResults, response)
     } finally {
@@ -215,12 +223,12 @@ class DataprepServer extends AbstractHandler with Logging {
   private def writeResponse(files: Seq[PreprocessingResult], response: HttpServletResponse): Unit = {
     response.setContentType("application/json")
     files.iterator.parMap {
-      case PreprocessingResult(docId, Success(file)) =>
+      case PreprocessingSuccess(docName, docSha, file) =>
         val attempt = Resource.using(Files.newInputStream(file)) { is =>
-          PreprocessPdf.tryGetDocument(is, docId)
+          PreprocessPdf.tryGetDocument(is, docName, docSha)
         }
         JsonFormat.toJsonString(attempt)
-      case PreprocessingResult(docId, Failure(e)) =>
+      case PreprocessingFailure(docId, e) =>
         val error = Error(docId, e.getMessage, Some(Utilities.stackTraceAsString(e)))
         JsonFormat.toJsonString(Attempt().withError(error))
     }.foreach(response.getWriter.println)
