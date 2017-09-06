@@ -891,11 +891,13 @@ def make_featurized_tokens_file(
         # do tokens
         fn = np.vectorize(embeddings.index_for_token, otypes=[np.uint32])
         text_features[:,0] = fn(lab_token_text_features[:,0])
+            # The CombinedEmbeddings class already adds in the keras mask, so we don't have to do it
+            # here.
         # do fonts
         fn = np.vectorize(lambda t: mmh3.hash(normalize(t)), otypes=[np.uint32])
         text_features[:,1] = fn(lab_token_text_features[:,1]) % model_settings.font_hash_size
+        text_features[:,1] += 1  # plus one for keras' masking
 
-        text_features += 1  # plus one for keras' masking
         featurized_file.create_dataset(
             "token_hashed_text_features",
             lab_token_text_features.shape,
