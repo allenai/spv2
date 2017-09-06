@@ -9,6 +9,7 @@ import h5py
 import logging
 import json
 import codecs
+import time
 
 import dataprep2
 import settings
@@ -58,12 +59,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
         with tempfile.TemporaryDirectory(prefix="SPV2Server-") as temp_dir:
             # read input
+            reading_input_time = time.time()
             input_size = int(self.headers["Content-Length"])
             input_file_name = os.path.join(temp_dir, "input")
             with open(input_file_name, "wb") as input_file:
                 _send_all(self.rfile, input_file, input_size)
+            reading_input_time = time.time() - reading_input_time
 
             # get json from the dataprep server
+            getting_json_time = time.time()
             json_file_name = os.path.join(temp_dir, "tokens.json")
             with open(json_file_name, "wb") as json_file, open(input_file_name, "rb") as input_file:
                 dataprep_conn = http.client.HTTPConnection("localhost", 8080, timeout=60)
@@ -75,8 +79,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                             dataprep_conn.host))
                     _send_all(dataprep_response, json_file)
             os.remove(input_file_name)
+            getting_json_time = time.time() - getting_json_time
 
             # make unlabeled tokens file
+            making_unlabeled_tokens_time = time.time()
             unlabeled_tokens_file_name = os.path.join(temp_dir, "unlabeled-tokens.h5")
             dataprep2.make_unlabeled_tokens_file(
                 json_file_name,
@@ -84,8 +90,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 ignore_errors=True)
             errors = [line for line in dataprep2.json_from_file(json_file_name) if "error" in line]
             os.remove(json_file_name)
+            making_unlabeled_tokens_time = time.time() - making_unlabeled_tokens_time
 
-            # make featurized file
+            # make featurized tokens file
+            making_featurized_tokens_time = time.time()
             with h5py.File(unlabeled_tokens_file_name, "r") as unlabeled_tokens_file:
                 featurized_tokens_file_name = os.path.join(temp_dir, "featurized-tokens.h5")
                 dataprep2.make_featurized_tokens_file(
@@ -98,7 +106,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 )
                 # We don't delete the unlabeled file here because the featurized one contains references
                 # to it.
+            making_featurized_tokens_time = time.time() - making_featurized_tokens_time
 
+            make_and_send_results_time = time.time()
             with h5py.File(featurized_tokens_file_name) as featurized_tokens_file:
                 def get_docs():
                     return dataprep2.documents_for_featurized_tokens(
@@ -133,6 +143,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     response_body.write("\n")
 
                 response_body.reset()
+            make_and_send_results_time = time.time() - make_and_send_results_time
+
+            logging.info("Done processing")
+            logging.info("Reading input:         %.0f s", reading_input_time)
+            logging.info("Getting JSON:          %.0f s", getting_json_time)
+            logging.info("Unlabeled tokens:      %.0f s", making_unlabeled_tokens_time)
+            logging.info("Featurized tokens:     %.0f s", making_featurized_tokens_time)
+            logging.info("Make and send results: %.0f s", make_and_send_results_time)
 
 
 class Server(http.server.HTTPServer):
@@ -147,6 +165,8 @@ class Server(http.server.HTTPServer):
 
 
 def main():
+    logging.getLogger().setLevel(logging.DEBUG)
+
     if os.name != 'nt':
         import manhole
         manhole.install()
