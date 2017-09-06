@@ -83,6 +83,9 @@ object DataprepCli {
   }
 
   def main(args: Array[String]): Unit = {
+    // suppress the Dock icon on OS X
+    System.setProperty("apple.awt.UIElement", "true")
+
     parser.parse(args, PDFRendererConfig()) match {
       case Some(config) => {
         config.commandConfig match {

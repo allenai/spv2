@@ -27,6 +27,9 @@ import scalaj.http.{ Http, HttpResponse }
 
 object DataprepServer extends Logging {
   def main(args: Array[String]): Unit = {
+    // suppress the Dock icon on OS X
+    System.setProperty("apple.awt.UIElement", "true")
+
     val server = new Server(8080)
     server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize", 10000000)
     server.setHandler(new DataprepServer())
