@@ -134,6 +134,7 @@ class Server(http.server.HTTPServer):
         super(Server, self).__init__(('', 8081), RequestHandler)
 
         self.model = model
+        self.model._make_predict_function()
         self.token_stats = token_stats
         self.embeddings = embeddings
         self.model_settings = model_settings
