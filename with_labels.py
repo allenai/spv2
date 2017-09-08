@@ -593,7 +593,7 @@ def train(
 ):
     """Returns a trained model using the data in dir as training data"""
     embeddings = dataprep2.CombinedEmbeddings(
-        dataprep2.TokenStatistics(os.path.join(pmc_dir, "all.tokenstats2.gz")),
+        dataprep2.tokenstats_for_pmc_dir(pmc_dir),
         dataprep2.GloveVectors(model_settings.glove_vectors),
         model_settings.minimum_token_frequency
     )

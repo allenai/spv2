@@ -861,7 +861,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "13mask"
+FEATURIZED_TOKENS_VERSION = "15tkst"
 
 def make_featurized_tokens_file(
     output_file_name: str,
@@ -891,8 +891,8 @@ def make_featurized_tokens_file(
         # do tokens
         fn = np.vectorize(embeddings.index_for_token, otypes=[np.uint32])
         text_features[:,0] = fn(lab_token_text_features[:,0])
-            # The CombinedEmbeddings class already adds in the keras mask, so we don't have to do it
-            # here.
+          # The CombinedEmbeddings class already adds in the keras mask, so we don't have to do it
+          # here.
         # do fonts
         fn = np.vectorize(lambda t: mmh3.hash(normalize(t)), otypes=[np.uint32])
         text_features[:,1] = fn(lab_token_text_features[:,1]) % model_settings.font_hash_size
@@ -1204,6 +1204,9 @@ class DocumentSet(Enum):
     TEST = 2
     VALIDATE = 3
 
+def tokenstats_for_pmc_dir(pmc_dir: str) -> TokenStatistics:
+    return TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
+
 def documents(
     pmc_dir: str,
     model_settings: settings.ModelSettings,
@@ -1217,7 +1220,7 @@ def documents(
         buckets = range(0x00, 0xe0)
     buckets = ["%02x" % x for x in buckets]
 
-    token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
+    token_stats = tokenstats_for_pmc_dir(pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
@@ -1476,7 +1479,7 @@ def main():
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     print(model_settings)
 
-    token_stats = TokenStatistics(os.path.join(args.pmc_dir, "all.tokenstats2.gz"))
+    token_stats = tokenstats_for_pmc_dir(args.pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
