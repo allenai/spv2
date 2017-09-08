@@ -184,13 +184,13 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        required=True,
+        default="model/B40.h5",
         help="filename of existing model"
     )
     parser.add_argument(
         "--tokenstats",
         type=str,
-        required=True,
+        default="model/all.tokenstats3.gz",
         help="filename of the tokenstats file"
     )
     parser.add_argument(
