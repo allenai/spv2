@@ -824,7 +824,7 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         return h5py.File(labeled_tokens_path, "r")
 
-FEATURIZED_TOKENS_VERSION = "14mama"
+FEATURIZED_TOKENS_VERSION = "15tkst"
 
 def featurized_tokens_file(
     bucket_path: str,
@@ -1137,6 +1137,9 @@ class DocumentSet(Enum):
     TEST = 2
     VALIDATE = 3
 
+def tokenstats_for_pmc_dir(pmc_dir: str) -> TokenStatistics:
+    return TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
+
 def documents(
     pmc_dir: str,
     model_settings: settings.ModelSettings,
@@ -1150,7 +1153,7 @@ def documents(
         buckets = range(0x00, 0xe0)
     buckets = ["%02x" % x for x in buckets]
 
-    token_stats = TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
+    token_stats = tokenstats_for_pmc_dir(pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
@@ -1409,7 +1412,7 @@ def main():
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     print(model_settings)
 
-    token_stats = TokenStatistics(os.path.join(args.pmc_dir, "all.tokenstats2.gz"))
+    token_stats = tokenstats_for_pmc_dir(args.pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
     embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
 
