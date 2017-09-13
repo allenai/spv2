@@ -869,7 +869,8 @@ def make_featurized_tokens_file(
     token_stats: TokenStatistics,
     embeddings: CombinedEmbeddings,
     vision_output: VisionOutput,
-    model_settings: settings.ModelSettings
+    model_settings: settings.ModelSettings,
+    make_copies: bool = False
 ):
     featurized_file = h5py.File(output_file_name, "w-", libver="latest")
     try:
@@ -879,8 +880,19 @@ def make_featurized_tokens_file(
 
         # since we don't add or remove pages, we can link to datasets in the original file
         for name in ["doc_metadata", "token_labels", "token_text_features", "token_numeric_features"]:
-            featurized_file[name] = \
-                h5py.ExternalLink(os.path.basename(input_file.filename), "/" + name)
+            if make_copies:
+                try:
+                    input_file.copy(name, featurized_file, name)
+                except KeyError as e:
+                    # We're allowed to get a KeyError for token_labels, because we can run this
+                    # function on unlabeled data. All other datasets must exist.
+                    if name == "token_labels":
+                        pass
+                    else:
+                        raise
+            else:
+                featurized_file[name] = \
+                    h5py.ExternalLink(os.path.basename(input_file.filename), "/" + name)
 
         # hash font and strings
         # This does all tokens in memory at once. We might have to be clever if that runs out
