@@ -91,9 +91,17 @@ case class ProcessingQueue(name: String) {
   }
 
   def submitPdfs(paperIds: Iterator[String]): Iterator[(String, String)] = {
-    submitDocuments(paperIds.parMap { paperId =>
-      PreprocessPdf.getDocument(paperId)
-    })
+    val documentAttempts = paperIds.parMap { paperId =>
+      (paperId, Try {
+        PreprocessPdf.getDocument(paperId)
+      })
+    }
+
+    val (successAttempts, errorAttempts) = documentAttempts.partition(_._2.isSuccess)
+
+    submitDocuments(successAttempts.map(_._2.get)) ++ errorAttempts.map {
+      case (paperId, Failure(e)) => (paperId, e.getMessage)
+    }
   }
 }
 
