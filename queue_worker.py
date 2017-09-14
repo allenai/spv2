@@ -94,6 +94,7 @@ def preprocessing_queue_worker(args):
             featurized_object = s3.Object(featurized_bucket, featurized_key)
             featurized_object.upload_file(featurized_tokens_file_name)
             os.remove(featurized_tokens_file_name)
+            logging.info("Uploaded batch to s3://%s/%s", featurized_bucket, featurized_key)
 
             # post a message to the next queue
             outgoing_queue.send_message(
@@ -103,8 +104,16 @@ def preprocessing_queue_worker(args):
 
         if message in messages:
             json_object = message_to_object(message)
-            message.delete()
             json_object.delete()
+            logging.info("Deleted %s ...", message.body)
+
+        incoming_queue.delete_messages(Entries=[
+            {
+                'Id': str(i),
+                'ReceiptHandle': m.receipt_handle
+            } for i, m in enumerate(messages)
+        ])
+        logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
 
 def main():
     logging.getLogger().setLevel(logging.INFO)
