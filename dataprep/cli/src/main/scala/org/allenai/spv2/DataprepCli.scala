@@ -22,6 +22,10 @@ object DataprepCli {
     inputNames: Seq[String] = Seq()
   ) extends CommandConfig
 
+  case class SubmitPdfsConfig(
+    inputs: Seq[String] = Seq()
+  ) extends CommandConfig
+
   val parser = new scopt.OptionParser[PDFRendererConfig]("PDFRenderer") {
     cmd("PDFToImage")
       .action((_, c) => c.copy(commandConfig = PDFToImageConfig()))
@@ -76,6 +80,15 @@ object DataprepCli {
               commandConfig = c.commandConfig.asInstanceOf[PreprocessPdfConfig].copy(
                 inputNames = c.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames ++ x))
           }))
+    cmd("SubmitPdfs")
+      .action((_, c) => c.copy(commandConfig = SubmitPdfsConfig()))
+      .text("Submit paper IDs to the SPv2 dev processing queue")
+      .children(
+        arg[Seq[String]]("paperId").required().unbounded().action((x, c) => {
+          val submitPdfsConfig = c.commandConfig.asInstanceOf[SubmitPdfsConfig]
+          c.copy(commandConfig = submitPdfsConfig.copy(
+            inputs = submitPdfsConfig.inputs ++ x))
+        }))
     checkConfig { config =>
       if (config.commandConfig == null) failure("You must specify a command.")
       else success
@@ -92,12 +105,17 @@ object DataprepCli {
           // only use scopt for option validation, but
           // allow PDFToImage to conduct it's own option
           // parsing
-          case c : PDFToImageConfig => {
+          case c: PDFToImageConfig =>
             PDFToImage.main(args.drop(1).map(_.replaceAll("--", "-")))
-          }
-          case c : PreprocessPdfConfig => PreprocessPdf.extractText(
+          case c: PreprocessPdfConfig => PreprocessPdf.extractText(
             outputFileName = config.commandConfig.asInstanceOf[PreprocessPdfConfig].outputFileName,
             inputNames = config.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames)
+          case c: SubmitPdfsConfig =>
+            val errors = ProcessingQueue.dev.submitPdfs(c.inputs.iterator).toSeq
+            errors.foreach { case (paperId, errorMessage) =>
+              println(s"$paperId\t$errorMessage")
+            }
+            println(s"${errors.length} errors")
         }
       }
       case None => System.exit(1)

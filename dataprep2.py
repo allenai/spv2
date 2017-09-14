@@ -24,8 +24,7 @@ import settings
 # Helpers 💁
 #
 
-
-def json_from_file(filename):
+def json_from_file(filename: str):
     if filename.endswith(".bz2"):
         open_fn = bz2.open
     elif filename.endswith(".gz"):
@@ -39,6 +38,10 @@ def json_from_file(filename):
                 yield json.loads(line)
             except ValueError as e:
                 logging.warning("Error while reading document (%s); skipping", e)
+
+def json_from_files(filenames: typing.List[str]):
+    for filename in filenames:
+        yield from json_from_file(filename)
 
 def normalize(s: str) -> str:
     s = s.lower()
@@ -352,7 +355,14 @@ _sha1_re = re.compile(r'^[0-9a-f]{40}$')
 _sha1DotPdf_re = re.compile(r'^[0-9a-f]{40}\.pdf$')
 _sha1FromS2Url = re.compile(r'.*([0-9a-f]{4})/([0-9a-f]{36}).pdf$')
 
-def make_unlabeled_tokens_file(json_file_name: str, output_file_name: str, ignore_errors=False):
+def make_unlabeled_tokens_file(
+    json_file_names: typing.Union[str, typing.List[str]],
+    output_file_name: str,
+    ignore_errors=False
+):
+    if isinstance(json_file_names, str):
+        json_file_names = [json_file_names]
+
     h5_file = h5py.File(output_file_name, "w-", libver="latest")
     try:
         h5_doc_metadata = h5_file.create_dataset(
@@ -375,18 +385,7 @@ def make_unlabeled_tokens_file(json_file_name: str, output_file_name: str, ignor
             compression="gzip",
             compression_opts=9)
 
-        for json_doc in json_from_file(json_file_name):
-            # If this is an attempt instead of a doc, it will have a doc field, which is what we want.
-            error = json_doc.get("error", None)
-            if error is not None:
-                doc_name = error.get("docName", "UNKNOWN")
-                if ignore_errors:
-                    logging.warning("Can't prepare failed document for %s." % doc_name)
-                    continue
-                else:
-                    raise ValueError("Got error JSON for doc %s" % doc_name)
-            json_doc = json_doc.get("doc", json_doc)
-
+        for json_doc in json_from_files(json_file_names):
             # find the proper doc id
             doc_name = json_doc["docName"]
             doc_sha = json_doc.get("docSha", None)
