@@ -21,6 +21,8 @@ def _message_to_object(s3, message):
     return json_bucket.Object(json_key)
 
 def preprocessing_queue_worker(args):
+    name = args[0]
+
     logging.info("Loading model settings ...")
     model_settings = settings.default_model_settings
 
@@ -35,8 +37,8 @@ def preprocessing_queue_worker(args):
     )
 
     sqs = boto3.resource("sqs")
-    incoming_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-dev")
-    outgoing_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-featurized-dev")
+    incoming_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-%s" % name)
+    outgoing_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-featurized-%s" % name)
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
@@ -118,6 +120,8 @@ def preprocessing_queue_worker(args):
         logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
 
 def processing_queue_worker(args):
+    name = args[0]
+
     logging.info("Loading model settings ...")
     model_settings = settings.default_model_settings
 
@@ -135,8 +139,8 @@ def processing_queue_worker(args):
     model = with_labels.model_with_labels(model_settings, embeddings)
 
     sqs = boto3.resource("sqs")
-    incoming_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-featurized-dev")
-    outgoing_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-done-dev")
+    incoming_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-featurized-%s" % name)
+    outgoing_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-done-%s" % name)
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
