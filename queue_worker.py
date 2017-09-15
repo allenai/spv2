@@ -20,6 +20,61 @@ def _message_to_object(s3, message):
     json_bucket = s3.Bucket(json_bucket)
     return json_bucket.Object(json_key)
 
+def get_incoming_queue(sqs, name: str):
+    queue_name = "ai2-s2-spv2-%s" % name
+    try:
+        return sqs.get_queue_by_name(QueueName=queue_name)
+    except Exception as e:
+        if "QueueDoesNotExist" in str(type(e)): # boto's exceptions are exceptionally dumb
+            return sqs.create_queue(
+                QueueName = queue_name,
+                Attributes = {
+                    "DelaySeconds": "30",          # time for S3 to catch up
+                    "MaximumMessageSize": str(64 * 1024),
+                    "MessageRetentionPeriod": str(14 * 24 * 60 * 60),
+                    "ReceiveMessageWaitTimeSeconds": "20",
+                    "VisibilityTimeout": str(5 * 60)
+                }
+            )
+        else:
+            raise
+
+def get_featurized_queue(sqs, name):
+    queue_name = "ai2-s2-spv2-featurized-%s" % name
+    try:
+        return sqs.get_queue_by_name(QueueName=queue_name)
+    except Exception as e:
+        if "QueueDoesNotExist" in str(type(e)): # boto's exceptions are exceptionally dumb
+            return sqs.create_queue(
+                QueueName = queue_name,
+                Attributes = {
+                    "DelaySeconds": "30",          # time for S3 to catch up
+                    "MaximumMessageSize": str(64 * 1024),
+                    "MessageRetentionPeriod": str(14 * 24 * 60 * 60),
+                    "ReceiveMessageWaitTimeSeconds": "20",
+                    "VisibilityTimeout": str(10 * 60)
+                }
+            )
+        else:
+            raise
+
+def get_done_queue(sqs, name):
+    queue_name = "ai2-s2-spv2-done-%s" % name
+    try:
+        return sqs.get_queue_by_name(QueueName=queue_name)
+    except Exception as e:
+        if "QueueDoesNotExist" in str(type(e)): # boto's exceptions are exceptionally dumb
+            return sqs.create_queue(
+                QueueName = queue_name,
+                Attributes = {
+                    "MessageRetentionPeriod": str(14 * 24 * 60 * 60),
+                    "ReceiveMessageWaitTimeSeconds": "20",
+                    "VisibilityTimeout": str(5 * 60)
+                }
+            )
+        else:
+            raise
+
 def preprocessing_queue_worker(args):
     name = args[0]
 
@@ -37,8 +92,8 @@ def preprocessing_queue_worker(args):
     )
 
     sqs = boto3.resource("sqs")
-    incoming_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-%s" % name)
-    outgoing_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-featurized-%s" % name)
+    incoming_queue = get_incoming_queue(sqs, name)
+    outgoing_queue = get_featurized_queue(sqs, name)
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
@@ -139,8 +194,8 @@ def processing_queue_worker(args):
     model = with_labels.model_with_labels(model_settings, embeddings)
 
     sqs = boto3.resource("sqs")
-    incoming_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-featurized-%s" % name)
-    outgoing_queue = sqs.get_queue_by_name(QueueName="ai2-s2-spv2-done-%s" % name)
+    incoming_queue = get_featurized_queue(sqs, name)
+    outgoing_queue = get_done_queue(sqs, name)
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
