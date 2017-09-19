@@ -1,5 +1,8 @@
 #!/bin/sh
 
+set -e
+set -x
+
 VERSION=1.0
 ENVIRONMENT=$1
 

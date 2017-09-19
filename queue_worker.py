@@ -6,7 +6,7 @@ import tempfile
 import time
 import os
 import h5py
-import secrets
+import random
 import json
 
 import settings
@@ -149,7 +149,7 @@ def preprocessing_queue_worker(args):
 
             # upload the result
             featurized_bucket = "ai2-s2-extraction-cache"
-            featurized_key = "spv2-featurized-files/%x.featurized-tokens.h5" % secrets.randbits(64)
+            featurized_key = "spv2-featurized-files/%x.featurized-tokens.h5" % random.getrandbits(64)
             featurized_object = s3.Object(featurized_bucket, featurized_key)
             featurized_object.upload_file(featurized_tokens_file_name)
             os.remove(featurized_tokens_file_name)

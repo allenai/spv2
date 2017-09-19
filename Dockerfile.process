@@ -27,8 +27,9 @@ RUN cd stringmatch && python3 stringmatch_builder.py && cd ..
 
 COPY *.py ./
 
+ARG ENVIRONMENT
+ENV ENVIRONMENT ${ENVIRONMENT:-dev}
+
 RUN pip3 uninstall -y tensorflow && pip3 install tensorflow-gpu
 
-ARG ENVIRONMENT=dev
-
-CMD ["python queue_worker.py process ${ENVIRONMENT}"]
+CMD python3 queue_worker.py process ${ENVIRONMENT}

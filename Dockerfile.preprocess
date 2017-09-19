@@ -27,6 +27,7 @@ RUN cd stringmatch && python3 stringmatch_builder.py && cd ..
 
 COPY *.py ./
 
-ARG ENVIRONMENT=dev
+ARG ENVIRONMENT
+ENV ENVIRONMENT ${ENVIRONMENT:-dev}
 
-CMD ["python queue_worker.py preprocess ${ENVIRONMENT}"]
+CMD python3 queue_worker.py preprocess ${ENVIRONMENT}
