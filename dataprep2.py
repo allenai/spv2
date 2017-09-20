@@ -1425,7 +1425,7 @@ def dump_documents(
                             html_file.write('<th>%s</th>' % subcolumn)
                 html_file.write("</tr>\n")
 
-                label2color_class = [None, "success", "info"]
+                label2color_class = [None, "success", "info", "warning"]
                 # We're abusing these CSS classes from Bootstrap to color rows according to their
                 # label.
 
