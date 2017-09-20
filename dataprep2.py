@@ -1335,7 +1335,7 @@ def dump_documents(
         assert pdf_path.endswith(".pdf")
         html_path = pdf_path[:-3] + "html"
         logging.info("Dumping %s", html_path)
-        with open(html_path, "w") as html_file:
+        with open(html_path, "w", encoding="UTF-8") as html_file:
             html_file.write("<html>\n"
                             "<head>\n")
             html_file.write("<title>%s</title>" % html.escape(doc.doc_sha))
