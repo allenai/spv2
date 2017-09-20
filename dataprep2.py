@@ -513,7 +513,10 @@ def labeled_tokens_file(bucket_path: str):
             "labeled-tokens-%s.h5" % LABELED_TOKENS_VERSION)
     if os.path.exists(labeled_tokens_path):
         return h5py.File(labeled_tokens_path, "r")
-
+    total_titles = 0
+    total_matches = 0
+    total_docs = 0
+    total_no_gold_bibs = 0
     logging.info("%s does not exist, will recreate", labeled_tokens_path)
     with unlabeled_tokens_file(bucket_path) as unlabeled_tokens:
         temp_labeled_tokens_path = labeled_tokens_path + ".%d.temp" % os.getpid()
@@ -624,6 +627,8 @@ def labeled_tokens_file(bucket_path: str):
                     MAX_PAGE_COUNT,
                     len(json_metadata["pages"]))
 
+                total_docs += 1
+
                 # read bibtitles from nxml
                 gold_bib_titles = nxml.findall("./back/ref-list/ref/mixed-citation/article-title")
                 if len(gold_bib_titles) == 0:
@@ -632,6 +637,7 @@ def labeled_tokens_file(bucket_path: str):
                     gold_bib_titles = nxml.findall("./back/ref-list/ref/element-citation/article-title")
                 if len(gold_bib_titles) == 0:
                     logging.warning("Found no gold bib titles for %s; skipping doc", doc_id)
+                    total_no_gold_bibs += 1
                     continue
                 gold_bib_titles = [" ".join(tokenize(all_inner_text(x))) for x in gold_bib_titles]
                 gold_bib_titles = [trim_punctuation(x) for x in gold_bib_titles]
@@ -792,6 +798,12 @@ def labeled_tokens_file(bucket_path: str):
                         bib_title_matches[bib_title_index] = bib_title_match
                         bib_title_match = None
 
+                found_matches = sum(1 for x in bib_title_matches if len(x) > 0)
+                total_matches += found_matches
+
+                total_titles += len(bib_title_matches)
+                logging.info("found %s of %s titles for %s", found_matches, len(bib_title_matches), doc_id)
+
                 # find the definitive author labels from the lists of potential matches we have now
                 # all author matches have to be on the same page
                 page_numbers_with_author_matches = \
@@ -907,6 +919,10 @@ def labeled_tokens_file(bucket_path: str):
         # close, rename, and open as read-only
         labeled_file.close()
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
+        logging.info("total titles: %s", total_titles)
+        logging.info("total matches: %s", total_matches)
+        logging.info("total docs: %s", total_docs)
+        logging.info("total no gold bibs: %s", total_no_gold_bibs)
         return h5py.File(labeled_tokens_path, "r")
 
 
