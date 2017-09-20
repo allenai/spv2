@@ -336,17 +336,21 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄
 #
 
-UNLABELED_TOKENS_VERSION = "3corr"
+UNLABELED_TOKENS_VERSION = "3corr_bibs"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
-POTENTIAL_LABELS = [None, "title", "author"]
+POTENTIAL_LABELS = [None, "title", "author", "bibtitle", "bibauthor", "bibvenue", "bibyear"]
 NONE_LABEL = 0
 TITLE_LABEL = POTENTIAL_LABELS.index("title")
 AUTHOR_LABEL = POTENTIAL_LABELS.index("author")
+BIBTITLE_LABEL = POTENTIAL_LABELS.index("bibtitle")
+BIBAUTHOR_LABEL = POTENTIAL_LABELS.index("bibauthor")
+BIBVENUE_LABEL = POTENTIAL_LABELS.index("bibvenue")
+BIBYEAR_LABEL = POTENTIAL_LABELS.index("bibyear")
 
 MAX_DOCS_PER_BUCKET = 6100
-MAX_PAGE_COUNT = 3
+MAX_PAGE_COUNT = 50
 # The effective page count used in training will be the minimum of this and the same setting in
 # the model settings.
 MAX_PAGES_PER_BUCKET = MAX_DOCS_PER_BUCKET * MAX_PAGE_COUNT
@@ -387,7 +391,10 @@ def make_unlabeled_tokens_file(
 
         for json_doc in json_from_files(json_file_names):
             # find the proper doc id
-            doc_name = json_doc["docName"]
+            if "docName" in json_doc:
+                doc_name = json_doc["docName"]
+            else:
+                doc_name = json_doc["docId"]
             doc_sha = json_doc.get("docSha", None)
             if doc_sha is None:
                 if _sha1DotPdf_re.match(doc_name) is not None:
@@ -485,7 +492,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "12corr"
+LABELED_TOKENS_VERSION = "12corr_bibs"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -617,11 +624,27 @@ def labeled_tokens_file(bucket_path: str):
                     MAX_PAGE_COUNT,
                     len(json_metadata["pages"]))
 
-                # find titles and authors in the document
+                # read bibtitles from nxml
+                gold_bib_titles = nxml.findall("./back/ref-list/ref/mixed-citation/article-title")
+                if len(gold_bib_titles) == 0:
+                    gold_bib_titles = nxml.findall("./back/ref-list/ref/citation/article-title")
+                if len(gold_bib_titles) == 0:
+                    gold_bib_titles = nxml.findall("./back/ref-list/ref/element-citation/article-title")
+                if len(gold_bib_titles) == 0:
+                    logging.warning("Found no gold bib titles for %s; skipping doc", doc_id)
+                    continue
+                gold_bib_titles = [" ".join(tokenize(all_inner_text(x))) for x in gold_bib_titles]
+                gold_bib_titles = [trim_punctuation(x) for x in gold_bib_titles]
+                gold_bib_titles = [x.replace("\u2026", ". . .") for x in gold_bib_titles]
+
+                #TODO: read bibauthors, bibvenues, bibyears from nxml
+
+                # find titles, authors, bibs in the document
                 title_match = None
                 author_matches = []
                 for author_index in range(len(gold_authors)):
                     author_matches.append([])
+                bib_title_matches = [[] for x in gold_bib_titles]
 
                 FuzzyMatch = collections.namedtuple("FuzzyMatch", [
                     "page_number",
@@ -687,7 +710,10 @@ def labeled_tokens_file(bucket_path: str):
                             if one_past_last_token_index is None:
                                 one_past_last_token_index = token_count
 
-                            assert first_token_index != one_past_last_token_index
+                            #assert first_token_index != one_past_last_token_index
+                            if first_token_index == one_past_last_token_index:
+                                logging.warning("inifinite loop detected, breaking.  Stuck on token: %s", first_token_index)
+                                break
 
                             matched_string = tokens[first_token_index:one_past_last_token_index]
                             matched_string = " ".join(matched_string)
@@ -745,6 +771,27 @@ def labeled_tokens_file(bucket_path: str):
                         for author_variant in author_variants:
                             author_matches[author_index].extend(find_string_in_page(author_variant))
 
+                    #
+                    # find bibtitles
+                    #
+                    bib_title_match = None
+                    for bib_title_index, gold_bib_title in enumerate(gold_bib_titles):
+                        def bib_title_match_sort_key(match: FuzzyMatch):
+                            return (
+                                match.cost,
+                                -match.average_font_size,
+                                match.first_token_index
+                            )
+                        bib_title_matches_on_this_page = list(find_string_in_page(gold_bib_title))
+                        if len(bib_title_matches_on_this_page) > 0:
+                            bib_title_match_on_this_page = min(bib_title_matches_on_this_page, key=bib_title_match_sort_key)
+                            if bib_title_match is None or bib_title_match_on_this_page.cost < bib_title_match.cost:
+                                bib_title_match = bib_title_match_on_this_page
+                        if not bib_title_match:
+                            continue
+                        bib_title_matches[bib_title_index] = bib_title_match
+                        bib_title_match = None
+
                 # find the definitive author labels from the lists of potential matches we have now
                 # all author matches have to be on the same page
                 page_numbers_with_author_matches = \
@@ -786,7 +833,8 @@ def labeled_tokens_file(bucket_path: str):
                     "doc_id": doc_id,
                     "doc_sha": doc_sha,
                     "gold_title": gold_title,
-                    "gold_authors": gold_authors
+                    "gold_authors": gold_authors,
+                    "gold_bib_titles": gold_bib_titles
                 }
                 lab_doc_json_pages = []
                 for page_number in range(effective_page_count):
@@ -830,6 +878,12 @@ def labeled_tokens_file(bucket_path: str):
                         if author_match.page_number == page_number:
                             labels[author_match.first_token_index:author_match.one_past_last_token_index] = AUTHOR_LABEL
                             # TODO: warn if we're overwriting existing labels
+                    # for bibtitle
+                    for bib_title_match in bib_title_matches:
+                        if len(bib_title_match)==0:
+                            continue
+                        if bib_title_match.page_number == page_number:
+                            labels[bib_title_match.first_token_index:title_match.one_past_last_token_index] = BIBTITLE_LABEL
 
                     lab_first_token_index = len(lab_token_labels)
                     lab_token_labels.resize(
@@ -860,7 +914,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "15tkst"
+FEATURIZED_TOKENS_VERSION = "15tkst_bibs"
 
 def make_featurized_tokens_file(
     output_file_name: str,
