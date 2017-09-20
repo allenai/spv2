@@ -895,7 +895,7 @@ def labeled_tokens_file(bucket_path: str):
                         if len(bib_title_match)==0:
                             continue
                         if bib_title_match.page_number == page_number:
-                            labels[bib_title_match.first_token_index:title_match.one_past_last_token_index] = BIBTITLE_LABEL
+                            labels[bib_title_match.first_token_index:bib_title_match.one_past_last_token_index] = BIBTITLE_LABEL
 
                     lab_first_token_index = len(lab_token_labels)
                     lab_token_labels.resize(
