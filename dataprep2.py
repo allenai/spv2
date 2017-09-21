@@ -1201,6 +1201,7 @@ DocumentBase = collections.namedtuple(
         "doc_sha",
         "gold_title",
         "gold_authors",
+        "gold_bib_titles",
         "pages"
     ]
 )
@@ -1254,15 +1255,18 @@ def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels
         if include_labels:
             gold_title = trim_punctuation(doc_metadata["gold_title"])
             gold_authors = doc_metadata["gold_authors"]
+            gold_bib_titles = doc_metadata["gold_bib_titles"]
         else:
             gold_title = None
             gold_authors = None
+            gold_bib_titles = None
 
         yield Document(
             doc_metadata["doc_id"],
             doc_metadata["doc_sha"],
             gold_title,
             gold_authors,
+            gold_bib_titles,
             pages)
 
 def documents_for_bucket(
@@ -1353,6 +1357,9 @@ def dump_documents(
                 html_file.write("<p>Gold author: <b>%s %s</b></p>\n" % (
                     html.escape(given_names),
                     html.escape(surnames)))
+
+            for bib_title in doc.gold_bib_titles:
+                html_file.write("<p>Gold bib title: <b>%s</b></p>\n" % html.escape(bib_title))
 
             for page in doc.pages:
                 html_file.write("<h2>Page %d</h2>\n" % page.page_number)
