@@ -1359,8 +1359,11 @@ def dump_documents(
                 html_file.write('<table class="table table-condensed">\n')
 
                 # get statistics for numeric features
-                numeric_features_min = np.min(page.numeric_features, axis=0)
-                numeric_features_max = np.max(page.numeric_features, axis=0)
+                if len(page.numeric_features) > 0:
+                    numeric_features_min = np.min(page.numeric_features, axis=0)
+                    numeric_features_max = np.max(page.numeric_features, axis=0)
+                else:
+                    logging.warning("no numeric features for page %s of: %s", page.page_number, html_path)
 
                 numeric_features_min[0:2] = 0.0
                 numeric_features_max[0:2] = page.width
