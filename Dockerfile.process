@@ -1,4 +1,4 @@
-FROM nvidia/cuda:8.0-cudnn5-runtime
+FROM nvidia/cuda:8.0-cudnn6-runtime
 
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
@@ -13,7 +13,7 @@ WORKDIR /spv2
 RUN apt-get update -y && \
     apt-get install apt-utils -y && \
     apt-get upgrade -y && \
-    apt-get install git python3 python3-pip python3-cffi unzip wget jq -y && \
+    apt-get install git python3 python3-pip python3-cffi unzip wget -y && \
     pip3 install --upgrade pip
 
 # Install Vault
@@ -45,4 +45,4 @@ RUN pip3 uninstall -y tensorflow && pip3 install tensorflow-gpu
 
 ARG ENVIRONMENT
 ENV ENVIRONMENT ${ENVIRONMENT:-dev}
-CMD python3 queue_worker.py process ${ENVIRONMENT}
+CMD ./pyWithEnvironment.sh queue_worker.py process ${ENVIRONMENT}

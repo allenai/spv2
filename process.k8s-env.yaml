@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spv2-process-dev
+  namespace: s2-spv2-dev
+  labels:
+    contact: dirkg
+spec:
+  template:
+    metadata:
+      labels:
+        autoscaler-task: "yes"
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: spv2-process-dev
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/process:1.0.dev
+          imagePullPolicy: Always
+          resources:
+            limits:
+              cpu: 4
+              memory: 16Gi
+              alpha.kubernetes.io/nvidia-gpu: 1
+            requests:
+              cpu: 2
+              memory: 8Gi
+          volumeMounts:
+          - name: nvidia-driver
+            mountPath: /usr/local/nvidia
+            readOnly: true
+      volumes:
+      - name: nvidia-driver
+        hostPath:
+          path: /var/lib/nvidia-docker/volumes/nvidia_driver/367.57
+      tolerations:
+        - key: "GpuOnly"
+          operator: "Equal"
+          value: "true"

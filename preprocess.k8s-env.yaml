@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spv2-preprocess-dev
+  namespace: s2-spv2-dev
+  labels:
+    contact: dirkg
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: spv2-preprocess-dev
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/preprocess:1.0.dev
+          imagePullPolicy: Always
+          resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 500Mi

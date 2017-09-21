@@ -97,12 +97,17 @@ def preprocessing_queue_worker(args):
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
+    last_time_with_messages = time.time()
     while True:
         messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
         logging.info("Received %d messages", len(messages))
         if len(messages) <= 0:
+            if time.time() - last_time_with_messages > 5 * 60:
+                logging.info("Saw no messages for five minutes. Shutting down.")
+                return
             time.sleep(20)
             continue
+        last_time_with_messages = time.time()
 
         with tempfile.TemporaryDirectory(prefix="SPV2Server-preprocess-") as temp_dir:
             # read input
@@ -199,12 +204,17 @@ def processing_queue_worker(args):
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
+    last_time_with_messages = time.time()
     while True:
         messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
         logging.info("Received %d messages", len(messages))
         if len(messages) <= 0:
+            if time.time() - last_time_with_messages > 5 * 60:
+                logging.info("Saw no messages for five minutes. Shutting down.")
+                return
             time.sleep(20)
             continue
+        last_time_with_messages = time.time()
 
         with tempfile.TemporaryDirectory(prefix="SPV2Server-process-") as temp_dir:
             # read input
