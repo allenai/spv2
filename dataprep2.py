@@ -630,20 +630,46 @@ def labeled_tokens_file(bucket_path: str):
                 total_docs += 1
 
                 # read bibtitles from nxml
-                gold_bib_titles = nxml.findall("./back/ref-list/ref/mixed-citation/article-title")
-                if len(gold_bib_titles) == 0:
-                    gold_bib_titles = nxml.findall("./back/ref-list/ref/citation/article-title")
-                if len(gold_bib_titles) == 0:
-                    gold_bib_titles = nxml.findall("./back/ref-list/ref/element-citation/article-title")
-                if len(gold_bib_titles) == 0:
-                    logging.warning("Found no gold bib titles for %s; skipping doc", doc_id)
-                    total_no_gold_bibs += 1
+                gold_bib_nodes = nxml.findall("./back/ref-list/ref/mixed-citation")
+                if len(gold_bib_nodes) == 0:
+                    gold_bib_nodes = nxml.findall("./back/ref-list/ref/element-citation")
+                if len(gold_bib_nodes) == 0:
+                    gold_bib_nodes = nxml.findall("./back/ref-list/ref/citation")
+                if len(gold_bib_nodes) == 0:
+                    logging.warning("Found no gold bib nodes for %s, skipping doc", doc_id)
                     continue
+                idx = 0
+                gold_bib_titles = [None for x in gold_bib_nodes]
+                gold_bib_author_nodes = [None for x in gold_bib_nodes]
+                gold_bib_venues = [None for x in gold_bib_nodes]
+                gold_bib_years = [None for x in gold_bib_nodes]
+                for gold_bib_node in gold_bib_nodes:
+                    title = gold_bib_node.findall("./article-title")
+                    if title is None:
+                        logging.warning("Found no gold bib title for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_titles[idx] = title
+                    authors = gold_bib_node.findall("./person-group/name")
+                    if len(authors) == 0:
+                        authors = gold_bib_node.findall("./name")
+                    if len(authors) == 0:
+                        authors = gold_bib_node.findall("./collab")
+                    if len(authors) == 0:
+                        logging.warning("Found no gold bib authors for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_author_nodes[idx] = authors
+                    venue = gold_bib_node.findall("./source")
+                    if venue is None:
+                        logging.warning("Found no venue for %s entry %s", doc_id, idx)
+                    gold_bib_venues[idx] = venue
+                    year = gold_bib_node.findall("./year")
+                    if year is None:
+                        logging.warning("Found no year for %s entry $s", doc_id, idx)
+                    gold_bib_years[idx] = year
+                    idx += 1
                 gold_bib_titles = [" ".join(tokenize(all_inner_text(x))) for x in gold_bib_titles]
                 gold_bib_titles = [trim_punctuation(x) for x in gold_bib_titles]
                 gold_bib_titles = [x.replace("\u2026", ". . .") for x in gold_bib_titles]
-
-                #TODO: read bibauthors, bibvenues, bibyears from nxml
 
                 # find titles, authors, bibs in the document
                 title_match = None
