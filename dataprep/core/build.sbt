@@ -1,12 +1,6 @@
 organization := "org.allenai.spv2"
 
-name := "dataprep-core"
-
-version := "1.0"
-
-scalaVersion := "2.11.8"
-
-resolvers += Resolver.bintrayRepo("allenai", "maven")
+name := "spv2-dataprep-core"
 
 libraryDependencies ++= Seq(
   "org.apache.pdfbox" % "pdfbox" % "2.0.5" exclude ("commons-logging", "commons-logging"),
@@ -26,4 +20,3 @@ libraryDependencies ++= Seq(
 PB.targets in Compile := Seq(
   scalapb.gen() -> (sourceManaged in Compile).value
 )
-
