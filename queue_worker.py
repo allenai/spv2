@@ -8,6 +8,7 @@ import os
 import h5py
 import random
 import json
+import gzip
 
 import settings
 import dataprep2
@@ -279,13 +280,76 @@ def processing_queue_worker(args):
         ])
         logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
 
+_multiple_slashes = re.compile(r'/+')
+
+def write_rdd(args):
+    name = args[0]
+    rdd_location = args[1]
+
+    DESIRED_BATCH_SIZE = 1000
+
+    sqs = boto3.resource("sqs")
+    incoming_queue = get_done_queue(sqs, name)
+    s3 = boto3.resource("s3")
+    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
+
+    logging.info("Starting to process queue messages")
+    last_time_with_messages = time.time()
+    while True:
+        message_batch = []
+        time_of_oldest_message = None
+        while len(message_batch) < DESIRED_BATCH_SIZE and (time_of_oldest_message is None or time.time() - time_of_oldest_message < incoming_visibility_timeout / 2):
+            messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
+            logging.info("Received %d messages", len(messages))
+            if len(message_batch) <= 0:
+                time_of_oldest_message = time.time()
+            message_batch.extend(messages)
+
+        if len(message_batch) <= 0:
+            if time.time() - last_time_with_messages > incoming_visibility_timeout:
+                logging.info("Saw no messages for more than %d seconds. Shutting down.", incoming_visibility_timeout)
+                return
+            time.sleep(20)
+            continue
+        last_time_with_messages = time.time()
+
+        with tempfile.TemporaryFile(prefix="spv2-process-", suffix=".json.gz") as f:
+            with gzip.GzipFile(fileobj=f, mode="w") as compressed_f:
+                for message in message_batch:
+                    compressed_f.write(message.body.encode("UTF-8")) # message is already JSON, so we don't have to encode it
+                    compressed_f.write("\n".encode("UTF-8"))
+            f.flush()
+            f.seek(0)
+
+            destination = "part-%d.gz" % random.getrandbits(64)
+            destination = rdd_location + "/" + destination
+            destination = _multiple_slashes.subn("/", destination)[0]
+            destination = destination.replace("s3:/", "s3://")
+            destination_bucket, destination_key = _s3url_re.match(destination).groups()
+            destination_bucket = s3.Bucket(destination_bucket)
+            destination_bucket.upload_fileobj(f, destination_key)
+
+        while len(message_batch) > 0:
+            messages = message_batch[:10]
+            incoming_queue.delete_messages(Entries=[
+                {
+                    'Id': str(i),
+                    'ReceiptHandle': m.receipt_handle
+                } for i, m in enumerate(messages)
+                ])
+            logging.info("Deleted %d messages", len(messages))
+            del message_batch[:10]
+
 def main():
     logging.getLogger().setLevel(logging.INFO)
     command = sys.argv[1]
+    command_args = sys.argv[2:]
     if command == "preprocess":
-        preprocessing_queue_worker(sys.argv[2:])
+        preprocessing_queue_worker(command_args)
     elif command == "process":
-        processing_queue_worker(sys.argv[2:])
+        processing_queue_worker(command_args)
+    elif command == "write_rdd":
+        write_rdd(command_args)
     else:
         raise ValueError("Invalid command: %s" % command)
 
