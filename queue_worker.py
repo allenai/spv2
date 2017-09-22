@@ -110,7 +110,7 @@ def preprocessing_queue_worker(args):
             continue
         last_time_with_messages = time.time()
 
-        with tempfile.TemporaryDirectory(prefix="SPV2Server-preprocess-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="spv2-preprocess-") as temp_dir:
             # read input
             reading_json_time = time.time()
             json_file_names = []
@@ -218,7 +218,7 @@ def processing_queue_worker(args):
             continue
         last_time_with_messages = time.time()
 
-        with tempfile.TemporaryDirectory(prefix="SPV2Server-process-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="spv2-process-") as temp_dir:
             # read input
             reading_featurized_time = time.time()
             featurized_file_names = []
