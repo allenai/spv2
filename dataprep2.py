@@ -54,6 +54,9 @@ def normalize(s: str) -> str:
 #
 
 def percentile_function_from_values_and_counts(values: np.ndarray, counts: np.ndarray):
+    if len(values) <= 0:
+        return lambda x: 0.5
+
     assert (np.diff(values) >= 0.0).all()   # make sure the values are sorted
     cum_array = counts.cumsum()
     if cum_array.dtype != np.float32:
