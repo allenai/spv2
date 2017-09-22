@@ -34,6 +34,8 @@ publishTo := Some("dummy" at "nowhere")
 publish := { }
 publishLocal := { }
 
+releaseIgnoreUntrackedFiles := true
+
 lazy val core = (project in file("core")).settings(commonSettings)
 
 lazy val cli = (project in file("cli")).settings(commonSettings).dependsOn(core)
