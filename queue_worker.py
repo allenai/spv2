@@ -93,6 +93,7 @@ def preprocessing_queue_worker(args):
 
     sqs = boto3.resource("sqs")
     incoming_queue = get_incoming_queue(sqs, name)
+    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
     outgoing_queue = get_featurized_queue(sqs, name)
     s3 = boto3.resource("s3")
 
@@ -102,8 +103,8 @@ def preprocessing_queue_worker(args):
         messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
         logging.info("Received %d messages", len(messages))
         if len(messages) <= 0:
-            if time.time() - last_time_with_messages > 5 * 60:
-                logging.info("Saw no messages for five minutes. Shutting down.")
+            if time.time() - last_time_with_messages > incoming_visibility_timeout:
+                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
                 return
             time.sleep(20)
             continue
@@ -200,6 +201,7 @@ def processing_queue_worker(args):
 
     sqs = boto3.resource("sqs")
     incoming_queue = get_featurized_queue(sqs, name)
+    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
     outgoing_queue = get_done_queue(sqs, name)
     s3 = boto3.resource("s3")
 
@@ -209,8 +211,8 @@ def processing_queue_worker(args):
         messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
         logging.info("Received %d messages", len(messages))
         if len(messages) <= 0:
-            if time.time() - last_time_with_messages > 5 * 60:
-                logging.info("Saw no messages for five minutes. Shutting down.")
+            if time.time() - last_time_with_messages > incoming_visibility_timeout:
+                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
                 return
             time.sleep(20)
             continue
