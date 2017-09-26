@@ -645,10 +645,10 @@ def labeled_tokens_file(bucket_path: str):
                 gold_bib_years = [None for x in gold_bib_nodes]
                 for gold_bib_node in gold_bib_nodes:
                     title = gold_bib_node.findall("./article-title")
-                    if title is None:
+                    if len(title) == 0:
                         logging.warning("Found no gold bib title for %s entry %s", doc_id, idx)
                     else:
-                        gold_bib_titles[idx] = title
+                        gold_bib_titles[idx] = title[0]
                     authors = gold_bib_node.findall("./person-group/name")
                     if len(authors) == 0:
                         authors = gold_bib_node.findall("./name")
@@ -659,15 +659,17 @@ def labeled_tokens_file(bucket_path: str):
                     else:
                         gold_bib_author_nodes[idx] = authors
                     venue = gold_bib_node.findall("./source")
-                    if venue is None:
+                    if len(venue) == 0:
                         logging.warning("Found no venue for %s entry %s", doc_id, idx)
-                    gold_bib_venues[idx] = venue
+                    else:
+                        gold_bib_venues[idx] = venue[0]
                     year = gold_bib_node.findall("./year")
-                    if year is None:
-                        logging.warning("Found no year for %s entry $s", doc_id, idx)
-                    gold_bib_years[idx] = year
+                    if len(year) == 0:
+                        logging.warning("Found no year for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_years[idx] = year[0]
                     idx += 1
-                gold_bib_titles = [" ".join(tokenize(all_inner_text(x))) for x in gold_bib_titles]
+                gold_bib_titles = [" ".join(tokenize(all_inner_text(x))) if x is not None else "" for x in gold_bib_titles]
                 gold_bib_titles = [trim_punctuation(x) for x in gold_bib_titles]
                 gold_bib_titles = [x.replace("\u2026", ". . .") for x in gold_bib_titles]
 
@@ -814,6 +816,8 @@ def labeled_tokens_file(bucket_path: str):
                                 -match.average_font_size,
                                 match.first_token_index
                             )
+                        if len(gold_bib_title)==0:
+                            continue
                         bib_title_matches_on_this_page = list(find_string_in_page(gold_bib_title))
                         if len(bib_title_matches_on_this_page) > 0:
                             bib_title_match_on_this_page = min(bib_title_matches_on_this_page, key=bib_title_match_sort_key)
