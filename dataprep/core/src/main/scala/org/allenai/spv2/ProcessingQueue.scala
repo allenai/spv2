@@ -16,7 +16,7 @@ import org.allenai.common.Resource
 import org.allenai.common.ParIterator._
 import org.allenai.spv2.document.Document
 
-import scala.util.{ Success, Try, Failure }
+import scala.util.{ Failure, Success, Try }
 
 case class ProcessingQueue(name: String) {
   private val sqs = new AmazonSQSClient()
