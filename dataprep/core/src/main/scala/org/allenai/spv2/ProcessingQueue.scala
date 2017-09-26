@@ -73,6 +73,7 @@ case class ProcessingQueue(name: String) {
 
     val failuresWhileSubmitting = successAttempts.map {
       case (paperId, Success(result)) => (paperId, result)
+      case (_, Failure(_)) => throw new AssertionError("This should never happen.")
     }.grouped(10).flatMap { group =>
       lazy val batchId2paperId = group.map { case (paperId, request) =>
         request.getId -> paperId
@@ -86,6 +87,7 @@ case class ProcessingQueue(name: String) {
 
     val failuresWhileParsing = errorAttempts.map {
       case (paperId, Failure(e)) => (paperId, e.getMessage)
+      case (_, Success(_)) => throw new AssertionError("This should never happen.")
     }
 
     failuresWhileSubmitting ++ failuresWhileParsing
@@ -102,6 +104,7 @@ case class ProcessingQueue(name: String) {
 
     submitDocuments(successAttempts.map(_._2.get)) ++ errorAttempts.map {
       case (paperId, Failure(e)) => (paperId, e.getMessage)
+      case (_, Success(_)) => throw new AssertionError("This should never happen.")
     }
   }
 }
