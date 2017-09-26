@@ -25,7 +25,7 @@ case class ProcessingQueue(name: String) {
 
   private val queueUrl = s"https://sqs.us-west-2.amazonaws.com/896129387501/ai2-s2-spv2-$name"
   private val jsonBucket = "ai2-s2-extraction-cache"
-  private val jsonKeyPrefix = "spv2-json-files/"
+  private val jsonKeyPrefix = "spv2-json-files"
 
   def submitDocument(doc: Document): Unit = {
     submitDocuments(Iterator(doc))
@@ -39,7 +39,7 @@ case class ProcessingQueue(name: String) {
     val sendMessageBatchRequestEntries = docs.zipWithIndex.parMap { case (doc, index) =>
       val result = Try {
         // Place in S3 where we're writing this
-        val key = f"$jsonKeyPrefix${random.nextLong()}%x.json.gz"
+        val key = f"$jsonKeyPrefix/$name/${random.nextLong()}%x.json.gz"
 
         // Write JSONified output to S3. We round-trip through a temp file because we need to know the
         // size of the compressed file before sending it to S3.
