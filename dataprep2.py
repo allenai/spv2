@@ -517,6 +517,7 @@ def labeled_tokens_file(bucket_path: str):
     total_matches = 0
     total_docs = 0
     total_no_gold_bibs = 0
+    total_nonempty_titles = 0
     logging.info("%s does not exist, will recreate", labeled_tokens_path)
     with unlabeled_tokens_file(bucket_path) as unlabeled_tokens:
         temp_labeled_tokens_path = labeled_tokens_path + ".%d.temp" % os.getpid()
@@ -637,6 +638,7 @@ def labeled_tokens_file(bucket_path: str):
                     gold_bib_nodes = nxml.findall("./back/ref-list/ref/citation")
                 if len(gold_bib_nodes) == 0:
                     logging.warning("Found no gold bib nodes for %s, skipping doc", doc_id)
+                    total_no_gold_bibs += 1
                     continue
                 idx = 0
                 gold_bib_titles = [None for x in gold_bib_nodes]
@@ -830,9 +832,12 @@ def labeled_tokens_file(bucket_path: str):
 
                 found_matches = sum(1 for x in bib_title_matches if len(x) > 0)
                 total_matches += found_matches
-
+                nonempty_titles = sum(1 for x in gold_bib_titles if len(x) > 0)
+                total_nonempty_titles += nonempty_titles
                 total_titles += len(bib_title_matches)
-                logging.info("found %s of %s titles for %s", found_matches, len(bib_title_matches), doc_id)
+
+                logging.info("found %s of %s titles (%s nonempty) for %s", found_matches, len(bib_title_matches), \
+                             nonempty_titles, doc_id)
 
                 # find the definitive author labels from the lists of potential matches we have now
                 # all author matches have to be on the same page
@@ -950,6 +955,7 @@ def labeled_tokens_file(bucket_path: str):
         labeled_file.close()
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         logging.info("total titles: %s", total_titles)
+        logging.info("non-empty titles: %s", total_nonempty_titles)
         logging.info("total matches: %s", total_matches)
         logging.info("total docs: %s", total_docs)
         logging.info("total no gold bibs: %s", total_no_gold_bibs)
