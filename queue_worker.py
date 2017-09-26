@@ -297,17 +297,15 @@ def write_rdd(args):
     last_time_with_messages = time.time()
     while True:
         message_batch = []
-        time_of_oldest_message = None
-        while len(message_batch) < DESIRED_BATCH_SIZE and (time_of_oldest_message is None or time.time() - time_of_oldest_message < incoming_visibility_timeout / 2):
+        time_of_oldest_message = time.time()
+        while len(message_batch) < DESIRED_BATCH_SIZE and time.time() - time_of_oldest_message < incoming_visibility_timeout / 2:
             messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
             logging.info("Received %d messages", len(messages))
-            if len(message_batch) <= 0:
-                time_of_oldest_message = time.time()
             message_batch.extend(messages)
 
         if len(message_batch) <= 0:
             if time.time() - last_time_with_messages > incoming_visibility_timeout:
-                logging.info("Saw no messages for more than %d seconds. Shutting down.", incoming_visibility_timeout)
+                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
                 return
             time.sleep(20)
             continue
