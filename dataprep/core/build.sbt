@@ -13,8 +13,7 @@ libraryDependencies ++= Seq(
   "com.github.jai-imageio" % "jai-imageio-jpeg2000" % "1.3.0", // For handling jpeg2000 images
   "com.levigo.jbig2" % "levigo-jbig2-imageio" % "1.6.5", // For handling jbig2 images
   "com.trueaccord.scalapb" %% "scalapb-json4s" % "0.3.2",
-  "com.amazonaws" % "aws-java-sdk-s3" % "1.11.194" exclude ("commons-logging", "commons-logging"),
-  "com.amazonaws" % "aws-java-sdk-sqs" % "1.11.194" exclude ("commons-logging", "commons-logging")
+  "com.amazonaws" % "aws-java-sdk" % "1.7.4" exclude ("commons-logging", "commons-logging")
 )
 
 PB.targets in Compile := Seq(
