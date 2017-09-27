@@ -129,7 +129,7 @@ def preprocessing_queue_worker(args):
                 try:
                     json_object.download_file(json_file_name)
                 except Exception as e:
-                    if "ClientError" in str(type(e)) and "(404)" in e.message: # boto's exceptions are exceptionally dumb
+                    if "ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404": # boto's exceptions are exceptionally dumb
                         if int(message.attributes["ApproximateReceiveCount"]) > 5:
                             logging.warning("Got a message for %s, but the file isn't there; ignoring", message.body)
                             # We're leaving the message in the list of messages, so it'll get
