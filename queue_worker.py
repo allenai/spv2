@@ -219,6 +219,7 @@ def processing_queue_worker(args):
 
     import with_labels  # Heavy import, so we do it here
     model = with_labels.model_with_labels(model_settings, embeddings)
+    model.load_weights("model/B40.h5")
 
     sqs = boto3.resource("sqs")
     incoming_queue = get_featurized_queue(sqs, name)
