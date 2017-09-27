@@ -414,8 +414,13 @@ def make_unlabeled_tokens_file(
             doc_in_h5["doc_sha"] = doc_sha
             pages_in_h5 = []
 
-            effective_page_count = min(MAX_PAGE_COUNT, len(json_doc["pages"]))
-            for json_page in json_doc["pages"][:effective_page_count]:
+            try:
+                json_pages = json_doc["pages"]
+            except KeyError:
+                logging.warning("Document %s has no pages, skipping", doc_sha)
+                continue
+            effective_page_count = min(MAX_PAGE_COUNT, len(json_pages))
+            for json_page in json_pages[:effective_page_count]:
                 page_in_h5 = {}
                 width = float(json_page["width"])
                 height = float(json_page["height"])

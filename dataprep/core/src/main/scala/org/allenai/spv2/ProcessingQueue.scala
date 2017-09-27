@@ -32,38 +32,41 @@ case class ProcessingQueue(name: String) {
   }
 
   /**
-    * Submits documents to the ququq
+    * Submits documents to the queue
     * @return pairs of (paperId, errorMessage). Returns an empty iterator if no errors occurred
     */
   def submitDocuments(docs: Iterator[Document]): Iterator[(String, String)] = {
-    val sendMessageBatchRequestEntries = docs.zipWithIndex.parMap { case (doc, index) =>
-      val result = Try {
-        // Place in S3 where we're writing this
-        val key = f"$jsonKeyPrefix/$name/${random.nextLong()}%x.json.gz"
+    val sendMessageBatchRequestEntries = docs.zipWithIndex.parMap {
+      case (doc, _) if doc.pages.isEmpty =>
+        (doc.docSha, Failure(new IllegalArgumentException(s"Document ${doc.docSha} has no pages")))
+      case (doc, index) =>
+        val result = Try {
+          // Place in S3 where we're writing this
+          val key = f"$jsonKeyPrefix/$name/${random.nextLong()}%x.json.gz"
 
-        // Write JSONified output to S3. We round-trip through a temp file because we need to know the
-        // size of the compressed file before sending it to S3.
-        val tempFile = Files.createTempFile(s"${this.getClass.getSimpleName}.", ".json.gz")
-        try {
-          Resource.using(
-            new OutputStreamWriter(
-              new BufferedOutputStream(
-                new GZIPOutputStream(
-                  Files.newOutputStream(tempFile, StandardOpenOption.TRUNCATE_EXISTING))),
-              "UTF-8"
-            )
-          ) { writer =>
-            writer.write(JsonFormat.toJsonString(doc))
+          // Write JSONified output to S3. We round-trip through a temp file because we need to know the
+          // size of the compressed file before sending it to S3.
+          val tempFile = Files.createTempFile(s"${this.getClass.getSimpleName}.", ".json.gz")
+          try {
+            Resource.using(
+              new OutputStreamWriter(
+                new BufferedOutputStream(
+                  new GZIPOutputStream(
+                    Files.newOutputStream(tempFile, StandardOpenOption.TRUNCATE_EXISTING))),
+                "UTF-8"
+              )
+            ) { writer =>
+              writer.write(JsonFormat.toJsonString(doc))
+            }
+            s3.putObject(jsonBucket, key, tempFile.toFile)
+          } finally {
+            Files.deleteIfExists(tempFile)
           }
-          s3.putObject(jsonBucket, key, tempFile.toFile)
-        } finally {
-          Files.deleteIfExists(tempFile)
-        }
 
-        val result = new SendMessageBatchRequestEntry(index.toString, s"s3://$jsonBucket/$key")
-        result.withDelaySeconds(30) // Wait for the file to appear in S3
-      }
-      (doc.docSha, result)
+          val result = new SendMessageBatchRequestEntry(index.toString, s"s3://$jsonBucket/$key")
+          result.withDelaySeconds(30) // Wait for the file to appear in S3
+        }
+        (doc.docSha, result)
     }
 
     val (successAttempts, errorAttempts) =
