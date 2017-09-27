@@ -101,7 +101,10 @@ def preprocessing_queue_worker(args):
     logging.info("Starting to process queue messages")
     last_time_with_messages = time.time()
     while True:
-        messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
+        messages = incoming_queue.receive_messages(
+            WaitTimeSeconds=20,
+            MaxNumberOfMessages=10,
+            AttributeNames=["ApproximateReceiveCount"])
         logging.info("Received %d messages", len(messages))
         if len(messages) <= 0:
             if time.time() - last_time_with_messages > incoming_visibility_timeout:
@@ -111,6 +114,10 @@ def preprocessing_queue_worker(args):
             continue
         last_time_with_messages = time.time()
 
+        # List of messages that we're not processing this time around, and which we should therefore
+        # not delete after preprocessing.
+        deferred_messages = []
+
         with tempfile.TemporaryDirectory(prefix="spv2-preprocess-") as temp_dir:
             # read input
             reading_json_time = time.time()
@@ -119,7 +126,20 @@ def preprocessing_queue_worker(args):
             for i, message in enumerate(messages):
                 json_object = _message_to_object(s3, message)
                 json_file_name = os.path.join(temp_dir, "input-%d.json.gz" % i)
-                json_object.download_file(json_file_name)
+                try:
+                    json_object.download_file(json_file_name)
+                except Exception as e:
+                    if "ClientError" in str(type(e)) and "(404)" in e.message: # boto's exceptions are exceptionally dumb
+                        if int(message.attributes["ApproximateReceiveCount"]) > 5:
+                            logging.warning("Got a message for %s, but the file isn't there; ignoring", message.body)
+                            # We're leaving the message in the list of messages, so it'll get
+                            # deleted when we're done pre-processing.
+                        else:
+                            logging.info("Got a message for %s, but the file isn't there. Will try again later.", message.body)
+                            deferred_messages.append(message)
+                        continue
+                    else:
+                        raise
                 json_file_names.append(json_file_name)
 
             reading_json_time = time.time() - reading_json_time
@@ -177,7 +197,7 @@ def preprocessing_queue_worker(args):
             {
                 'Id': str(i),
                 'ReceiptHandle': m.receipt_handle
-            } for i, m in enumerate(messages)
+            } for i, m in enumerate(messages) if m not in deferred_messages
         ])
         logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
 
