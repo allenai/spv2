@@ -16,6 +16,8 @@ import typing
 import sys
 import html
 from enum import Enum
+from queue import Queue
+from threading import Thread
 
 import settings
 
@@ -23,6 +25,23 @@ import settings
 #
 # Helpers 💁
 #
+
+def threaded_generator(g, maxsize=128):
+    q = Queue(maxsize=maxsize)
+
+    sentinel = object()
+
+    def fill_queue():
+        try:
+            for value in g:
+                q.put(value)
+        finally:
+            q.put(sentinel)
+
+    thread = Thread(name=repr(g), target=fill_queue, daemon=True)
+    thread.start()
+
+    yield from iter(q.get, sentinel)
 
 def json_from_file(filename: str):
     if filename.endswith(".bz2"):

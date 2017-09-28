@@ -5,8 +5,6 @@ import typing
 import re
 import time
 import os
-from queue import Queue
-from threading import Thread
 
 from keras.layers import Embedding, Input, LSTM, Dense
 from keras.layers.merge import Concatenate
@@ -22,28 +20,6 @@ import sklearn.metrics
 import settings
 import dataprep2
 import unicodedata
-
-
-#
-# Helpers 💉
-#
-
-def threaded_generator(g):
-    q = Queue(maxsize=128)
-
-    sentinel = object()
-
-    def fill_queue():
-        try:
-            for value in g:
-                q.put(value)
-        finally:
-            q.put(sentinel)
-
-    thread = Thread(name=repr(g), target=fill_queue, daemon=True)
-    thread.start()
-
-    yield from iter(q.get, sentinel)
 
 
 #
@@ -636,7 +612,7 @@ def train(
                 model_settings,
                 document_set=dataprep2.DocumentSet.TRAIN)
             training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
-            for batch in threaded_generator(training_data):
+            for batch in dataprep2.threaded_generator(training_data):
                 if trained_batches == 0:
                     # It takes a while to get here the first time, since things have to be
                     # loaded from cache, the page pool has to be filled up, and so on, so we

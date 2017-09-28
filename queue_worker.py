@@ -76,6 +76,25 @@ def get_done_queue(sqs, name):
         else:
             raise
 
+def get_messages(incoming_queue):
+    """Gets messages in batches until the queue seems empty"""
+    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
+    last_time_with_messages = time.time()
+    while True:
+        messages = incoming_queue.receive_messages(
+            WaitTimeSeconds=20,
+            MaxNumberOfMessages=10,
+            AttributeNames=["ApproximateReceiveCount"])
+        logging.info("Received %d messages", len(messages))
+        if len(messages) <= 0:
+            if time.time() - last_time_with_messages > incoming_visibility_timeout:
+                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
+                return
+            time.sleep(20)
+            continue
+        last_time_with_messages = time.time()
+        yield messages
+
 def preprocessing_queue_worker(args):
     name = args[0]
 
@@ -94,26 +113,11 @@ def preprocessing_queue_worker(args):
 
     sqs = boto3.resource("sqs")
     incoming_queue = get_incoming_queue(sqs, name)
-    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
     outgoing_queue = get_featurized_queue(sqs, name)
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
-    last_time_with_messages = time.time()
-    while True:
-        messages = incoming_queue.receive_messages(
-            WaitTimeSeconds=20,
-            MaxNumberOfMessages=10,
-            AttributeNames=["ApproximateReceiveCount"])
-        logging.info("Received %d messages", len(messages))
-        if len(messages) <= 0:
-            if time.time() - last_time_with_messages > incoming_visibility_timeout:
-                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
-                return
-            time.sleep(20)
-            continue
-        last_time_with_messages = time.time()
-
+    for messages in dataprep2.threaded_generator(get_messages(incoming_queue), 1):
         # List of messages that we're not processing this time around, and which we should therefore
         # not delete after preprocessing.
         deferred_messages = []
@@ -223,22 +227,14 @@ def processing_queue_worker(args):
 
     sqs = boto3.resource("sqs")
     incoming_queue = get_featurized_queue(sqs, name)
-    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
     outgoing_queue = get_done_queue(sqs, name)
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
-    last_time_with_messages = time.time()
-    while True:
-        messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
-        logging.info("Received %d messages", len(messages))
-        if len(messages) <= 0:
-            if time.time() - last_time_with_messages > incoming_visibility_timeout:
-                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
-                return
-            time.sleep(20)
-            continue
-        last_time_with_messages = time.time()
+    for messages in get_messages(incoming_queue):
+        # List of messages that we're not processing this time around, and which we should therefore
+        # not delete after preprocessing.
+        deferred_messages = []
 
         with tempfile.TemporaryDirectory(prefix="spv2-process-") as temp_dir:
             # read input
@@ -248,7 +244,20 @@ def processing_queue_worker(args):
             for i, message in enumerate(messages):
                 featurized_object = _message_to_object(s3, message)
                 featurized_file_name = os.path.join(temp_dir, "input-%d.h5" % i)
-                featurized_object.download_file(featurized_file_name)
+                try:
+                    featurized_object.download_file(featurized_file_name)
+                except Exception as e:
+                    if "ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404": # boto's exceptions are exceptionally dumb
+                        if int(message.attributes["ApproximateReceiveCount"]) > 5:
+                            logging.warning("Got a message for %s, but the file isn't there; ignoring", message.body)
+                            # We're leaving the message in the list of messages, so it'll get
+                            # deleted when we're done pre-processing.
+                        else:
+                            logging.info("Got a message for %s, but the file isn't there. Will try again later.", message.body)
+                            deferred_messages.append(message)
+                        continue
+                    else:
+                        raise
                 featurized_file_names.append(featurized_file_name)
 
             reading_featurized_time = time.time() - reading_featurized_time
@@ -297,7 +306,7 @@ def processing_queue_worker(args):
             {
                 'Id': str(i),
                 'ReceiptHandle': m.receipt_handle
-            } for i, m in enumerate(messages)
+            } for i, m in enumerate(messages) if m not in deferred_messages
         ])
         logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
 
