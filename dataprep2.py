@@ -426,10 +426,16 @@ def make_unlabeled_tokens_file(
                 height = float(json_page["height"])
                 page_in_h5["dimensions"] = (width, height)
 
+                # Get the tokens from the page
                 try:
                     json_tokens = json_page["tokens"]
                 except KeyError:
                     json_tokens = []
+
+                # Filter out tokens that have NaN in them
+                numeric_fields = ["left", "right", "top", "bottom", "fontSize", "fontSpaceWidth"]
+                json_tokens = [token for token in json_tokens if
+                   "NaN" not in [token[field_name] for field_name in numeric_fields]]
 
                 first_token_index = len(h5_token_text_features)
                 page_in_h5["first_token_index"] = first_token_index
