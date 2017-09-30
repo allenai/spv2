@@ -678,15 +678,16 @@ def labeled_tokens_file(bucket_path: str):
                     else:
                         gold_bib_pubids[idx] = pubid
                     idx += 1
-                def stringify_elements(e):
+                def stringify_elements(e, punct=True):
                     # out = [" ".join(tokenize(all_inner_text(x))) if x is not None else "" for x in e]
                     out = [" ".join(tokenize(" ".join(x.itertext()))) if x is not None else "" for x in e]
-                    out = [trim_punctuation(x) for x in out]
+                    if punct:
+                        out = [trim_punctuation(x) for x in out]
                     out = [x.replace("\u2026", ". . .") for x in out]
                     return out
-                def stringify_lists_of_elements(le):
-                    out = [stringify_elements(e) if e is not None else [] for e in le]
-                    out = [" ".join(x) for x in out]
+                def stringify_lists_of_elements(le, delim=" "):
+                    out = [stringify_elements(e, False) if e is not None else [] for e in le]
+                    out = [delim.join(x) for x in out]
                     return out
 
                 gold_bib_alls = stringify_elements(gold_bib_nodes)
@@ -698,7 +699,7 @@ def labeled_tokens_file(bucket_path: str):
                     if not gold_bib_pubids[i] is None:
                         gold_bib_alls[i] = gold_bib_alls[i].replace(gold_bib_pubids[i], "")
 
-             #   gold_bib_authors = " ".join(map(stringify_elements, gold_bib_author_nodes))
+                gold_bib_authors = [stringify_elements(x) if not x is None else [] for x in gold_bib_author_nodes]
                 gold_bib_years = stringify_elements(gold_bib_years)
 
                 # find titles, authors, bibs in the document
@@ -734,12 +735,14 @@ def labeled_tokens_file(bucket_path: str):
                     page_text = []
                     page_text_length = 0
                     start_pos_to_token_index = {}
+                    token_index_to_start_pos = {}
                     for token_index, token in enumerate(tokens):
                         if len(page_text) > 0:
                             page_text.append(" ")
                             page_text_length += 1
 
                         start_pos_to_token_index[page_text_length] = token_index
+                        token_index_to_start_pos[token_index] = page_text_length
 
                         normalized_token_text = normalize(token)
                         page_text.append(normalized_token_text)
@@ -748,11 +751,17 @@ def labeled_tokens_file(bucket_path: str):
                     page_text = "".join(page_text)
                     assert page_text_length == len(page_text)
 
-                    def find_string_in_page(string: str) -> typing.Generator[FuzzyMatch, None, None]:
+                    def find_string_in_page(string: str, begin=None, end=None) -> typing.Generator[FuzzyMatch, None, None]:
                         string = normalize(string)
 
                         offset = 0
-                        while offset < len(page_text):
+                        if not begin is None:
+                            offset = token_index_to_start_pos.get(begin, 0)
+                        if end is None:
+                           end = len(page_text)
+                        else:
+                            end = token_index_to_start_pos.get(end, len(page_text))
+                        while offset < end:
                             fuzzy_match = stringmatch.match(string, page_text[offset:])
                             if fuzzy_match.cost > ((len(string) - string.count(" ")) // 5):
                                 # stringmatch.match() returns results in increasing order of cost.
@@ -880,22 +889,57 @@ def labeled_tokens_file(bucket_path: str):
                             match.first_token_index
                         )
 
-                    # find bibauthors
+                    def find_xs_in_bounds(out_matches, to_find):
+                        for idx, ses in enumerate(to_find):
+                            if ses is None or len(ses) == 0 or idx < \
+                                    bib_entries_this_page[0] or \
+                                            idx > bib_entries_this_page[1]:
+                                continue
+                            def check(s):
+                                # TODO: use title, author matches as back-up for biball
+                                if len(bib_all_matches[idx]) == 0: # just find it anywhere:
+                                    x_matches = list(find_string_in_page(s))
+                                else:
+                                    x_matches = list(find_string_in_page(s, bib_all_matches[idx].first_token_index, \
+                                                                       bib_all_matches[idx].one_past_last_token_index))
+                                if len(x_matches) > 0:
+                                    return min(x_matches, key=bib_x_match_sort_key)
+                                else:
+                                    return None
+                            out_matches[idx] = [check(x) for x in ses]
 
-                    # find bibvenues
-                    for bib_venue_index, gold_bib_venue in enumerate(gold_bib_venues):
-                        if gold_bib_venue is None or len(gold_bib_venue)==0 or bib_venue_index < bib_entries_this_page[0] or \
-                                bib_venue_index > bib_entries_this_page[1]:
-                            continue
-                        bib_venue_matches_on_this_page = list(find_string_in_page(gold_bib_venue))
-                        for venue_match in sorted(bib_venue_matches_on_this_page, key=bib_x_match_sort_key):
-                            #TODO: use title, author matches as back-up for biball
-                            if len(bib_all_matches[bib_venue_index])==0 or \
-                                    (venue_match.first_token_index >= bib_all_matches[bib_venue_index].first_token_index \
-                                     and venue_match.one_past_last_token_index <= \
-                                    bib_all_matches[bib_venue_index].one_past_last_token_index):
-                                bib_venue_matches[bib_venue_index] = venue_match
-                                break # first one in bounds is the one we keep
+                    def find_x_in_bounds(out_matches, to_find):
+                        for idx, s in enumerate(to_find):
+                            if s is None or len(s) == 0 or idx < \
+                                    bib_entries_this_page[0] or \
+                                            idx > bib_entries_this_page[1]:
+                                continue
+                            # TODO: use title, author matches as back-up for biball
+                            if len(bib_all_matches[idx]) == 0: # just find it anywhere:
+                                x_matches = list(find_string_in_page(s))
+                            else:
+                                x_matches = list(find_string_in_page(s, bib_all_matches[idx].first_token_index, \
+                                                                   bib_all_matches[idx].one_past_last_token_index))
+                            if len(x_matches) > 0:
+                                out_matches[idx] = min(x_matches, key=bib_x_match_sort_key)
+
+                    find_x_in_bounds(bib_venue_matches, gold_bib_venues)
+                    find_x_in_bounds(bib_year_matches, gold_bib_years)
+                    find_xs_in_bounds(bib_author_matches, gold_bib_authors)
+
+                    # for bib_venue_index, gold_bib_venue in enumerate(gold_bib_venues):
+                    #     if gold_bib_venue is None or len(gold_bib_venue)==0 or bib_venue_index < bib_entries_this_page[0] or \
+                    #             bib_venue_index > bib_entries_this_page[1]:
+                    #         continue
+                    #     bib_venue_matches_on_this_page = list(find_string_in_page(gold_bib_venue))
+                    #     for venue_match in sorted(bib_venue_matches_on_this_page, key=bib_x_match_sort_key):
+                    #         #TODO: use title, author matches as back-up for biball
+                    #         if len(bib_all_matches[bib_venue_index])==0 or \
+                    #                 (venue_match.first_token_index >= bib_all_matches[bib_venue_index].first_token_index \
+                    #                  and venue_match.one_past_last_token_index <= \
+                    #                 bib_all_matches[bib_venue_index].one_past_last_token_index):
+                    #             bib_venue_matches[bib_venue_index] = venue_match
+                    #             break # first one in bounds is the one we keep
 
                     # find bibyears
 
