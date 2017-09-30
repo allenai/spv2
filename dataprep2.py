@@ -640,11 +640,13 @@ def labeled_tokens_file(bucket_path: str):
                     logging.warning("Found no gold bib nodes for %s, skipping doc", doc_id)
                     total_no_gold_bibs += 1
                     continue
+
                 idx = 0
                 gold_bib_titles = [None for x in gold_bib_nodes]
                 gold_bib_author_nodes = [None for x in gold_bib_nodes]
                 gold_bib_venues = [None for x in gold_bib_nodes]
                 gold_bib_years = [None for x in gold_bib_nodes]
+                gold_bib_pubids = [None for x in gold_bib_nodes]
                 for gold_bib_node in gold_bib_nodes:
                     title = gold_bib_node.findall("./article-title")
                     if len(title) == 0:
@@ -670,17 +672,45 @@ def labeled_tokens_file(bucket_path: str):
                         logging.warning("Found no year for %s entry %s", doc_id, idx)
                     else:
                         gold_bib_years[idx] = year[0]
+                    pubid = gold_bib_node.findall("./pub-id")
+                    if len(pubid) == 0:
+                        logging.warning("Found no pubid for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_pubids[idx] = pubid
                     idx += 1
-                gold_bib_titles = [" ".join(tokenize(all_inner_text(x))) if x is not None else "" for x in gold_bib_titles]
-                gold_bib_titles = [trim_punctuation(x) for x in gold_bib_titles]
-                gold_bib_titles = [x.replace("\u2026", ". . .") for x in gold_bib_titles]
+                def stringify_elements(e):
+                    # out = [" ".join(tokenize(all_inner_text(x))) if x is not None else "" for x in e]
+                    out = [" ".join(tokenize(" ".join(x.itertext()))) if x is not None else "" for x in e]
+                    out = [trim_punctuation(x) for x in out]
+                    out = [x.replace("\u2026", ". . .") for x in out]
+                    return out
+                def stringify_lists_of_elements(le):
+                    out = [stringify_elements(e) if e is not None else [] for e in le]
+                    out = [" ".join(x) for x in out]
+                    return out
+
+                gold_bib_alls = stringify_elements(gold_bib_nodes)
+                gold_bib_titles = stringify_elements(gold_bib_titles)
+                gold_bib_venues = stringify_elements(gold_bib_venues)
+                gold_bib_pubids = stringify_lists_of_elements(gold_bib_pubids)
+                #strip pubids, which don't occur in doc
+                for i, a in enumerate(gold_bib_alls):
+                    if not gold_bib_pubids[i] is None:
+                        gold_bib_alls[i] = gold_bib_alls[i].replace(gold_bib_pubids[i], "")
+
+             #   gold_bib_authors = " ".join(map(stringify_elements, gold_bib_author_nodes))
+                gold_bib_years = stringify_elements(gold_bib_years)
 
                 # find titles, authors, bibs in the document
                 title_match = None
                 author_matches = []
                 for author_index in range(len(gold_authors)):
                     author_matches.append([])
+                bib_all_matches = [[] for x in gold_bib_titles]
                 bib_title_matches = [[] for x in gold_bib_titles]
+                bib_venue_matches = [[] for x in gold_bib_titles]
+                bib_author_matches = [[] for x in gold_bib_titles]
+                bib_year_matches = [[] for x in gold_bib_titles]
 
                 FuzzyMatch = collections.namedtuple("FuzzyMatch", [
                     "page_number",
@@ -746,10 +776,7 @@ def labeled_tokens_file(bucket_path: str):
                             if one_past_last_token_index is None:
                                 one_past_last_token_index = token_count
 
-                            #assert first_token_index != one_past_last_token_index
-                            if first_token_index == one_past_last_token_index:
-                                logging.warning("inifinite loop detected, breaking.  Stuck on token: %s", first_token_index)
-                                break
+                            assert first_token_index != one_past_last_token_index
 
                             matched_string = tokens[first_token_index:one_past_last_token_index]
                             matched_string = " ".join(matched_string)
@@ -807,28 +834,70 @@ def labeled_tokens_file(bucket_path: str):
                         for author_variant in author_variants:
                             author_matches[author_index].extend(find_string_in_page(author_variant))
 
+                    # find all bib text first.  Other fields will be found within these matches
+
+                    bib_entries_this_page = [1E10, -1] # holds index range of bib entries appearing on this page
+                    bib_all_match = None
+                    for bib_all_index, gold_bib_all in enumerate(gold_bib_alls):
+                        def bib_title_match_sort_key(match: FuzzyMatch):
+                            return (
+                                match.cost,
+                                match.first_token_index
+                            )
+                        if len(gold_bib_all)==0:
+                            continue
+                        bib_all_matches_on_this_page = list(find_string_in_page(gold_bib_all))
+                        if len(bib_all_matches_on_this_page) > 0:
+                            bib_all_match_on_this_page = min(bib_all_matches_on_this_page, key=bib_title_match_sort_key)
+                            if bib_all_match is None or bib_all_match_on_this_page.cost < bib_all_match.cost:
+                                bib_all_match = bib_all_match_on_this_page
+                        if not bib_all_match:
+                            continue
+                        bib_all_matches[bib_all_index] = bib_all_match
+                        bib_entries_this_page = [min(bib_all_index, bib_entries_this_page[0]),
+                                                 max(bib_all_index, bib_entries_this_page[1])]
+                        bib_all_match = None
+
                     #
                     # find bibtitles
                     #
-                    bib_title_match = None
+
                     for bib_title_index, gold_bib_title in enumerate(gold_bib_titles):
                         def bib_title_match_sort_key(match: FuzzyMatch):
                             return (
                                 match.cost,
-                                -match.average_font_size,
                                 match.first_token_index
                             )
                         if len(gold_bib_title)==0:
                             continue
                         bib_title_matches_on_this_page = list(find_string_in_page(gold_bib_title))
                         if len(bib_title_matches_on_this_page) > 0:
-                            bib_title_match_on_this_page = min(bib_title_matches_on_this_page, key=bib_title_match_sort_key)
-                            if bib_title_match is None or bib_title_match_on_this_page.cost < bib_title_match.cost:
-                                bib_title_match = bib_title_match_on_this_page
-                        if not bib_title_match:
+                            bib_title_matches[bib_title_index] = min(bib_title_matches_on_this_page, key=bib_title_match_sort_key)
+
+                    def bib_x_match_sort_key(match: FuzzyMatch):
+                        return (
+                            match.cost,
+                            match.first_token_index
+                        )
+
+                    # find bibauthors
+
+                    # find bibvenues
+                    for bib_venue_index, gold_bib_venue in enumerate(gold_bib_venues):
+                        if gold_bib_venue is None or len(gold_bib_venue)==0 or bib_venue_index < bib_entries_this_page[0] or \
+                                bib_venue_index > bib_entries_this_page[1]:
                             continue
-                        bib_title_matches[bib_title_index] = bib_title_match
-                        bib_title_match = None
+                        bib_venue_matches_on_this_page = list(find_string_in_page(gold_bib_venue))
+                        for venue_match in sorted(bib_venue_matches_on_this_page, key=bib_x_match_sort_key):
+                            #TODO: use title, author matches as back-up for biball
+                            if len(bib_all_matches[bib_venue_index])==0 or \
+                                    (venue_match.first_token_index >= bib_all_matches[bib_venue_index].first_token_index \
+                                     and venue_match.one_past_last_token_index <= \
+                                    bib_all_matches[bib_venue_index].one_past_last_token_index):
+                                bib_venue_matches[bib_venue_index] = venue_match
+                                break # first one in bounds is the one we keep
+
+                    # find bibyears
 
                 found_matches = sum(1 for x in bib_title_matches if len(x) > 0)
                 total_matches += found_matches
@@ -881,7 +950,8 @@ def labeled_tokens_file(bucket_path: str):
                     "doc_sha": doc_sha,
                     "gold_title": gold_title,
                     "gold_authors": gold_authors,
-                    "gold_bib_titles": gold_bib_titles
+                    "gold_bib_titles": gold_bib_titles,
+                    "gold_bib_venues": gold_bib_venues
                 }
                 lab_doc_json_pages = []
                 for page_number in range(effective_page_count):
@@ -931,6 +1001,12 @@ def labeled_tokens_file(bucket_path: str):
                             continue
                         if bib_title_match.page_number == page_number:
                             labels[bib_title_match.first_token_index:bib_title_match.one_past_last_token_index] = BIBTITLE_LABEL
+                    # for bibvenue
+                    for bib_venue_match in bib_venue_matches:
+                        if len(bib_venue_match)==0:
+                            continue
+                        if bib_venue_match.page_number == page_number:
+                            labels[bib_venue_match.first_token_index:bib_venue_match.one_past_last_token_index] = BIBVENUE_LABEL
 
                     lab_first_token_index = len(lab_token_labels)
                     lab_token_labels.resize(
@@ -1238,6 +1314,7 @@ DocumentBase = collections.namedtuple(
         "gold_title",
         "gold_authors",
         "gold_bib_titles",
+        "gold_bib_venues",
         "pages"
     ]
 )
@@ -1292,6 +1369,7 @@ def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels
             gold_title = trim_punctuation(doc_metadata["gold_title"])
             gold_authors = doc_metadata["gold_authors"]
             gold_bib_titles = doc_metadata["gold_bib_titles"]
+            gold_bib_venues = doc_metadata["gold_bib_venues"]
         else:
             gold_title = None
             gold_authors = None
@@ -1303,6 +1381,7 @@ def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels
             gold_title,
             gold_authors,
             gold_bib_titles,
+            gold_bib_venues,
             pages)
 
 def documents_for_bucket(
@@ -1333,12 +1412,18 @@ def documents(
     model_settings: settings.ModelSettings,
     document_set:DocumentSet = DocumentSet.TRAIN
 ):
+    # if document_set is DocumentSet.TEST:
+    #     buckets = range(0xf0, 0x100)
+    # elif document_set is DocumentSet.VALIDATE:
+    #     buckets = range(0xe0, 0xf0)
+    # else:
+    #     buckets = range(0x00, 0xe0)
     if document_set is DocumentSet.TEST:
-        buckets = range(0xf0, 0x100)
+        buckets = range(0x00, 0x00)
     elif document_set is DocumentSet.VALIDATE:
-        buckets = range(0xe0, 0xf0)
+        buckets = range(0x00, 0x00)
     else:
-        buckets = range(0x00, 0xe0)
+        buckets = range(0x00, 0x00)
     buckets = ["%02x" % x for x in buckets]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
@@ -1394,8 +1479,9 @@ def dump_documents(
                     html.escape(given_names),
                     html.escape(surnames)))
 
-            for bib_title in doc.gold_bib_titles:
+            for bib_title, bib_venue in zip(doc.gold_bib_titles, doc.gold_bib_venues):
                 html_file.write("<p>Gold bib title: <b>%s</b></p>\n" % html.escape(bib_title))
+                html_file.write("<p>Gold bib venue: <b>%s</b></p>\n" % html.escape(bib_venue))
 
             for page in doc.pages:
                 html_file.write("<h2>Page %d</h2>\n" % page.page_number)
@@ -1471,7 +1557,7 @@ def dump_documents(
                             html_file.write('<th>%s</th>' % subcolumn)
                 html_file.write("</tr>\n")
 
-                label2color_class = [None, "success", "info", "warning"]
+                label2color_class = [None, "success", "info", "warning", "danger", "info", "light", "dark"]
                 # We're abusing these CSS classes from Bootstrap to color rows according to their
                 # label.
 

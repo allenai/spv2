@@ -16,7 +16,7 @@ class ModelSettings(ModelSettingsBase):
         return mmh3.hash(repr(self))
 
 default_model_settings = ModelSettings(
-    max_page_number=3,
+    max_page_number=50,
     font_hash_size=1024 * 4,
     tokens_per_batch=32 * 1024,
     minimum_token_frequency=10,
