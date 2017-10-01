@@ -1498,9 +1498,9 @@ def documents(
     if document_set is DocumentSet.TEST:
         buckets = range(0x00, 0x01)
     elif document_set is DocumentSet.VALIDATE:
-        buckets = range(0x00, 0x01)
+        buckets = range(0x01, 0x02)
     else:
-        buckets = range(0x00, 0x01)
+        buckets = range(0x02, 0x03)
     buckets = ["%02x" % x for x in buckets]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
