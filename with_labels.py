@@ -107,7 +107,7 @@ def model_with_labels(
     lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
     logging.info("lstm2:\t%s", lstm2.shape)
 
-    crf = CRF(units=4)
+    crf = CRF(units=7)
     crf_layer = crf(lstm2)
     logging.info("crf:\t%s", crf_layer.shape)
 
