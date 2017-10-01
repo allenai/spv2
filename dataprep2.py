@@ -514,10 +514,12 @@ def labeled_tokens_file(bucket_path: str):
     if os.path.exists(labeled_tokens_path):
         return h5py.File(labeled_tokens_path, "r")
     total_titles = 0
-    total_matches = 0
+    total_matches = [0, 0, 0, 0]
+    total_bib_authors = 0
     total_docs = 0
     total_no_gold_bibs = 0
     total_nonempty_titles = 0
+    total_matched_bib_authors = 0
     logging.info("%s does not exist, will recreate", labeled_tokens_path)
     with unlabeled_tokens_file(bucket_path) as unlabeled_tokens:
         temp_labeled_tokens_path = labeled_tokens_path + ".%d.temp" % os.getpid()
@@ -941,17 +943,22 @@ def labeled_tokens_file(bucket_path: str):
                     #             bib_venue_matches[bib_venue_index] = venue_match
                     #             break # first one in bounds is the one we keep
 
-                    # find bibyears
+                found_matches = [sum(1 if not x is None and len(x) > 0 else 0 for x in y) for y in \
+                                 [bib_title_matches, bib_author_matches, bib_year_matches, bib_venue_matches]]
 
-                found_matches = sum(1 for x in bib_title_matches if len(x) > 0)
-                total_matches += found_matches
+                total_matches = [x+y for x, y in zip(found_matches, total_matches)]
+                num_bib_author_matches = sum(sum(1 if not x is None else 0 for x in y) for y in bib_author_matches)
+
                 nonempty_titles = sum(1 for x in gold_bib_titles if len(x) > 0)
                 total_nonempty_titles += nonempty_titles
+                paper_bib_authors = sum(len(y) for y in gold_bib_authors)
+                total_bib_authors += paper_bib_authors
                 total_titles += len(bib_title_matches)
+                total_matched_bib_authors += num_bib_author_matches
 
                 logging.info("found %s of %s titles (%s nonempty) for %s", found_matches, len(bib_title_matches), \
                              nonempty_titles, doc_id)
-
+                logging.info("found %s of %s bib authors", num_bib_author_matches, paper_bib_authors)
                 # find the definitive author labels from the lists of potential matches we have now
                 # all author matches have to be on the same page
                 page_numbers_with_author_matches = \
@@ -995,7 +1002,9 @@ def labeled_tokens_file(bucket_path: str):
                     "gold_title": gold_title,
                     "gold_authors": gold_authors,
                     "gold_bib_titles": gold_bib_titles,
-                    "gold_bib_venues": gold_bib_venues
+                    "gold_bib_venues": gold_bib_venues,
+                    "gold_bib_authors": gold_bib_authors,
+                    "gold_bib_years": gold_bib_years
                 }
                 lab_doc_json_pages = []
                 for page_number in range(effective_page_count):
@@ -1051,6 +1060,19 @@ def labeled_tokens_file(bucket_path: str):
                             continue
                         if bib_venue_match.page_number == page_number:
                             labels[bib_venue_match.first_token_index:bib_venue_match.one_past_last_token_index] = BIBVENUE_LABEL
+                    # for bibyear
+                    for bib_year_match in bib_year_matches:
+                        if len(bib_year_match)==0:
+                            continue
+                        if bib_year_match.page_number == page_number:
+                            labels[bib_year_match.first_token_index:bib_year_match.one_past_last_token_index] = BIBYEAR_LABEL
+                    # for bibauthor
+                    for bib_author_match in bib_author_matches:
+                        for amatch in bib_author_match:
+                            if amatch is None or len(amatch)==0:
+                                continue
+                            if amatch.page_number == page_number:
+                                labels[amatch.first_token_index:amatch.one_past_last_token_index] = BIBAUTHOR_LABEL
 
                     lab_first_token_index = len(lab_token_labels)
                     lab_token_labels.resize(
@@ -1076,7 +1098,9 @@ def labeled_tokens_file(bucket_path: str):
         os.rename(temp_labeled_tokens_path, labeled_tokens_path)
         logging.info("total titles: %s", total_titles)
         logging.info("non-empty titles: %s", total_nonempty_titles)
-        logging.info("total matches: %s", total_matches)
+        logging.info("total bib title matches: %s", total_matches)
+        logging.info("total bib author matches: %s", total_matched_bib_authors)
+        logging.info("total bib authors: %s", total_bib_authors)
         logging.info("total docs: %s", total_docs)
         logging.info("total no gold bibs: %s", total_no_gold_bibs)
         return h5py.File(labeled_tokens_path, "r")
@@ -1358,7 +1382,9 @@ DocumentBase = collections.namedtuple(
         "gold_title",
         "gold_authors",
         "gold_bib_titles",
+        "gold_bib_authors",
         "gold_bib_venues",
+        "gold_bib_years",
         "pages"
     ]
 )
@@ -1414,10 +1440,15 @@ def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels
             gold_authors = doc_metadata["gold_authors"]
             gold_bib_titles = doc_metadata["gold_bib_titles"]
             gold_bib_venues = doc_metadata["gold_bib_venues"]
+            gold_bib_years = doc_metadata["gold_bib_years"]
+            gold_bib_authors = doc_metadata["gold_bib_authors"]
         else:
             gold_title = None
             gold_authors = None
             gold_bib_titles = None
+            gold_bib_venues = None
+            gold_bib_years = None
+            gold_bib_authors = None
 
         yield Document(
             doc_metadata["doc_id"],
@@ -1425,7 +1456,9 @@ def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels
             gold_title,
             gold_authors,
             gold_bib_titles,
+            gold_bib_authors,
             gold_bib_venues,
+            gold_bib_years,
             pages)
 
 def documents_for_bucket(
@@ -1523,8 +1556,12 @@ def dump_documents(
                     html.escape(given_names),
                     html.escape(surnames)))
 
-            for bib_title, bib_venue in zip(doc.gold_bib_titles, doc.gold_bib_venues):
+            for bib_title, bib_venue, bib_authors, bib_year in zip(doc.gold_bib_titles, doc.gold_bib_venues \
+                                                                  , doc.gold_bib_authors, doc.gold_bib_years):
                 html_file.write("<p>Gold bib title: <b>%s</b></p>\n" % html.escape(bib_title))
+                for bib_author in bib_authors:
+                    html_file.write("<p>Gold bib author: <b>%s</b></p>\n" % html.escape(bib_author))
+                html_file.write("<p>Gold bib year: <b>%s</b></p>\n" % html.escape(bib_year))
                 html_file.write("<p>Gold bib venue: <b>%s</b></p>\n" % html.escape(bib_venue))
 
             for page in doc.pages:
