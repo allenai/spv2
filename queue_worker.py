@@ -132,6 +132,7 @@ def preprocessing_queue_worker(args):
                 json_file_name = os.path.join(temp_dir, "input-%d.json.gz" % i)
                 try:
                     json_object.download_file(json_file_name)
+                    json_file_names.append(json_file_name)
                 except Exception as e:
                     if "ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404": # boto's exceptions are exceptionally dumb
                         if int(message.attributes["ApproximateReceiveCount"]) > 5:
@@ -142,9 +143,12 @@ def preprocessing_queue_worker(args):
                             logging.info("Got a message for %s, but the file isn't there. Will try again later.", message.body)
                             deferred_messages.append(message)
                         continue
+                    elif "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not download %s. Will try again later", message.body)
+                        deferred_messages.append(message)
+                        continue
                     else:
                         raise
-                json_file_names.append(json_file_name)
 
             reading_json_time = time.time() - reading_json_time
             logging.info("Read JSON in %.2f seconds", reading_json_time)
@@ -187,23 +191,48 @@ def preprocessing_queue_worker(args):
             logging.info("Uploaded batch to s3://%s/%s", featurized_bucket, featurized_key)
 
             # post a message to the next queue
-            outgoing_queue.send_message(
-                MessageBody="s3://%s/%s" % (featurized_bucket, featurized_key),
-                DelaySeconds=30     # Give S3 some time to catch up
-            )
+            try:
+                outgoing_queue.send_message(
+                    MessageBody="s3://%s/%s" % (featurized_bucket, featurized_key),
+                    DelaySeconds=30     # Give S3 some time to catch up
+                )
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not send out results. Papers will be processed again.")
+                    continue
+                else:
+                    raise
 
-        for message in messages:
-            json_object = _message_to_object(s3, message)
-            json_object.delete()
-            logging.info("Deleted %s ...", message.body)
+        messages_to_delete = [m for m in messages if m not in deferred_messages]
+        if len(messages_to_delete) > 0:
+            # delete the queue entries
+            try:
+                incoming_queue.delete_messages(Entries=[
+                    {
+                        'Id': str(i),
+                        'ReceiptHandle': m.receipt_handle
+                    } for i, m in enumerate(messages_to_delete)
+                ])
+                logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages_to_delete)))
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not mark papers as done. Papers will be processed again.")
+                    continue
+                else:
+                    raise
 
-        incoming_queue.delete_messages(Entries=[
-            {
-                'Id': str(i),
-                'ReceiptHandle': m.receipt_handle
-            } for i, m in enumerate(messages) if m not in deferred_messages
-        ])
-        logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
+            # delete the s3 objects
+            for message in messages_to_delete:
+                try:
+                    featurized_object = _message_to_object(s3, message)
+                    featurized_object.delete()
+                except Exception as e:
+                    if "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not delete S3 object associated with deleted queue message. S3 object leaked.")
+                        continue
+                    else:
+                        raise
+                logging.info("Deleted %s", message.body)
 
 def processing_queue_worker(args):
     name = args[0]
@@ -246,6 +275,7 @@ def processing_queue_worker(args):
                 featurized_file_name = os.path.join(temp_dir, "input-%d.h5" % i)
                 try:
                     featurized_object.download_file(featurized_file_name)
+                    featurized_file_names.append(featurized_file_name)
                 except Exception as e:
                     if "ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404": # boto's exceptions are exceptionally dumb
                         if int(message.attributes["ApproximateReceiveCount"]) > 5:
@@ -256,9 +286,12 @@ def processing_queue_worker(args):
                             logging.info("Got a message for %s, but the file isn't there. Will try again later.", message.body)
                             deferred_messages.append(message)
                         continue
+                    elif "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not download %s. Will try again later", message.body)
+                        deferred_messages.append(message)
+                        continue
                     else:
                         raise
-                featurized_file_names.append(featurized_file_name)
 
             reading_featurized_time = time.time() - reading_featurized_time
             logging.info("Read featurized files in %.2f seconds", reading_featurized_time)
@@ -289,26 +322,51 @@ def processing_queue_worker(args):
             prediction_time = time.time() - prediction_time
             logging.info("Predicted in %.2f seconds", prediction_time)
 
-            for start in range(0, len(results), 10):
-                slice = results[start:min(start+10, len(results))]
-                outgoing_queue.send_messages(Entries=[{
-                    "Id": str(i),
-                    "MessageBody": json.dumps(r)
-                } for i, r in enumerate(slice)])
-            logging.info("Sent results for %s" % ", ".join((r["docSha"] for r in results)))
+            try:
+                for start in range(0, len(results), 10):
+                    slice = results[start:min(start+10, len(results))]
+                    outgoing_queue.send_messages(Entries=[{
+                        "Id": str(i),
+                        "MessageBody": json.dumps(r)
+                    } for i, r in enumerate(slice)])
+                logging.info("Sent results for %s" % ", ".join((r["docSha"] for r in results)))
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not write results to output queue. Skipping.")
+                    continue
+                else:
+                    raise
 
-        for message in messages:
-            featurized_object = _message_to_object(s3, message)
-            featurized_object.delete()
-            logging.info("Deleted %s", message.body)
+        messages_to_delete = [m for m in messages if m not in deferred_messages]
+        if len(messages_to_delete) > 0:
+            # delete the queue entries
+            try:
+                incoming_queue.delete_messages(Entries=[
+                    {
+                        'Id': str(i),
+                        'ReceiptHandle': m.receipt_handle
+                    } for i, m in enumerate(messages_to_delete)
+                ])
+                logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages_to_delete)))
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not mark papers as done. Papers will be processed again.")
+                    continue
+                else:
+                    raise
 
-        incoming_queue.delete_messages(Entries=[
-            {
-                'Id': str(i),
-                'ReceiptHandle': m.receipt_handle
-            } for i, m in enumerate(messages) if m not in deferred_messages
-        ])
-        logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
+            # delete the s3 objects
+            for message in messages_to_delete:
+                try:
+                    featurized_object = _message_to_object(s3, message)
+                    featurized_object.delete()
+                except Exception as e:
+                    if "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not delete S3 object associated with deleted queue message. S3 object leaked.")
+                        continue
+                    else:
+                        raise
+                logging.info("Deleted %s", message.body)
 
 _multiple_slashes = re.compile(r'/+')
 
