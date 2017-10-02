@@ -21,6 +21,11 @@ def _message_to_object(s3, message):
     json_bucket = s3.Bucket(json_bucket)
     return json_bucket.Object(json_key)
 
+def _boto_exception_is_404(e: Exception) -> bool:
+    return \
+        ("ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404") or \
+        ("NoSuchKey" in str(type(e)))
+
 def get_incoming_queue(sqs, name: str):
     queue_name = "ai2-s2-spv2-%s" % name
     try:
@@ -134,7 +139,8 @@ def preprocessing_queue_worker(args):
                     json_object.download_file(json_file_name)
                     json_file_names.append(json_file_name)
                 except Exception as e:
-                    if "ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404": # boto's exceptions are exceptionally dumb
+                    # boto's exceptions are exceptionally dumb
+                    if _boto_exception_is_404(e):
                         if int(message.attributes["ApproximateReceiveCount"]) > 5:
                             logging.warning("Got a message for %s, but the file isn't there; ignoring", message.body)
                             # We're leaving the message in the list of messages, so it'll get
@@ -277,7 +283,7 @@ def processing_queue_worker(args):
                     featurized_object.download_file(featurized_file_name)
                     featurized_file_names.append(featurized_file_name)
                 except Exception as e:
-                    if "ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404": # boto's exceptions are exceptionally dumb
+                    if _boto_exception_is_404(e):
                         if int(message.attributes["ApproximateReceiveCount"]) > 5:
                             logging.warning("Got a message for %s, but the file isn't there; ignoring", message.body)
                             # We're leaving the message in the list of messages, so it'll get
