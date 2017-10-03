@@ -1183,13 +1183,19 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
-def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels:bool = True):
+def documents_for_featurized_tokens(
+    featurized_tokens: h5py.File,
+    include_labels: bool = True,
+    max_tokens_per_page: typing.Optional[int] = None
+):
     for doc_metadata in featurized_tokens["doc_metadata"]:
         doc_metadata = json.loads(doc_metadata)
         pages = []
         for page_number, json_page in enumerate(doc_metadata["pages"]):
             first_token_index = int(json_page["first_token_index"])
             token_count = int(json_page["token_count"])
+            if max_tokens_per_page is not None:
+                token_count = min(max_tokens_per_page, token_count)
             last_token_index_plus_one = first_token_index + token_count
 
             if include_labels:

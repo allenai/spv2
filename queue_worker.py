@@ -310,7 +310,8 @@ def processing_queue_worker(args):
                     with h5py.File(featurized_file_name) as featurized_file:
                         docs = dataprep2.documents_for_featurized_tokens(
                             featurized_file,
-                            include_labels=False)
+                            include_labels=False,
+                            max_tokens_per_page=model_settings.tokens_per_batch)
                         for doc in docs:
                             if doc.doc_id not in doc_ids_seen:
                                 yield doc
