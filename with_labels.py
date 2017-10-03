@@ -563,7 +563,7 @@ def train(
     start_weights_filename,
     pmc_dir: str,
     output_filename: str,
-    training_batches: int=100000,
+    training_batches: int=144000,
     test_batches: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings
 ):
