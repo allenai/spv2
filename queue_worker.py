@@ -122,6 +122,8 @@ def preprocessing_queue_worker(args):
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
+    total_messages_processed = 0
+    start_time = time.time()
     for messages in dataprep2.threaded_generator(get_messages(incoming_queue), 1):
         # List of messages that we're not processing this time around, and which we should therefore
         # not delete after preprocessing.
@@ -240,6 +242,11 @@ def preprocessing_queue_worker(args):
                         raise
                 logging.info("Deleted %s", message.body)
 
+            # report progress
+            total_messages_processed += len(messages_to_delete)
+            messages_per_hour = 3600 * total_messages_processed / (time.time() - start_time)
+            logging.info("This worker is processing %.0f messages per hour." % messages_per_hour)
+
 def processing_queue_worker(args):
     name = args[0]
 
@@ -266,6 +273,8 @@ def processing_queue_worker(args):
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
+    total_messages_processed = 0
+    start_time = time.time()
     for messages in get_messages(incoming_queue):
         # List of messages that we're not processing this time around, and which we should therefore
         # not delete after preprocessing.
@@ -375,6 +384,11 @@ def processing_queue_worker(args):
                         raise
                 logging.info("Deleted %s", message.body)
 
+            # report progress
+            total_messages_processed += len(messages_to_delete)
+            messages_per_hour = 3600 * total_messages_processed / (time.time() - start_time)
+            logging.info("This worker is processing %.0f messages per hour." % messages_per_hour)
+
 _multiple_slashes = re.compile(r'/+')
 
 def write_rdd(args):
@@ -444,7 +458,7 @@ def monitor(args):
         "done": get_done_queue(sqs, name)
     }
 
-    delay = 60  # seconds
+    delay = 120  # seconds
     last_queue_values = None
     while True:
         for q in queues.values():
