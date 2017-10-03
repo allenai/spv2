@@ -432,6 +432,42 @@ def write_rdd(args):
             logging.info("Deleted %d messages", len(messages))
             del message_batch[:10]
 
+def monitor(args):
+    name = args[0]
+
+    sqs = boto3.resource("sqs")
+    queue_names = ["incoming", "featurized", "done"]
+    queues = {
+        "incoming": get_incoming_queue(sqs, name),
+        "featurized": get_featurized_queue(sqs, name),
+        "done": get_done_queue(sqs, name)
+    }
+
+    delay = 60  # seconds
+    last_queue_values = None
+    while True:
+        for q in queues.values():
+            q.reload()
+        queue_values = {
+            q_name: int(q.attributes["ApproximateNumberOfMessages"])
+            for q_name, q in queues.items()
+        }
+        if last_queue_values is None:
+            for q_name in queue_names:
+                print("%s\t%d messages" % (q_name, queue_values[q_name]))
+        else:
+            print()
+            for q_name in queue_names:
+                print("%s\t%d messages\t%d delta\t%.2f messages per second" % (
+                    q_name,
+                    queue_values[q_name],
+                    queue_values[q_name] - last_queue_values[q_name],
+                    (queue_values[q_name] - last_queue_values[q_name]) / delay
+                ))
+
+        last_queue_values = queue_values
+        time.sleep(delay)
+
 def main():
     logging.getLogger().setLevel(logging.INFO)
     command = sys.argv[1]
@@ -442,6 +478,8 @@ def main():
         processing_queue_worker(command_args)
     elif command == "write_rdd":
         write_rdd(command_args)
+    elif command == "monitor":
+        monitor(command_args)
     else:
         raise ValueError("Invalid command: %s" % command)
 
