@@ -17,7 +17,7 @@ spec:
           resources:
             limits:
               cpu: 16
-              memory: 24Gi
+              memory: 16Gi
             requests:
               cpu: 7
-              memory: 16Gi
+              memory: 8Gi
