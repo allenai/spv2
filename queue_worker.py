@@ -395,7 +395,7 @@ def write_rdd(args):
     name = args[0]
     rdd_location = args[1]
 
-    DESIRED_BATCH_SIZE = 1000
+    DESIRED_BATCH_SIZE = 10000
 
     sqs = boto3.resource("sqs")
     incoming_queue = get_done_queue(sqs, name)
