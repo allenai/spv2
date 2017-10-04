@@ -23,7 +23,7 @@ spec:
               memory: 16Gi
               alpha.kubernetes.io/nvidia-gpu: 1
             requests:
-              cpu: 2
+              cpu: 4
               memory: 8Gi
           volumeMounts:
           - name: nvidia-driver
