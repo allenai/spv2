@@ -755,7 +755,8 @@ def labeled_tokens_file(bucket_path: str):
 
                     def find_string_in_page(string: str, begin=None, end=None) -> typing.Generator[FuzzyMatch, None, None]:
                         string = normalize(string)
-
+                        if len(string) == 0:
+                            return []
                         offset = 0
                         if not begin is None:
                             offset = token_index_to_start_pos.get(begin, 0)
