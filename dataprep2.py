@@ -755,7 +755,8 @@ def labeled_tokens_file(bucket_path: str):
 
                     def find_string_in_page(string: str, begin=None, end=None) -> typing.Generator[FuzzyMatch, None, None]:
                         string = normalize(string)
-
+                        if len(string) == 0:
+                            return []
                         offset = 0
                         if not begin is None:
                             offset = token_index_to_start_pos.get(begin, 0)
@@ -1496,11 +1497,11 @@ def documents(
     # else:
     #     buckets = range(0x00, 0xe0)
     if document_set is DocumentSet.TEST:
-        buckets = range(0x00, 0x01)
+        buckets = range(0x00, 0x03)
     elif document_set is DocumentSet.VALIDATE:
-        buckets = range(0x01, 0x02)
+        buckets = range(0x03, 0x04)
     else:
-        buckets = range(0x02, 0x03)
+        buckets = range(0x04, 0x05)
     buckets = ["%02x" % x for x in buckets]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)

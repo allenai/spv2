@@ -427,7 +427,7 @@ def evaluate_model(
     title_prs = []
     author_prs = []
 
-    with open(log_filename, "w") as log_file:
+    with open(log_filename, "w", encoding="UTF-8") as log_file:
         for doc in test_docs():
             log_file.write("\nDocument %s\n" % doc.doc_id)
 
@@ -687,13 +687,13 @@ def train(
                     print_scored_results(now - start_time)
 
                     # check if this one is better than the last one
-                    combined_scores = get_combined_scores()
-                    if combined_scores[-1] == max(combined_scores):
-                        logging.info(
-                            "High score (%.3f)! Saving model to %s",
-                            max(combined_scores),
-                            best_model_filename)
-                        model.save(best_model_filename, overwrite=True)
+                 #   combined_scores = get_combined_scores()
+                 #   if True: # combined_scores[-1] == max(combined_scores):
+                 #       logging.info(
+                 #           "High score (%.3f)! Saving model to %s",
+                 #           max(combined_scores),
+                 #           best_model_filename)
+                 #       model.save(best_model_filename, overwrite=True)
 
                     eval_end_time = time.time()
                     # adjust start time to ignore the time we spent evaluating
@@ -702,11 +702,11 @@ def train(
                     time_at_last_eval = eval_end_time
 
                     # check if we've stopped improving
-                    best_score = max(combined_scores)
-                    if all([score < best_score for score in combined_scores[-3:]]):
-                        logging.info("No improvement for three hours. Stopping training.")
-                        trained_batches = training_batches  # Signaling to the outer loop that we're done.
-                        break
+                    # best_score = max(combined_scores)
+                    # if all([score < best_score for score in combined_scores[-3:]]):
+                    #     logging.info("No improvement for three hours. Stopping training.")
+                    #     trained_batches = training_batches  # Signaling to the outer loop that we're done.
+                    #     break
 
         logging.info("Writing temporary final model to %s", output_filename)
         model.save(output_filename, overwrite=True)
