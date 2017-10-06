@@ -1,30 +1,44 @@
-name := "DataPrep"
+ivyLoggingLevel in ThisBuild := UpdateLogging.Quiet
 
-organization := "org.allenai.scienceparse2"
+name := "spv2-dataprep"
 
-version := "1.0"
-
-scalaVersion := "2.11.8"
-
-resolvers += Resolver.bintrayRepo("allenai", "maven")
-
-libraryDependencies ++= Seq(
-  "org.apache.pdfbox" % "pdfbox" % "2.0.5" exclude ("commons-logging", "commons-logging"),
-  "org.apache.pdfbox" % "fontbox" % "2.0.5" exclude ("commons-logging", "commons-logging"),
-  "org.apache.pdfbox" % "pdfbox-tools" % "2.0.5" exclude ("commons-logging", "commons-logging"),
-  "com.github.scopt" %% "scopt" % "3.3.0",
-  "org.slf4j" % "jcl-over-slf4j" % "1.7.25",
-  "com.amazonaws" % "aws-java-sdk" % "1.7.4" exclude ("commons-logging", "commons-logging"),
-  "org.allenai.common" %% "common-core" % "1.4.10",
-  "org.bouncycastle" % "bcprov-jdk16" % "1.46",
-  "org.bouncycastle" % "bcmail-jdk16" % "1.46",
-  "com.github.jai-imageio" % "jai-imageio-jpeg2000" % "1.3.0", // For handling jpeg2000 images
-  "com.levigo.jbig2" % "levigo-jbig2-imageio" % "1.6.5", // For handling jbig2 images
-  "com.trueaccord.scalapb" %% "scalapb-json4s" % "0.2.0"
+lazy val commonSettings = Seq(
+  organization := "org.allenai.spv2",
+  scalaVersion := "2.11.8",
+  resolvers += Resolver.bintrayRepo("allenai", "maven"),
+  bintrayOrganization := Some("allenai"),
+  bintrayPackage := s"${organization.value}:${name.value}_${scalaBinaryVersion.value}",
+  licenses += ("Apache-2.0", url("http://www.apache.org/licenses/LICENSE-2.0.html")),
+  homepage := Some(url("https://github.com/allenai/spv2")),
+  scmInfo := Some(ScmInfo(
+    url("https://github.com/allenai/spv2"),
+    "https://github.com/allenai/spv2.git")),
+  bintrayRepository := "private",
+  publishMavenStyle := true,
+  publishArtifact in Test := false,
+  pomIncludeRepository := { _ => false },
+  releasePublishArtifactsAction := PgpKeys.publishSigned.value,
+  pomExtra :=
+    <developers>
+      <developer>
+        <id>allenai-dev-role</id>
+        <name>Allen Institute for Artificial Intelligence</name>
+        <email>dev-role@allenai.org</email>
+      </developer>
+    </developers>
 )
 
-PB.targets in Compile := Seq(
-  scalapb.gen() -> (sourceManaged in Compile).value
-)
+// disable release in the root project
+publishArtifact := false
+publishTo := Some("dummy" at "nowhere")
+publish := { }
+publishLocal := { }
 
-mainClass in assembly := Some("org.allenai.scienceparse2.PDFRenderer")
+releaseIgnoreUntrackedFiles := true
+
+lazy val core = (project in file("core")).settings(commonSettings)
+
+lazy val cli = (project in file("cli")).settings(commonSettings).dependsOn(core)
+
+lazy val server = (project in file("server")).settings(commonSettings).dependsOn(core)
+

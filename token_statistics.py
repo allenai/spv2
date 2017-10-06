@@ -175,7 +175,7 @@ def main():
             combine_counts(final_tops, tops)
             combine_counts(final_bottoms, bottoms)
 
-        with open(str(args.output_file), "wb") as output:
+        with gzip.open(str(args.output_file), "wb") as output:
             pickle.dump(final_texts, output)
             pickle.dump(final_fonts, output)
             pickle.dump(final_font_sizes, output)
