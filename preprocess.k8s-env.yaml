@@ -6,18 +6,15 @@ metadata:
   labels:
     contact: dirkg
 spec:
-  parallelism: 16
+  parallelism: 32
   template:
     spec:
-      restartPolicy: Never
+      restartPolicy: OnFailure
       containers:
         - name: spv2-preprocess-dev
           image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/preprocess:1.0.dev
           imagePullPolicy: Always
           resources:
-            limits:
-              cpu: 1
-              memory: 4Gi
             requests:
-              cpu: 900m
-              memory: 2Gi
+              cpu: 800m
+              memory: 1Gi

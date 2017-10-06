@@ -6,13 +6,13 @@ metadata:
   labels:
     contact: dirkg
 spec:
-  parallelism: 8
+  parallelism: 4
   template:
     metadata:
       labels:
         autoscaler-task: "yes"
     spec:
-      restartPolicy: Never
+      restartPolicy: OnFailure
       containers:
         - name: spv2-process-dev
           image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/process:1.0.dev
