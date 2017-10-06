@@ -113,7 +113,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 def get_docs():
                     return dataprep2.documents_for_featurized_tokens(
                         featurized_tokens_file,
-                        include_labels=False)
+                        include_labels=False,
+                        max_tokens_per_page=self.server.model_settings.tokens_per_batch)
                 results = with_labels.run_model(
                     self.server.model,
                     self.server.model_settings,

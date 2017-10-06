@@ -16,6 +16,8 @@ import typing
 import sys
 import html
 from enum import Enum
+from queue import Queue
+from threading import Thread
 
 import settings
 
@@ -23,6 +25,23 @@ import settings
 #
 # Helpers 💁
 #
+
+def threaded_generator(g, maxsize=128):
+    q = Queue(maxsize=maxsize)
+
+    sentinel = object()
+
+    def fill_queue():
+        try:
+            for value in g:
+                q.put(value)
+        finally:
+            q.put(sentinel)
+
+    thread = Thread(name=repr(g), target=fill_queue, daemon=True)
+    thread.start()
+
+    yield from iter(q.get, sentinel)
 
 def json_from_file(filename: str):
     if filename.endswith(".bz2"):
@@ -54,6 +73,9 @@ def normalize(s: str) -> str:
 #
 
 def percentile_function_from_values_and_counts(values: np.ndarray, counts: np.ndarray):
+    if len(values) <= 0:
+        return lambda x: 0.5
+
     assert (np.diff(values) >= 0.0).all()   # make sure the values are sorted
     cum_array = counts.cumsum()
     if cum_array.dtype != np.float32:
@@ -418,17 +440,28 @@ def make_unlabeled_tokens_file(
             doc_in_h5["doc_sha"] = doc_sha
             pages_in_h5 = []
 
-            effective_page_count = min(MAX_PAGE_COUNT, len(json_doc["pages"]))
-            for json_page in json_doc["pages"][:effective_page_count]:
+            try:
+                json_pages = json_doc["pages"]
+            except KeyError:
+                logging.warning("Document %s has no pages, skipping", doc_sha)
+                continue
+            effective_page_count = min(MAX_PAGE_COUNT, len(json_pages))
+            for json_page in json_pages[:effective_page_count]:
                 page_in_h5 = {}
                 width = float(json_page["width"])
                 height = float(json_page["height"])
                 page_in_h5["dimensions"] = (width, height)
 
+                # Get the tokens from the page
                 try:
                     json_tokens = json_page["tokens"]
                 except KeyError:
                     json_tokens = []
+
+                # Filter out tokens that have NaN in them
+                numeric_fields = ["left", "right", "top", "bottom", "fontSize", "fontSpaceWidth"]
+                json_tokens = [token for token in json_tokens if
+                   "NaN" not in [token[field_name] for field_name in numeric_fields]]
 
                 first_token_index = len(h5_token_text_features)
                 page_in_h5["first_token_index"] = first_token_index
@@ -1405,13 +1438,19 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
-def documents_for_featurized_tokens(featurized_tokens: h5py.File, include_labels:bool = True):
+def documents_for_featurized_tokens(
+    featurized_tokens: h5py.File,
+    include_labels: bool = True,
+    max_tokens_per_page: typing.Optional[int] = None
+):
     for doc_metadata in featurized_tokens["doc_metadata"]:
         doc_metadata = json.loads(doc_metadata)
         pages = []
         for page_number, json_page in enumerate(doc_metadata["pages"]):
             first_token_index = int(json_page["first_token_index"])
             token_count = int(json_page["token_count"])
+            if max_tokens_per_page is not None:
+                token_count = min(max_tokens_per_page, token_count)
             last_token_index_plus_one = first_token_index + token_count
 
             if include_labels:

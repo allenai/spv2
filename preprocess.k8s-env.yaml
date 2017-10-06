@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spv2-preprocess-dev
+  namespace: s2-spv2-dev
+  labels:
+    contact: dirkg
+spec:
+  parallelism: 64
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: spv2-preprocess-dev
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/preprocess:1.0.dev
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: 700m
+              memory: 1Gi

@@ -1,12 +1,8 @@
 organization := "org.allenai.spv2"
 
-name := "dataprep-cli"
+name := "spv2-dataprep-cli"
 
-version := "1.0"
-
-scalaVersion := "2.11.8"
-
-resolvers += Resolver.bintrayRepo("allenai", "maven")
+javaOptions += s"-Dlogback.appname=${name.value}"
 
 libraryDependencies ++= Seq(
   "com.github.scopt" %% "scopt" % "3.3.0",

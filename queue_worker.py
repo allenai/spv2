@@ -8,6 +8,7 @@ import os
 import h5py
 import random
 import json
+import gzip
 
 import settings
 import dataprep2
@@ -19,6 +20,11 @@ def _message_to_object(s3, message):
     json_bucket, json_key = _s3url_re.match(json_url).groups()
     json_bucket = s3.Bucket(json_bucket)
     return json_bucket.Object(json_key)
+
+def _boto_exception_is_404(e: Exception) -> bool:
+    return \
+        ("ClientError" in str(type(e)) and e.response["Error"]["Code"] == "404") or \
+        ("NoSuchKey" in str(type(e)))
 
 def get_incoming_queue(sqs, name: str):
     queue_name = "ai2-s2-spv2-%s" % name
@@ -75,6 +81,25 @@ def get_done_queue(sqs, name):
         else:
             raise
 
+def get_messages(incoming_queue):
+    """Gets messages in batches until the queue seems empty"""
+    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
+    last_time_with_messages = time.time()
+    while True:
+        messages = incoming_queue.receive_messages(
+            WaitTimeSeconds=20,
+            MaxNumberOfMessages=10,
+            AttributeNames=["ApproximateReceiveCount"])
+        logging.info("Received %d messages", len(messages))
+        if len(messages) <= 0:
+            if time.time() - last_time_with_messages > incoming_visibility_timeout:
+                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
+                return
+            time.sleep(20)
+            continue
+        last_time_with_messages = time.time()
+        yield messages
+
 def preprocessing_queue_worker(args):
     name = args[0]
 
@@ -97,14 +122,14 @@ def preprocessing_queue_worker(args):
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
-    while True:
-        messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
-        logging.info("Received %d messages", len(messages))
-        if len(messages) <= 0:
-            time.sleep(20)
-            continue
+    total_messages_processed = 0
+    start_time = time.time()
+    for messages in dataprep2.threaded_generator(get_messages(incoming_queue), 1):
+        # List of messages that we're not processing this time around, and which we should therefore
+        # not delete after preprocessing.
+        deferred_messages = []
 
-        with tempfile.TemporaryDirectory(prefix="SPV2Server-preprocess-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="spv2-preprocess-") as temp_dir:
             # read input
             reading_json_time = time.time()
             json_file_names = []
@@ -112,8 +137,26 @@ def preprocessing_queue_worker(args):
             for i, message in enumerate(messages):
                 json_object = _message_to_object(s3, message)
                 json_file_name = os.path.join(temp_dir, "input-%d.json.gz" % i)
-                json_object.download_file(json_file_name)
-                json_file_names.append(json_file_name)
+                try:
+                    json_object.download_file(json_file_name)
+                    json_file_names.append(json_file_name)
+                except Exception as e:
+                    # boto's exceptions are exceptionally dumb
+                    if _boto_exception_is_404(e):
+                        if int(message.attributes["ApproximateReceiveCount"]) > 5:
+                            logging.warning("Got a message for %s, but the file isn't there; ignoring", message.body)
+                            # We're leaving the message in the list of messages, so it'll get
+                            # deleted when we're done pre-processing.
+                        else:
+                            logging.info("Got a message for %s, but the file isn't there. Will try again later.", message.body)
+                            deferred_messages.append(message)
+                        continue
+                    elif "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not download %s. Will try again later", message.body)
+                        deferred_messages.append(message)
+                        continue
+                    else:
+                        raise
 
             reading_json_time = time.time() - reading_json_time
             logging.info("Read JSON in %.2f seconds", reading_json_time)
@@ -149,30 +192,60 @@ def preprocessing_queue_worker(args):
 
             # upload the result
             featurized_bucket = "ai2-s2-extraction-cache"
-            featurized_key = "spv2-featurized-files/%x.featurized-tokens.h5" % random.getrandbits(64)
+            featurized_key = "spv2-featurized-files/%s/%x.featurized-tokens.h5" % (name, random.getrandbits(64))
             featurized_object = s3.Object(featurized_bucket, featurized_key)
             featurized_object.upload_file(featurized_tokens_file_name)
             os.remove(featurized_tokens_file_name)
             logging.info("Uploaded batch to s3://%s/%s", featurized_bucket, featurized_key)
 
             # post a message to the next queue
-            outgoing_queue.send_message(
-                MessageBody="s3://%s/%s" % (featurized_bucket, featurized_key),
-                DelaySeconds=30     # Give S3 some time to catch up
-            )
+            try:
+                outgoing_queue.send_message(
+                    MessageBody="s3://%s/%s" % (featurized_bucket, featurized_key),
+                    DelaySeconds=30     # Give S3 some time to catch up
+                )
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not send out results. Papers will be processed again.")
+                    continue
+                else:
+                    raise
 
-        for message in messages:
-            json_object = _message_to_object(s3, message)
-            json_object.delete()
-            logging.info("Deleted %s ...", message.body)
+        messages_to_delete = [m for m in messages if m not in deferred_messages]
+        if len(messages_to_delete) > 0:
+            # delete the queue entries
+            try:
+                incoming_queue.delete_messages(Entries=[
+                    {
+                        'Id': str(i),
+                        'ReceiptHandle': m.receipt_handle
+                    } for i, m in enumerate(messages_to_delete)
+                ])
+                logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages_to_delete)))
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not mark papers as done. Papers will be processed again.")
+                    continue
+                else:
+                    raise
 
-        incoming_queue.delete_messages(Entries=[
-            {
-                'Id': str(i),
-                'ReceiptHandle': m.receipt_handle
-            } for i, m in enumerate(messages)
-        ])
-        logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
+            # delete the s3 objects
+            for message in messages_to_delete:
+                try:
+                    featurized_object = _message_to_object(s3, message)
+                    featurized_object.delete()
+                except Exception as e:
+                    if "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not delete S3 object associated with deleted queue message. S3 object leaked.")
+                        continue
+                    else:
+                        raise
+                logging.info("Deleted %s", message.body)
+
+            # report progress
+            total_messages_processed += len(messages_to_delete)
+            messages_per_hour = 3600 * total_messages_processed / (time.time() - start_time)
+            logging.info("This worker is processing %.0f messages per hour." % messages_per_hour)
 
 def processing_queue_worker(args):
     name = args[0]
@@ -192,6 +265,7 @@ def processing_queue_worker(args):
 
     import with_labels  # Heavy import, so we do it here
     model = with_labels.model_with_labels(model_settings, embeddings)
+    model.load_weights("model/B40.h5")
 
     sqs = boto3.resource("sqs")
     incoming_queue = get_featurized_queue(sqs, name)
@@ -199,14 +273,14 @@ def processing_queue_worker(args):
     s3 = boto3.resource("s3")
 
     logging.info("Starting to process queue messages")
-    while True:
-        messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
-        logging.info("Received %d messages", len(messages))
-        if len(messages) <= 0:
-            time.sleep(20)
-            continue
+    total_messages_processed = 0
+    start_time = time.time()
+    for messages in get_messages(incoming_queue):
+        # List of messages that we're not processing this time around, and which we should therefore
+        # not delete after preprocessing.
+        deferred_messages = []
 
-        with tempfile.TemporaryDirectory(prefix="SPV2Server-process-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="spv2-process-") as temp_dir:
             # read input
             reading_featurized_time = time.time()
             featurized_file_names = []
@@ -214,8 +288,25 @@ def processing_queue_worker(args):
             for i, message in enumerate(messages):
                 featurized_object = _message_to_object(s3, message)
                 featurized_file_name = os.path.join(temp_dir, "input-%d.h5" % i)
-                featurized_object.download_file(featurized_file_name)
-                featurized_file_names.append(featurized_file_name)
+                try:
+                    featurized_object.download_file(featurized_file_name)
+                    featurized_file_names.append(featurized_file_name)
+                except Exception as e:
+                    if _boto_exception_is_404(e):
+                        if int(message.attributes["ApproximateReceiveCount"]) > 5:
+                            logging.warning("Got a message for %s, but the file isn't there; ignoring", message.body)
+                            # We're leaving the message in the list of messages, so it'll get
+                            # deleted when we're done pre-processing.
+                        else:
+                            logging.info("Got a message for %s, but the file isn't there. Will try again later.", message.body)
+                            deferred_messages.append(message)
+                        continue
+                    elif "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not download %s. Will try again later", message.body)
+                        deferred_messages.append(message)
+                        continue
+                    else:
+                        raise
 
             reading_featurized_time = time.time() - reading_featurized_time
             logging.info("Read featurized files in %.2f seconds", reading_featurized_time)
@@ -228,7 +319,8 @@ def processing_queue_worker(args):
                     with h5py.File(featurized_file_name) as featurized_file:
                         docs = dataprep2.documents_for_featurized_tokens(
                             featurized_file,
-                            include_labels=False)
+                            include_labels=False,
+                            max_tokens_per_page=model_settings.tokens_per_batch)
                         for doc in docs:
                             if doc.doc_id not in doc_ids_seen:
                                 yield doc
@@ -246,34 +338,163 @@ def processing_queue_worker(args):
             prediction_time = time.time() - prediction_time
             logging.info("Predicted in %.2f seconds", prediction_time)
 
-            for start in range(0, len(results), 10):
-                slice = results[start:min(start+10, len(results))]
-                outgoing_queue.send_messages(Entries=[{
-                    "Id": str(i),
-                    "MessageBody": json.dumps(r)
-                } for i, r in enumerate(slice)])
-            logging.info("Sent results for %s" % ", ".join((r["docSha"] for r in results)))
+            try:
+                for start in range(0, len(results), 10):
+                    slice = results[start:min(start+10, len(results))]
+                    outgoing_queue.send_messages(Entries=[{
+                        "Id": str(i),
+                        "MessageBody": json.dumps(r)
+                    } for i, r in enumerate(slice)])
+                logging.info("Sent results for %s" % ", ".join((r["docSha"] for r in results)))
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not write results to output queue. Skipping.")
+                    continue
+                else:
+                    raise
 
-        for message in messages:
-            featurized_object = _message_to_object(s3, message)
-            featurized_object.delete()
-            logging.info("Deleted %s", message.body)
+        messages_to_delete = [m for m in messages if m not in deferred_messages]
+        if len(messages_to_delete) > 0:
+            # delete the queue entries
+            try:
+                incoming_queue.delete_messages(Entries=[
+                    {
+                        'Id': str(i),
+                        'ReceiptHandle': m.receipt_handle
+                    } for i, m in enumerate(messages_to_delete)
+                ])
+                logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages_to_delete)))
+            except Exception as e:
+                if "RetriesExceededError" in str(type(e)):
+                    logging.warning("Could not mark papers as done. Papers will be processed again.")
+                    continue
+                else:
+                    raise
 
-        incoming_queue.delete_messages(Entries=[
-            {
-                'Id': str(i),
-                'ReceiptHandle': m.receipt_handle
-            } for i, m in enumerate(messages)
-        ])
-        logging.info("Deleted messages for (%s)", ", ".join((m.body for m in messages)))
+            # delete the s3 objects
+            for message in messages_to_delete:
+                try:
+                    featurized_object = _message_to_object(s3, message)
+                    featurized_object.delete()
+                except Exception as e:
+                    if "RetriesExceededError" in str(type(e)):
+                        logging.warning("Could not delete S3 object associated with deleted queue message. S3 object leaked.")
+                        continue
+                    else:
+                        raise
+                logging.info("Deleted %s", message.body)
+
+            # report progress
+            total_messages_processed += len(messages_to_delete)
+            messages_per_hour = 3600 * total_messages_processed / (time.time() - start_time)
+            logging.info("This worker is processing %.0f messages per hour." % messages_per_hour)
+
+_multiple_slashes = re.compile(r'/+')
+
+def write_rdd(args):
+    name = args[0]
+    rdd_location = args[1]
+
+    DESIRED_BATCH_SIZE = 10000
+
+    sqs = boto3.resource("sqs")
+    incoming_queue = get_done_queue(sqs, name)
+    s3 = boto3.resource("s3")
+    incoming_visibility_timeout = float(incoming_queue.attributes['VisibilityTimeout'])
+
+    logging.info("Starting to process queue messages")
+    last_time_with_messages = time.time()
+    while True:
+        message_batch = []
+        time_of_oldest_message = time.time()
+        while len(message_batch) < DESIRED_BATCH_SIZE and time.time() - time_of_oldest_message < incoming_visibility_timeout / 2:
+            messages = incoming_queue.receive_messages(WaitTimeSeconds=20, MaxNumberOfMessages=10)
+            logging.info("Received %d messages", len(messages))
+            message_batch.extend(messages)
+
+        if len(message_batch) <= 0:
+            if time.time() - last_time_with_messages > incoming_visibility_timeout:
+                logging.info("Saw no messages for more than %.0f seconds. Shutting down.", incoming_visibility_timeout)
+                return
+            time.sleep(20)
+            continue
+        last_time_with_messages = time.time()
+
+        with tempfile.TemporaryFile(prefix="spv2-process-", suffix=".json.gz") as f:
+            with gzip.GzipFile(fileobj=f, mode="w") as compressed_f:
+                for message in message_batch:
+                    compressed_f.write(message.body.encode("UTF-8")) # message is already JSON, so we don't have to encode it
+                    compressed_f.write("\n".encode("UTF-8"))
+            f.flush()
+            f.seek(0)
+
+            destination = "part-%d.gz" % random.getrandbits(64)
+            destination = rdd_location + "/" + destination
+            destination = _multiple_slashes.subn("/", destination)[0]
+            destination = destination.replace("s3:/", "s3://")
+            destination_bucket, destination_key = _s3url_re.match(destination).groups()
+            destination_bucket = s3.Bucket(destination_bucket)
+            destination_bucket.upload_fileobj(f, destination_key)
+
+        while len(message_batch) > 0:
+            messages = message_batch[:10]
+            incoming_queue.delete_messages(Entries=[
+                {
+                    'Id': str(i),
+                    'ReceiptHandle': m.receipt_handle
+                } for i, m in enumerate(messages)
+                ])
+            logging.info("Deleted %d messages", len(messages))
+            del message_batch[:10]
+
+def monitor(args):
+    name = args[0]
+
+    sqs = boto3.resource("sqs")
+    queue_names = ["incoming", "featurized", "done"]
+    queues = {
+        "incoming": get_incoming_queue(sqs, name),
+        "featurized": get_featurized_queue(sqs, name),
+        "done": get_done_queue(sqs, name)
+    }
+
+    delay = 120  # seconds
+    last_queue_values = None
+    while True:
+        for q in queues.values():
+            q.reload()
+        queue_values = {
+            q_name: int(q.attributes["ApproximateNumberOfMessages"])
+            for q_name, q in queues.items()
+        }
+        if last_queue_values is None:
+            for q_name in queue_names:
+                print("%s\t%d messages" % (q_name, queue_values[q_name]))
+        else:
+            print()
+            for q_name in queue_names:
+                print("%s\t%d messages\t%d delta\t%.0f messages per hour" % (
+                    q_name,
+                    queue_values[q_name],
+                    queue_values[q_name] - last_queue_values[q_name],
+                    (queue_values[q_name] - last_queue_values[q_name]) / (delay / 3600)
+                ))
+
+        last_queue_values = queue_values
+        time.sleep(delay)
 
 def main():
     logging.getLogger().setLevel(logging.INFO)
     command = sys.argv[1]
+    command_args = sys.argv[2:]
     if command == "preprocess":
-        preprocessing_queue_worker(sys.argv[2:])
+        preprocessing_queue_worker(command_args)
     elif command == "process":
-        processing_queue_worker(sys.argv[2:])
+        processing_queue_worker(command_args)
+    elif command == "write_rdd":
+        write_rdd(command_args)
+    elif command == "monitor":
+        monitor(command_args)
     else:
         raise ValueError("Invalid command: %s" % command)
 
