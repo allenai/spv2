@@ -6,7 +6,7 @@ metadata:
   labels:
     contact: dirkg
 spec:
-  parallelism: 32
+  parallelism: 64
   template:
     spec:
       restartPolicy: OnFailure
@@ -16,5 +16,5 @@ spec:
           imagePullPolicy: Always
           resources:
             requests:
-              cpu: 800m
+              cpu: 700m
               memory: 1Gi
