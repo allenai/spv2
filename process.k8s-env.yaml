@@ -29,6 +29,13 @@ spec:
           - name: nvidia-driver
             mountPath: /usr/local/nvidia
             readOnly: true
+        - name: spv2-process-cpu-dev
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/process-cpu:1.0.dev
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: 7
+              memory: 8Gi
       volumes:
       - name: nvidia-driver
         hostPath:
