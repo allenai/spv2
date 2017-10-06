@@ -473,11 +473,11 @@ def monitor(args):
         else:
             print()
             for q_name in queue_names:
-                print("%s\t%d messages\t%d delta\t%.2f messages per second" % (
+                print("%s\t%d messages\t%d delta\t%.0f messages per hour" % (
                     q_name,
                     queue_values[q_name],
                     queue_values[q_name] - last_queue_values[q_name],
-                    (queue_values[q_name] - last_queue_values[q_name]) / delay
+                    (queue_values[q_name] - last_queue_values[q_name]) / (delay / 3600)
                 ))
 
         last_queue_values = queue_values
