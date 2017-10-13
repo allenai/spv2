@@ -1,0 +1,46 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: spv2-service
+  labels:
+    application: spv2-service
+    contact: dirkg
+  namespace: s2-spv2-dev
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        application: spv2-service
+    spec:
+      containers:
+      - name: spv2-service
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/server:1.0
+        ports:
+        - containerPort: 8081
+          name: backend-http
+        resources:
+          requests:
+            cpu: 7
+            memory: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spv2-service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: http
+    service.beta.kubernetes.io/aws-load-balancer-internal: 0.0.0.0/0
+    service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "600"
+  labels:
+    contact: dirkg
+  namespace: s2-spv2-dev
+spec:
+  type: LoadBalancer
+  loadBalancerIP:
+  ports:
+  - port: 80
+    name: http
+    targetPort: backend-http
+  selector:
+    application: spv2-service
