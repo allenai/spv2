@@ -9,3 +9,4 @@ pydot_ng
 manhole
 git+https://www.github.com/farizrahman4u/keras-contrib.git
 boto3
+multiset
