@@ -18,3 +18,9 @@ spec:
             requests:
               cpu: 7
               memory: 8Gi
+      nodeSelector:
+        beta.kubernetes.io/instance-type: "m4.4xlarge"
+      tolerations:
+        - key: "BigCpuOnly"
+          operator: "Equal"
+          value: "true"
