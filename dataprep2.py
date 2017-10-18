@@ -1529,18 +1529,12 @@ def documents(
     model_settings: settings.ModelSettings,
     document_set:DocumentSet = DocumentSet.TRAIN
 ):
-    # if document_set is DocumentSet.TEST:
-    #     buckets = range(0xf0, 0x100)
-    # elif document_set is DocumentSet.VALIDATE:
-    #     buckets = range(0xe0, 0xf0)
-    # else:
-    #     buckets = range(0x00, 0xe0)
     if document_set is DocumentSet.TEST:
-        buckets = range(0x0b, 0x0c)
+        buckets = range(0xf0, 0x100)
     elif document_set is DocumentSet.VALIDATE:
-        buckets = range(0x0a, 0x0b)
+        buckets = range(0xe0, 0xf0)
     else:
-        buckets = range(0x00, 0x0a)
+        buckets = range(0x00, 0xe0)
     buckets = ["%02x" % x for x in buckets]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
