@@ -23,6 +23,7 @@ import settings
 import dataprep2
 import unicodedata
 import pickle
+from multiset import Multiset
 
 
 #
@@ -748,12 +749,12 @@ def evaluate_model(
                     log_file.write("Predicted bib author: %s\n" % predicted_bibauthor)
 
             # calculate author P/R
-            gold_bibauthors_set = set()
+            gold_bibauthors_set = Multiset()
             for author in gold_bibauthors:
                 for e in author:
                     gold_bibauthors_set.add(normalize_author(e))
 
-            predicted_bibauthors_set = set()
+            predicted_bibauthors_set = Multiset()
             for e in predicted_bibauthors:
                 predicted_bibauthors_set.add(normalize_author(e))
 
@@ -789,11 +790,11 @@ def evaluate_model(
                     log_file.write("Predicted bib venue: %s\n" % predicted_bibvenue)
 
             # calculate author P/R
-            gold_bibvenues_set = set()
+            gold_bibvenues_set = Multiset()
             for e in gold_bibvenues:
                 gold_bibvenues_set.add(e)
 
-            predicted_bibvenues_set = set()
+            predicted_bibvenues_set = Multiset()
             for e in predicted_bibvenues:
                 predicted_bibvenues_set.add(e)
 
@@ -830,11 +831,11 @@ def evaluate_model(
                     log_file.write("Predicted bib year: %s\n" % predicted_bibyear)
 
             # calculate author P/R
-            gold_bibyears_set = set()
+            gold_bibyears_set = Multiset()
             for e in gold_bibyears:
                 gold_bibyears_set.add(e)
 
-            predicted_bibyears_set = set()
+            predicted_bibyears_set = Multiset()
             for e in predicted_bibyears:
                 predicted_bibyears_set.add(e)
 
@@ -875,11 +876,11 @@ def evaluate_model(
     print("TitleP\tTitleR\tAuthorP\tAuthorR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(title_prs) + average_pr(author_prs)))
 
-    print("bibtitleP\tbibtitleR\tbibauthorP\tbibauthorR")
+    print("bib_titleP\tbib_titleR\tbib_authorP\tbib_authorR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(bibtitle_prs) + average_pr(bibauthor_prs)))
 
 
-    print("bibvenueP\tbibvenueR\tbibyearP\tbibyearR")
+    print("bib_venueP\tbib_venueR\tbib_yearP\tbib_yearR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(bibvenue_prs) + average_pr(bibyear_prs)))
 
     print('')
@@ -1084,7 +1085,7 @@ def main():
     logging.basicConfig(filename='logging.txt',
                             filemode='a',
                             format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                            datefmt='%H:%M:%S',
+                            datefmt='%M/%D/%H:%M:%S',
                             level=logging.DEBUG)
 
     model_settings = settings.default_model_settings
