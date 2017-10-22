@@ -336,7 +336,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄
 #
 
-UNLABELED_TOKENS_VERSION = "3corr_bibs"
+UNLABELED_TOKENS_VERSION = "bibauth"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -492,7 +492,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "12corr_bibs"
+LABELED_TOKENS_VERSION = "bibauth"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -694,14 +694,27 @@ def labeled_tokens_file(bucket_path: str):
 
                 gold_bib_alls = stringify_elements(gold_bib_nodes)
                 gold_bib_titles = stringify_elements(gold_bib_titles)
-                gold_bib_venues = stringify_elements(gold_bib_venues)
+                gold_bib_venues = stringify_elements(gold_bib_venues, False)
                 gold_bib_pubids = stringify_lists_of_elements(gold_bib_pubids)
                 #strip pubids, which don't occur in doc
                 for i, a in enumerate(gold_bib_alls):
                     if not gold_bib_pubids[i] is None:
                         gold_bib_alls[i] = gold_bib_alls[i].replace(gold_bib_pubids[i], "")
 
-                gold_bib_authors = [stringify_elements(x) if not x is None else [] for x in gold_bib_author_nodes]
+                gold_bib_authors = [[] for x in gold_bib_alls]
+                for bib_idx, authors_node in enumerate(gold_bib_author_nodes):
+                    if not authors_node is None:
+                        for author_node in authors_node:
+                            given_names = \
+                                " ".join(tokenize(textify_string_nodes(author_node.findall("./given-names"))))
+                            surnames = \
+                                " ".join(tokenize(textify_string_nodes(author_node.findall("./surname"))))
+                            if len(surnames) <= 0:
+                                logging.warning("No surnames for one of the bib authors; skipping author")
+                                continue
+                            gold_bib_authors[bib_idx].append((given_names, surnames))
+
+             #   gold_bib_authors = [stringify_elements(x, False) if not x is None else [] for x in gold_bib_author_nodes]
                 gold_bib_years = stringify_elements(gold_bib_years)
 
                 # find titles, authors, bibs in the document
@@ -892,24 +905,39 @@ def labeled_tokens_file(bucket_path: str):
                             match.first_token_index
                         )
 
-                    def find_xs_in_bounds(out_matches, to_find):
+                    def find_authors_in_bounds(out_matches, to_find):
+
                         for idx, ses in enumerate(to_find):
                             if ses is None or len(ses) == 0 or idx < \
                                     bib_entries_this_page[0] or \
                                             idx > bib_entries_this_page[1]:
                                 continue
-                            def check(s):
-                                # TODO: use title, author matches as back-up for biball
-                                if len(bib_all_matches[idx]) == 0: # just find it anywhere:
-                                    x_matches = list(find_string_in_page(s))
+                            def check(author):
+                                author_matches = []
+                                given_names, surnames = author
+                                if len(given_names) == 0:
+                                    author_variants = {surnames}
                                 else:
-                                    x_matches = list(find_string_in_page(s, bib_all_matches[idx].first_token_index, \
-                                                                       bib_all_matches[idx].one_past_last_token_index))
-                                if len(x_matches) > 0:
-                                    return min(x_matches, key=bib_x_match_sort_key)
+                                    author_variants = {
+                                        "%s %s" % (surnames, given_names),
+                                        "%s %s" % (given_names, surnames),
+                                        "%s , %s" % (surnames, given_names)}
+                                if len(bib_all_matches[idx]) == 0: # just find it anywhere:
+                                    for author_variant in author_variants:
+                                        author_matches.extend(find_string_in_page(author_variant))
+                                else:
+                                    for author_variant in author_variants:
+                                        author_matches.extend(find_string_in_page(author_variant,
+                                                                            bib_all_matches[idx].first_token_index, \
+                                                                            bib_all_matches[
+                                                                                idx].one_past_last_token_index))
+                                if len(author_matches) > 0:
+                                    return min(author_matches, key=bib_x_match_sort_key)
                                 else:
                                     return None
+
                             out_matches[idx] = [check(x) for x in ses]
+
 
                     def find_x_in_bounds(out_matches, to_find):
                         for idx, s in enumerate(to_find):
@@ -928,7 +956,7 @@ def labeled_tokens_file(bucket_path: str):
 
                     find_x_in_bounds(bib_venue_matches, gold_bib_venues)
                     find_x_in_bounds(bib_year_matches, gold_bib_years)
-                    find_xs_in_bounds(bib_author_matches, gold_bib_authors)
+                    find_authors_in_bounds(bib_author_matches, gold_bib_authors)
 
                     # for bib_venue_index, gold_bib_venue in enumerate(gold_bib_venues):
                     #     if gold_bib_venue is None or len(gold_bib_venue)==0 or bib_venue_index < bib_entries_this_page[0] or \
@@ -951,11 +979,7 @@ def labeled_tokens_file(bucket_path: str):
                 num_bib_author_matches = sum(sum(1 if not x is None else 0 for x in y) for y in bib_author_matches)
 
                 nonempty_titles = sum(1 for x in gold_bib_titles if len(x) > 0)
-                total_nonempty_titles += nonempty_titles
                 paper_bib_authors = sum(len(y) for y in gold_bib_authors)
-                total_bib_authors += paper_bib_authors
-                total_titles += len(bib_title_matches)
-                total_matched_bib_authors += num_bib_author_matches
 
                 logging.info("found %s of %s titles (%s nonempty) for %s", found_matches, len(bib_title_matches), \
                              nonempty_titles, doc_id)
@@ -994,6 +1018,20 @@ def labeled_tokens_file(bucket_path: str):
                 if any((matches is None for matches in author_matches)):
                     logging.warning("Could not find all authors in %s; skipping doc", doc_id)
                     continue
+
+                if num_bib_author_matches < 0.9*paper_bib_authors:
+                    logging.warning("found fewer than 90 percent of bib authors in %s; skipping doc", doc_id);
+                    continue
+
+                if found_matches[0] < 0.9*nonempty_titles:
+                    logging.warning("found fewer than 90 percent of bib titles in %s; skipping doc", doc_id);
+                    continue
+
+                total_nonempty_titles += nonempty_titles
+                total_bib_authors += paper_bib_authors
+                total_titles += len(bib_title_matches)
+                total_matched_bib_authors += num_bib_author_matches
+
 
                 # create the document in the new file
                 # This is the point of no return.
@@ -1111,7 +1149,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "15tkst_bibs"
+FEATURIZED_TOKENS_VERSION = "bibauth"
 
 def make_featurized_tokens_file(
     output_file_name: str,
@@ -1497,11 +1535,11 @@ def documents(
     # else:
     #     buckets = range(0x00, 0xe0)
     if document_set is DocumentSet.TEST:
-        buckets = range(0x0b, 0x0c)
+        buckets = range(0x11, 0x13)
     elif document_set is DocumentSet.VALIDATE:
-        buckets = range(0x0a, 0x0b)
+        buckets = range(0x0f, 0x11)
     else:
-        buckets = range(0x00, 0x0a)
+        buckets = range(0x00, 0x0f)
     buckets = ["%02x" % x for x in buckets]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)

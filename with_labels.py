@@ -5,8 +5,8 @@ import typing
 import re
 import time
 import os
-#os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
-#os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 from queue import Queue
 from threading import Thread
 
@@ -1067,11 +1067,11 @@ def main():
         manhole.install()
 
     logging.getLogger().setLevel(logging.DEBUG)
-    logging.basicConfig(filename='logging.txt',
-                            filemode='a',
-                            format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                            datefmt='%H:%M:%S',
-                            level=logging.DEBUG)
+    # logging.basicConfig(filename='logging.txt',
+    #                         filemode='a',
+    #                         format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+    #                         datefmt='%H:%M:%S',
+    #                         level=logging.DEBUG)
 
     model_settings = settings.default_model_settings
 
