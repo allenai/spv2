@@ -34,7 +34,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         "/v1/json/targz",
         "/v1/json/zip",
         "/v1/json/pdf",
-        "/v1/json/urls"
+        "/v1/json/urls",
+        "/v1/json/json"
     }
 
     def do_GET(self):
@@ -59,29 +60,39 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
         with tempfile.TemporaryDirectory(prefix="SPV2Server-") as temp_dir:
             # read input
+            logging.info("Reading input ...")
             reading_input_time = time.time()
             input_size = int(self.headers["Content-Length"])
             input_file_name = os.path.join(temp_dir, "input")
             with open(input_file_name, "wb") as input_file:
                 _send_all(self.rfile, input_file, input_size)
             reading_input_time = time.time() - reading_input_time
+            logging.info("Read input in %.2f seconds", reading_input_time)
 
-            # get json from the dataprep server
+            logging.info("Getting JSON ...")
             getting_json_time = time.time()
-            json_file_name = os.path.join(temp_dir, "tokens.json")
-            with open(json_file_name, "wb") as json_file, open(input_file_name, "rb") as input_file:
-                dataprep_conn = http.client.HTTPConnection("localhost", 8080, timeout=60)
-                dataprep_conn.request("POST", self.path, body=input_file)
-                with dataprep_conn.getresponse() as dataprep_response:
-                    if dataprep_response.status < 200 or dataprep_response.status >= 300:
-                        raise ValueError("Error %d from dataprep server at %s" % (
-                            dataprep_response.status,
-                            dataprep_conn.host))
-                    _send_all(dataprep_response, json_file)
-            os.remove(input_file_name)
+            if not self.path.endswith("/json"):
+                # get json from the dataprep server
+                json_file_name = os.path.join(temp_dir, "tokens.json")
+                with open(json_file_name, "wb") as json_file, open(input_file_name, "rb") as input_file:
+                    dataprep_conn = http.client.HTTPConnection("localhost", 8080, timeout=60)
+                    dataprep_conn.request("POST", self.path, body=input_file)
+                    with dataprep_conn.getresponse() as dataprep_response:
+                        if dataprep_response.status < 200 or dataprep_response.status >= 300:
+                            raise ValueError("Error %d from dataprep server at %s" % (
+                                dataprep_response.status,
+                                dataprep_conn.host))
+                        _send_all(dataprep_response, json_file)
+                os.remove(input_file_name)
+            else:
+                # read json straight from the input
+                json_file_name = os.path.join(temp_dir, "tokens.json")
+                os.rename(input_file_name, json_file_name)
             getting_json_time = time.time() - getting_json_time
+            logging.info("Got JSON in %.2f seconds", getting_json_time)
 
             # make unlabeled tokens file
+            logging.info("Making unlabeled tokens ...")
             making_unlabeled_tokens_time = time.time()
             unlabeled_tokens_file_name = os.path.join(temp_dir, "unlabeled-tokens.h5")
             dataprep2.make_unlabeled_tokens_file(
@@ -91,8 +102,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             errors = [line for line in dataprep2.json_from_file(json_file_name) if "error" in line]
             os.remove(json_file_name)
             making_unlabeled_tokens_time = time.time() - making_unlabeled_tokens_time
+            logging.info("Made unlabeled tokens in %.2f seconds", making_unlabeled_tokens_time)
 
             # make featurized tokens file
+            logging.info("Making featurized tokens ...")
             making_featurized_tokens_time = time.time()
             with h5py.File(unlabeled_tokens_file_name, "r") as unlabeled_tokens_file:
                 featurized_tokens_file_name = os.path.join(temp_dir, "featurized-tokens.h5")
@@ -107,13 +120,16 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 # We don't delete the unlabeled file here because the featurized one contains references
                 # to it.
             making_featurized_tokens_time = time.time() - making_featurized_tokens_time
+            logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
 
+            logging.info("Making and sending results ...")
             make_and_send_results_time = time.time()
             with h5py.File(featurized_tokens_file_name) as featurized_tokens_file:
                 def get_docs():
                     return dataprep2.documents_for_featurized_tokens(
                         featurized_tokens_file,
-                        include_labels=False)
+                        include_labels=False,
+                        max_tokens_per_page=self.server.model_settings.tokens_per_batch)
                 results = with_labels.run_model(
                     self.server.model,
                     self.server.model_settings,
@@ -144,6 +160,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
                 response_body.reset()
             make_and_send_results_time = time.time() - make_and_send_results_time
+            logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
 
             logging.info("Done processing")
             logging.info("Reading input:         %.0f s", reading_input_time)
@@ -154,7 +171,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
 
 class Server(http.server.HTTPServer):
-    def __init__(self, model, token_stats, embeddings, model_settings):
+    def __init__(self, model, token_stats: dataprep2.TokenStatistics, embeddings: dataprep2.CombinedEmbeddings, model_settings):
         super(Server, self).__init__(('', 8081), RequestHandler)
 
         self.model = model
@@ -162,6 +179,9 @@ class Server(http.server.HTTPServer):
         self.token_stats = token_stats
         self.embeddings = embeddings
         self.model_settings = model_settings
+
+        self.token_stats._ensure_loaded()
+        self.embeddings._ensure_loaded()
 
 
 def main():

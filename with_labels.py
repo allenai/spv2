@@ -5,10 +5,8 @@ import typing
 import re
 import time
 import os
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-from queue import Queue
-from threading import Thread
+#os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
+#os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 from keras.layers import Embedding, Input, LSTM, Dense
 from keras.layers.merge import Concatenate
@@ -24,28 +22,8 @@ import sklearn.metrics
 import settings
 import dataprep2
 import unicodedata
-
-
-#
-# Helpers 💉
-#
-
-def threaded_generator(g):
-    q = Queue(maxsize=128)
-
-    sentinel = object()
-
-    def fill_queue():
-        try:
-            for value in g:
-                q.put(value)
-        finally:
-            q.put(sentinel)
-
-    thread = Thread(name=repr(g), target=fill_queue, daemon=True)
-    thread.start()
-
-    yield from iter(q.get, sentinel)
+import pickle
+from multiset import Multiset
 
 
 #
@@ -380,6 +358,8 @@ def evaluate_model(
     #
     # Load and prepare documents
     #
+
+    word_set = get_word_set()
 
     def test_docs() -> typing.Generator[dataprep2.Document, None, None]:
         docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
@@ -724,6 +704,9 @@ def evaluate_model(
                 for labeled_bibtitle in labeled_bibtitles:
                     log_file.write("Labeled bib title:   %s\n" % labeled_bibtitle)
 
+            if len(word_set) > 0:
+                predicted_bibtitles = remove_hyphens(predicted_bibtitles, word_set)
+
             predicted_bibtitles = [" ".join(ats) for ats in predicted_bibtitles]
             # print(predicted_bibtitles)
             if len(predicted_bibtitles) <= 0:
@@ -733,8 +716,10 @@ def evaluate_model(
                     log_file.write("Predicted bib title: %s\n" % predicted_bibtitle)
 
             # calculate author P/R
-            gold_bibtitles = set(map(normalize_author, gold_bibtitles))
-            predicted_bibtitles = set(map(normalize_author, predicted_bibtitles))
+            # gold_bibtitles = set(map(normalize_author, gold_bibtitles))
+            # predicted_bibtitles = set(map(normalize_author, predicted_bibtitles))
+            gold_bibtitles = set(gold_bibtitles)
+            predicted_bibtitles = set(predicted_bibtitles)
             precision = 0
             if len(predicted_bibtitles) > 0:
                 precision = len(gold_bibtitles & predicted_bibtitles) / len(predicted_bibtitles)
@@ -743,8 +728,6 @@ def evaluate_model(
                 recall = len(gold_bibtitles & predicted_bibtitles) / len(gold_bibtitles)
             log_file.write("Bib title P/R:       %.3f / %.3f\n" % (precision, recall))
             bibtitle_prs.append((precision, recall))
-
-
 
 
             gold_bibauthors = doc.gold_bib_authors[:]
@@ -766,14 +749,14 @@ def evaluate_model(
                     log_file.write("Predicted bib author: %s\n" % predicted_bibauthor)
 
             # calculate author P/R
-            gold_bibauthors_set = set()
+            gold_bibauthors_set = Multiset()
             for author in gold_bibauthors:
                 for e in author:
-                    gold_bibauthors_set.add(e)
+                    gold_bibauthors_set.add(normalize_author(e))
 
-            predicted_bibauthors_set = set()
+            predicted_bibauthors_set = Multiset()
             for e in predicted_bibauthors:
-                predicted_bibauthors_set.add(e)
+                predicted_bibauthors_set.add(normalize_author(e))
 
             gold_bibauthors = gold_bibauthors_set
             predicted_bibauthors = predicted_bibauthors_set
@@ -807,11 +790,11 @@ def evaluate_model(
                     log_file.write("Predicted bib venue: %s\n" % predicted_bibvenue)
 
             # calculate author P/R
-            gold_bibvenues_set = set()
+            gold_bibvenues_set = Multiset()
             for e in gold_bibvenues:
                 gold_bibvenues_set.add(e)
 
-            predicted_bibvenues_set = set()
+            predicted_bibvenues_set = Multiset()
             for e in predicted_bibvenues:
                 predicted_bibvenues_set.add(e)
 
@@ -848,11 +831,11 @@ def evaluate_model(
                     log_file.write("Predicted bib year: %s\n" % predicted_bibyear)
 
             # calculate author P/R
-            gold_bibyears_set = set()
+            gold_bibyears_set = Multiset()
             for e in gold_bibyears:
                 gold_bibyears_set.add(e)
 
-            predicted_bibyears_set = set()
+            predicted_bibyears_set = Multiset()
             for e in predicted_bibyears:
                 predicted_bibyears_set.add(e)
 
@@ -893,11 +876,11 @@ def evaluate_model(
     print("TitleP\tTitleR\tAuthorP\tAuthorR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(title_prs) + average_pr(author_prs)))
 
-    print("bibtitleP\tbibtitleR\tbibauthorP\tbibauthorR")
+    print("bib_titleP\tbib_titleR\tbib_authorP\tbib_authorR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(bibtitle_prs) + average_pr(bibauthor_prs)))
 
 
-    print("bibvenueP\tbibvenueR\tbibyearP\tbibyearR")
+    print("bib_venueP\tbib_venueR\tbib_yearP\tbib_yearR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(bibvenue_prs) + average_pr(bibyear_prs)))
 
     print('')
@@ -912,7 +895,7 @@ def train(
     start_weights_filename,
     pmc_dir: str,
     output_filename: str,
-    training_batches: int=100000,
+    training_batches: int=144000,
     test_batches: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings
 ):
@@ -947,21 +930,24 @@ def train(
         def f1(p: float, r: float) -> float:
             return (2.0 * p * r) / (p + r)
         def combined_score(ev_result) -> float:
-            _, _, _, title_p, title_r, author_p, author_r = ev_result
-            return (f1(title_p, title_r) + f1(author_p, author_r)) / 2
+            _, _, _, _, _, _, _, title_p, title_r, author_p, author_r, \
+                bib_title_p, bib_title_r, bib_author_p, bib_author_r, \
+                bib_venue_p, bib_venue_r, bib_year_p, bib_year_r = ev_result
+            return (f1(title_p, title_r) + f1(author_p, author_r) + f1(bib_title_p, bib_title_r) + \
+                f1(bib_author_p, bib_author_r) + f1(bib_venue_p, bib_venue_r) + f1(bib_year_p, bib_year_r)) / 6
         return [combined_score(ev_result) for _, _, ev_result in scored_results]
 
     start_time = None
     if training_batches > 0:
         trained_batches = 0
         while trained_batches < training_batches:
-            logging.info("Starting new epoch")
+            logging.info("Starting new epoch batches = {}".format(trained_batches))
             train_docs = dataprep2.documents(
                 pmc_dir,
                 model_settings,
                 document_set=dataprep2.DocumentSet.TRAIN)
             training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
-            for batch in threaded_generator(training_data):
+            for batch in dataprep2.threaded_generator(training_data):
                 if trained_batches == 0:
                     # It takes a while to get here the first time, since things have to be
                     # loaded from cache, the page pool has to be filled up, and so on, so we
@@ -1012,13 +998,13 @@ def train(
                     print_scored_results(now - start_time)
 
                     # check if this one is better than the last one
-                 #   combined_scores = get_combined_scores()
-                 #   if True: # combined_scores[-1] == max(combined_scores):
-                 #       logging.info(
-                 #           "High score (%.3f)! Saving model to %s",
-                 #           max(combined_scores),
-                 #           best_model_filename)
-                 #       model.save(best_model_filename, overwrite=True)
+                    combined_scores = get_combined_scores()
+                    if True: # combined_scores[-1] == max(combined_scores):
+                        logging.info(
+                           "High score (%.3f)! Saving model to %s",
+                           max(combined_scores),
+                           best_model_filename)
+                        model.save(best_model_filename, overwrite=True)
 
                     eval_end_time = time.time()
                     # adjust start time to ignore the time we spent evaluating
@@ -1027,11 +1013,11 @@ def train(
                     time_at_last_eval = eval_end_time
 
                     # check if we've stopped improving
-                    # best_score = max(combined_scores)
-                    # if all([score < best_score for score in combined_scores[-3:]]):
-                    #     logging.info("No improvement for three hours. Stopping training.")
-                    #     trained_batches = training_batches  # Signaling to the outer loop that we're done.
-                    #     break
+                    best_score = max(combined_scores)
+                    if all([score < best_score for score in combined_scores[-3:]]):
+                        logging.info("No improvement for three hours. Stopping training.")
+                        trained_batches = training_batches  # Signaling to the outer loop that we're done.
+                        break
 
         logging.info("Writing temporary final model to %s", output_filename)
         model.save(output_filename, overwrite=True)
@@ -1057,6 +1043,35 @@ def train(
     return model
 
 
+def get_word_set():
+    word_set = set()
+    path = '/websail/common/embeddings/glove/840B/glove.840B.300d.vocab'
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                word = line.strip()
+                word_set.add(word)
+    return word_set
+
+
+def remove_hyphens(predicted_bibtitles, word_set):
+    for i in range(0, len(predicted_bibtitles)):
+        for j in range(1, len(predicted_bibtitles[i])-1):
+            if j >= len(predicted_bibtitles[i])-1:
+                break
+            if predicted_bibtitles[i][j] == '-':
+                possible_word = ''.join([predicted_bibtitles[i][j-1], predicted_bibtitles[i][j+1]])
+                if possible_word in word_set or possible_word.lower() in word_set:
+                    predicted_bibtitles[i][j-1] = possible_word
+                    predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
+                    predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
+
+    return predicted_bibtitles
+
+
+
+
+
 #
 # Main program 🎛
 #
@@ -1067,11 +1082,11 @@ def main():
         manhole.install()
 
     logging.getLogger().setLevel(logging.DEBUG)
-    # logging.basicConfig(filename='logging.txt',
-    #                         filemode='a',
-    #                         format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-    #                         datefmt='%H:%M:%S',
-    #                         level=logging.DEBUG)
+    logging.basicConfig(filename='logging.txt',
+                            filemode='a',
+                            format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                            datefmt='%M/%D/%H:%M:%S',
+                            level=logging.DEBUG)
 
     model_settings = settings.default_model_settings
 

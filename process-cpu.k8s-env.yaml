@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spv2-process-cpu-dev
+  namespace: s2-spv2-dev
+  labels:
+    contact: dirkg
+spec:
+  parallelism: 24
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: spv2-process-dev
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/process-cpu:1.0.dev
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: 7
+              memory: 8Gi
+      nodeSelector:
+        beta.kubernetes.io/instance-type: "m4.4xlarge"
+      tolerations:
+        - key: "BigCpuOnly"
+          operator: "Equal"
+          value: "true"
