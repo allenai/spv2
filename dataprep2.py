@@ -1632,7 +1632,11 @@ def dump_documents(
                                                                   , doc.gold_bib_authors, doc.gold_bib_years):
                 html_file.write("<p>Gold bib title: <b>%s</b></p>\n" % html.escape(bib_title))
                 for bib_author in bib_authors:
-                    html_file.write("<p>Gold bib author: <b>%s</b></p>\n" % html.escape(bib_author))
+                    if len(bib_author)==2:
+                        html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0]), \
+                                                                                    html.escape(bib_author[1])))
+                    else:
+                        html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0])))
                 html_file.write("<p>Gold bib year: <b>%s</b></p>\n" % html.escape(bib_year))
                 html_file.write("<p>Gold bib venue: <b>%s</b></p>\n" % html.escape(bib_venue))
 
