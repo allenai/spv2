@@ -731,8 +731,9 @@ def evaluate_model(
 
 
             gold_bibauthors = doc.gold_bib_authors[:]
-            for gold_bibauthor in gold_bibauthors:
-                log_file.write("Gold bib author:      %s\n" % gold_bibauthor)
+            for gold_bibauthor_per_bib in gold_bibauthors:
+                for gold_bibauthor in gold_bibauthor_per_bib:
+                    log_file.write("Gold bib author:      %s\n" % " ".join(gold_bibauthor[::-1]))
 
             labeled_bibauthors = [" ".join(ats) for ats in labeled_bibauthors]
             if len(labeled_bibauthors) <= 0:
@@ -750,9 +751,19 @@ def evaluate_model(
 
             # calculate author P/R
             gold_bibauthors_set = Multiset()
-            for author in gold_bibauthors:
-                for e in author:
-                    gold_bibauthors_set.add(normalize_author(e))
+
+            for gold_author_per_bib in gold_bibauthors:
+                for gold_bibauthor in gold_author_per_bib:
+                    gold_bibauthors_set.add(normalize_author(" ".join(gold_bibauthor[::-1])))
+
+            # gold_bib_authors = ["%s %s" % tuple(gold_author) for gold_author in gold_authors]
+            # for gold_author in gold_authors:
+            #     log_file.write("Gold author:      %s\n" % gold_author)
+            #
+            #
+            # for author in gold_bibauthors:
+            #     for e in author:
+            #         gold_bibauthors_set.add(normalize_author(e))
 
             predicted_bibauthors_set = Multiset()
             for e in predicted_bibauthors:
