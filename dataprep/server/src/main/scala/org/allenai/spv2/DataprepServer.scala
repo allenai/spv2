@@ -22,6 +22,7 @@ import org.apache.pdfbox.tools.imageio.ImageIOUtil
 import org.eclipse.jetty.server.{ Request, Server }
 import org.eclipse.jetty.server.handler.AbstractHandler
 
+import scala.annotation.tailrec
 import scala.util.control.NonFatal
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.JavaConverters._
@@ -98,6 +99,24 @@ class DataprepServer extends AbstractHandler with Logging {
   }
   private case class PreprocessingSuccess(docName: String, docSha: String, file: Path) extends PreprocessingResult
   private case class PreprocessingFailure(docName: String, e: Throwable) extends PreprocessingResult
+
+  @tailrec
+  private def firstSuccessOrFirstFailure(
+    tries: Iterator[PreprocessingResult],
+    defaultFailure: Option[PreprocessingResult] = None
+  ): PreprocessingResult = {
+    val next = tries.next()
+    next match {
+      case _: PreprocessingSuccess => next
+      case _: PreprocessingFailure =>
+        val newDefaultFailure = defaultFailure.getOrElse(next)
+        if (tries.hasNext) {
+          firstSuccessOrFirstFailure(tries, Some(newDefaultFailure))
+        } else {
+          newDefaultFailure
+        }
+    }
+  }
 
   private def handleArchive(
     request: HttpServletRequest,
@@ -183,40 +202,46 @@ class DataprepServer extends AbstractHandler with Logging {
     val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
     try {
       val preprocessingResults = request.getReader.lines().iterator().asScala.parMap { line =>
-        try {
-          val pdfSha1 = MessageDigest.getInstance("SHA-1")
-          pdfSha1.reset()
+        val urls = line.split("\\s") // if there are multiple urls on one line, we treat the later ones as backup to the earlier ones
 
-          line match {
-            case s3UrlPattern(bucket, key) =>
-              Resource.using(s3.getObject(bucket, key).getObjectContent) { is =>
-                val pdfSha1Stream = new DigestInputStream(is, pdfSha1)
-                val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
-                try {
-                  Files.copy(pdfSha1Stream, tempFile, StandardCopyOption.REPLACE_EXISTING)
-                  val pdfSha1Bytes = pdfSha1.digest()
-                  val tempFileSha = Utilities.toHex(pdfSha1Bytes)
-                  val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
-                  Files.move(tempFile, renamedFile, StandardCopyOption.REPLACE_EXISTING)
-                  logger.info(s"Downloaded $line to $renamedFile")
-                  PreprocessingSuccess(line, tempFileSha, renamedFile)
-                } finally {
-                  Files.deleteIfExists(tempFile)
-                }
+        firstSuccessOrFirstFailure(
+          urls.iterator.map { url =>
+            try {
+              val pdfSha1 = MessageDigest.getInstance("SHA-1")
+              pdfSha1.reset()
+
+              url match {
+                case s3UrlPattern(bucket, key) =>
+                  Resource.using(s3.getObject(bucket, key).getObjectContent) { is =>
+                    val pdfSha1Stream = new DigestInputStream(is, pdfSha1)
+                    val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
+                    try {
+                      Files.copy(pdfSha1Stream, tempFile, StandardCopyOption.REPLACE_EXISTING)
+                      val pdfSha1Bytes = pdfSha1.digest()
+                      val tempFileSha = Utilities.toHex(pdfSha1Bytes)
+                      val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
+                      Files.move(tempFile, renamedFile, StandardCopyOption.REPLACE_EXISTING)
+                      logger.info(s"Downloaded $url to $renamedFile")
+                      PreprocessingSuccess(url, tempFileSha, renamedFile)
+                    } finally {
+                      Files.deleteIfExists(tempFile)
+                    }
+                  }
+                case httpUrlPattern(httpUrl) =>
+                  val request = Http(httpUrl).timeout(10000, 60000)
+                  val pdfBytes = withRetries(() => request.asBytes).body
+                  val pdfSha1Bytes = pdfSha1.digest(pdfBytes)
+                  val fileSha = Utilities.toHex(pdfSha1Bytes)
+                  val file = tempDir.resolve(fileSha + ".pdf")
+                  Files.copy(new ByteArrayInputStream(pdfBytes), file)
+                  logger.info(s"Downloaded $httpUrl to $file")
+                  PreprocessingSuccess(line, fileSha, file)
               }
-            case httpUrlPattern(url) =>
-              val request = Http(url).timeout(10000, 60000)
-              val pdfBytes = withRetries(() => request.asBytes).body
-              val pdfSha1Bytes = pdfSha1.digest(pdfBytes)
-              val fileSha = Utilities.toHex(pdfSha1Bytes)
-              val file = tempDir.resolve(fileSha + ".pdf")
-              Files.copy(new ByteArrayInputStream(pdfBytes), file)
-              logger.info(s"Downloaded $url to $file")
-              PreprocessingSuccess(line, fileSha, file)
+            } catch {
+              case NonFatal(e) => PreprocessingFailure(line, e)
+            }
           }
-        } catch {
-          case NonFatal(e) => PreprocessingFailure(line, e)
-        }
+        )
       }.toList
       writeResponse(preprocessingResults, response)
     } finally {

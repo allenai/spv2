@@ -408,6 +408,14 @@ def make_unlabeled_tokens_file(
             compression_opts=9)
 
         for json_doc in json_from_files(json_file_names):
+            if "error" in json_doc:
+                if ignore_errors:
+                    continue
+                else:
+                    raise ValueError("Received error document when error was not expected")
+            if "doc" in json_doc:
+                json_doc = json_doc["doc"]
+
             # find the proper doc id
             doc_name = json_doc["docName"]
             doc_sha = json_doc.get("docSha", None)

@@ -1,7 +1,7 @@
 package org.allenai.spv2;
 
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
 import com.amazonaws.services.s3.model.S3Object;
 
@@ -23,7 +23,7 @@ public class ScholarBucketPaperSource implements PaperSource {
     public static PaperSource getInstanceWithRetries() { return new RetryPaperSource(getInstance()); }
 
     private final static String bucket = "ai2-s2-pdfs";
-    private final AmazonS3 s3 = new AmazonS3Client();
+    private final AmazonS3 s3 = AmazonS3ClientBuilder.defaultClient();
 
     @Override
     public InputStream getPdf(final String paperId) throws IOException {
