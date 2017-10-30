@@ -634,6 +634,25 @@ def evaluate_model(
                 a = normalize(a)
                 a = a.replace(".", " ")
                 a = _multiple_spaces_re.sub(" ", a)
+                a = a.strip()
+
+                chunks = a.split()
+                comb_pos = -1
+                print(chunks)
+                for i in range(0, len(chunks)-1):
+                    if len(chunks[i])==1 and len(chunks[i+1])==1:
+                        comb_pos = i
+                if comb_pos != -1:
+                    new_chunks = []
+                    for i in range(0, len(chunks)):
+                        if i != comb_pos:
+                            new_chunks.append(chunks[i])
+                        else:
+                            new_chunks.append(''.join([chunks[i], chunks[i+1]]))
+                            chunks[i+1] = ''
+
+                    a = ' '.join(new_chunks)
+
                 return a.strip()
 
             # print titles
@@ -684,7 +703,8 @@ def evaluate_model(
             if len(gold_authors) > 0:
                 recall = len(gold_authors & predicted_authors) / len(gold_authors)
             log_file.write("Author P/R:       %.3f / %.3f\n" % (precision, recall))
-            author_prs.append((precision, recall))
+            if len(gold_authors) > 0:
+                author_prs.append((precision, recall))
 
 
 
@@ -727,13 +747,19 @@ def evaluate_model(
             if len(gold_bibtitles) > 0:
                 recall = len(gold_bibtitles & predicted_bibtitles) / len(gold_bibtitles)
             log_file.write("Bib title P/R:       %.3f / %.3f\n" % (precision, recall))
-            bibtitle_prs.append((precision, recall))
+
+            if len(gold_bibtitles) > 0:
+                bibtitle_prs.append((precision, recall))
 
 
             gold_bibauthors = doc.gold_bib_authors[:]
             for gold_bibauthor_per_bib in gold_bibauthors:
                 for gold_bibauthor in gold_bibauthor_per_bib:
-                    log_file.write("Gold bib author:      %s\n" % " ".join(gold_bibauthor[::-1]))
+                    unsorted_bib_author = normalize_author(" ".join(gold_bibauthor[::-1])).split()
+                    unsorted_bib_author.sort()
+                    sorted_bib_author = unsorted_bib_author
+
+                    log_file.write("Gold bib author:      {}\traw:\t{}\n".format(" ".join(sorted_bib_author), " ".join(gold_bibauthor[::-1])))
 
             labeled_bibauthors = [" ".join(ats) for ats in labeled_bibauthors]
             if len(labeled_bibauthors) <= 0:
@@ -747,14 +773,22 @@ def evaluate_model(
                 log_file.write("No bib authors predicted\n")
             else:
                 for predicted_bibauthor in predicted_bibauthors:
-                    log_file.write("Predicted bib author: %s\n" % predicted_bibauthor)
+                    unsorted_bib_author = normalize_author(predicted_bibauthor).split()
+                    unsorted_bib_author.sort()
+                    sorted_bib_author = unsorted_bib_author
+
+                    log_file.write("Predicted bib author:      {}\traw:\t{}\n".format(" ".join(sorted_bib_author), predicted_bibauthor))
 
             # calculate author P/R
             gold_bibauthors_set = Multiset()
 
             for gold_author_per_bib in gold_bibauthors:
                 for gold_bibauthor in gold_author_per_bib:
-                    gold_bibauthors_set.add(normalize_author(" ".join(gold_bibauthor[::-1])))
+                    unsorted_bib_author = normalize_author(" ".join(gold_bibauthor[::-1])).split()
+                    unsorted_bib_author.sort()
+                    sorted_bib_author = unsorted_bib_author
+
+                    gold_bibauthors_set.add(normalize_author(' '.join(sorted_bib_author)))
 
             # gold_bib_authors = ["%s %s" % tuple(gold_author) for gold_author in gold_authors]
             # for gold_author in gold_authors:
@@ -767,7 +801,11 @@ def evaluate_model(
 
             predicted_bibauthors_set = Multiset()
             for e in predicted_bibauthors:
-                predicted_bibauthors_set.add(normalize_author(e))
+                unsorted_bib_author = normalize_author(e).split()
+                unsorted_bib_author.sort()
+                sorted_bib_author = unsorted_bib_author
+
+                predicted_bibauthors_set.add(normalize_author(' '.join(sorted_bib_author)))
 
             gold_bibauthors = gold_bibauthors_set
             predicted_bibauthors = predicted_bibauthors_set
@@ -778,7 +816,8 @@ def evaluate_model(
             if len(gold_bibauthors) > 0:
                 recall = len(gold_bibauthors & predicted_bibauthors) / len(gold_bibauthors)
             log_file.write("Bib author P/R:       %.3f / %.3f\n" % (precision, recall))
-            bibauthor_prs.append((precision, recall))
+            if len(gold_bibauthors) > 0:
+                bibauthor_prs.append((precision, recall))
 
 
 
@@ -819,7 +858,8 @@ def evaluate_model(
             if len(gold_bibvenues) > 0:
                 recall = len(gold_bibvenues & predicted_bibvenues) / len(gold_bibvenues)
             log_file.write("Bib venue P/R:       %.3f / %.3f\n" % (precision, recall))
-            bibvenue_prs.append((precision, recall))
+            if len(gold_bibvenues) > 0:
+                bibvenue_prs.append((precision, recall))
 
 
 
@@ -862,7 +902,9 @@ def evaluate_model(
             if len(gold_bibyears) > 0:
                 recall = len(gold_bibyears & predicted_bibyears) / len(gold_bibyears)
             log_file.write("Bib year P/R:       %.3f / %.3f\n" % (precision, recall))
-            bibyear_prs.append((precision, recall))
+
+            if len(gold_bibyears) > 0:
+                bibyear_prs.append((precision, recall))
 
 
 
@@ -939,6 +981,8 @@ def train(
             print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
     def get_combined_scores() -> typing.List[float]:
         def f1(p: float, r: float) -> float:
+            if p + r == 0.0:
+                return 0
             return (2.0 * p * r) / (p + r)
         def combined_score(ev_result) -> float:
             _, _, _, _, _, _, _, title_p, title_r, author_p, author_r, \
@@ -1160,8 +1204,57 @@ def main():
 
 
 
+
+
+
 def temp():
-    pass
+    def normalize(s: str) -> str:
+        return unicodedata.normalize("NFKC", s).lower()
+
+    def normalize_author(a: str) -> str:
+        a = a.split(",", 2)
+        if len(a) == 1:
+            a = a[0]
+        else:
+            a = "%s %s" % (a[1], a[0])
+
+        # Put spaces between adjacent capital letters, so that "HJ Farnsworth" becomes
+        # "H J Farnsworth".
+        while True:
+            new_a = re.sub(_adjacent_capitals_re, "\\1 \\2", a)
+            if new_a == a:
+                break
+            a = new_a
+
+        a = normalize(a)
+        a = a.replace(".", " ")
+        a = _multiple_spaces_re.sub(" ", a)
+        a = a.strip()
+
+        chunks = a.split()
+        comb_pos = -1
+        print(chunks)
+        for i in range(0, len(chunks)-1):
+            if len(chunks[i])==1 and len(chunks[i+1])==1:
+                comb_pos = i
+        if comb_pos != -1:
+            new_chunks = []
+            for i in range(0, len(chunks)):
+                if i != comb_pos:
+                    new_chunks.append(chunks[i])
+                else:
+                    new_chunks.append(''.join([chunks[i], chunks[i+1]]))
+                    chunks[i+1] = ''
+
+            a = ' '.join(new_chunks)
+
+        return a.strip()
+
+    unsorted_bib_author = normalize_author('WC Hatcher').split()
+    print(unsorted_bib_author)
+    unsorted_bib_author.sort()
+    print(unsorted_bib_author)
+
 
 
 if __name__ == "__main__":
