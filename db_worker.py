@@ -3,6 +3,7 @@ import psycopg2
 import psycopg2.extras
 import os
 import time
+import typing
 
 class DBTodoList:
     EXPECTED_VERSION = 1
@@ -237,6 +238,12 @@ def _send_all(source, dest, nbytes: int = None):
         nsent += len(buf)
     dest.flush()
 
+def _sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
+    if s is not None:
+        return s.replace("\0", "\ufffd")
+    else:
+        return None
+
 def main():
     import tempfile
     import argparse
@@ -377,10 +384,12 @@ def main():
                 for line in dataprep2.json_from_file(json_file_name):
                     if not "error" in line:
                         continue
-                    line = line["error"]
-                    paper_id = line["docName"]
+                    error = line["error"]
+                    error["message"] = _sanitize_for_json(error["message"])
+                    error["stackTrace"] = _sanitize_for_json(error["stackTrace"])
+                    paper_id = error["docName"]
                     paper_id = s3_url_to_paper_id[paper_id]
-                    paper_id_to_error[paper_id] = line
+                    paper_id_to_error[paper_id] = error
                 todo_list.post_errors(model_version, paper_id_to_error)
             except UnicodeDecodeError:
                 print("Oy!")
@@ -429,7 +438,7 @@ def main():
                     doc.doc_sha: {
                         "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
-                        "title": title,
+                        "title": _sanitize_for_json(title),
                         "authors": authors
                     } for doc, title, authors in results
                 }
