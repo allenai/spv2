@@ -51,7 +51,7 @@ def json_from_file(filename: str):
     else:
         open_fn = open
 
-    with open_fn(filename, "rt", encoding="UTF-8") as p:
+    with open_fn(filename, "rt", encoding="UTF-8", errors="replace") as p:
         for line in p:
             try:
                 yield json.loads(line)

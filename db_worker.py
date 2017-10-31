@@ -7,23 +7,42 @@ import time
 class DBTodoList:
     EXPECTED_VERSION = 1
 
-    def __init__(self, **kwargs):
-        self.conn = psycopg2.connect(**kwargs)
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        dbname: str,
+        user: str,
+        password: str,
+        root_user: str,
+        root_password: str
+    ):
+        self.conn = psycopg2.connect(
+            host=host,
+            port=port,
+            dbname=dbname,
+            user=user,
+            password=password)
 
-        # find out the version we're at
-        with self.conn.cursor() as cur:
-            cur.execute("CREATE TABLE IF NOT EXISTS settings (key VARCHAR PRIMARY KEY, value VARCHAR);")
+        version = self.get_schema_version()
 
-            cur.execute("SELECT value FROM settings WHERE key = 'version';")
-            version = cur.fetchone()[0]
+        # bring us up to version 1
+        if version < 1:
+            root_conn = psycopg2.connect(
+                    host=host,
+                    port=port,
+                    dbname=dbname,
+                    user=root_user,
+                    password=root_password)
+            try:
+                with root_conn, root_conn.cursor() as root_cur:
+                    logging.info("Updating database to version 1")
 
-            if version is not None:
-                version = int(version)
-            else:
-                logging.info("Updating database to version 1")
+                    root_cur.execute("CREATE TABLE settings (key VARCHAR PRIMARY KEY, value VARCHAR);")
 
-                try:
-                    cur.execute("""
+                    root_cur.execute("GRANT SELECT ON settings TO %s;" % user)
+
+                    root_cur.execute("""
                         CREATE TYPE processing_status AS ENUM (
                           'Scheduled',
                           'Processing',
@@ -32,7 +51,7 @@ class DBTodoList:
                         );
                     """)
 
-                    cur.execute("""
+                    root_cur.execute("""
                         CREATE TABLE tasks (
                           modelVersion SMALLINT NOT NULL,
                           paperId CHAR(40) NOT NULL,
@@ -44,7 +63,9 @@ class DBTodoList:
                         );
                     """)
 
-                    cur.execute("""
+                    root_cur.execute("GRANT SELECT, INSERT, UPDATE ON tasks TO %s;" % user)
+
+                    root_cur.execute("""
                         CREATE FUNCTION update_status_changed_trigger() RETURNS TRIGGER AS $$
                           BEGIN
                               NEW.statusChanged := NOW();
@@ -53,14 +74,14 @@ class DBTodoList:
                         $$ LANGUAGE plpgsql;
                     """)
 
-                    cur.execute("""
+                    root_cur.execute("""
                         CREATE TRIGGER update_status_changed
                         BEFORE UPDATE OF status ON tasks
                         FOR EACH ROW
                         EXECUTE PROCEDURE update_status_changed_trigger();
                     """)
 
-                    cur.execute("""
+                    root_cur.execute("""
                         CREATE FUNCTION effective_status_fn (
                           status processing_status,
                           statusChanged TIMESTAMP,
@@ -91,25 +112,41 @@ class DBTodoList:
                         $$ LANGUAGE SQL IMMUTABLE;
                     """)
 
-                    cur.execute("""
+                    root_cur.execute("""
                         CREATE VIEW tasks_with_status AS
                           SELECT *, effective_status_fn(status, statusChanged, attempts) 
                           AS effectiveStatus
                           FROM tasks;
                     """)
 
-                    cur.execute("""
-                        CREATE INDEX ON tasks(modelversion, status, paperid);
+                    root_cur.execute("""
+                        CREATE INDEX ON tasks(paperid) WHERE
+                            status = 'Scheduled'::processing_status OR
+                            status = 'Processing'::processing_status;
                     """)
 
+                    root_cur.execute("GRANT SELECT, INSERT, UPDATE ON tasks_with_status TO %s;" % user)
+
                     # set the version number
-                    cur.execute("INSERT INTO settings (key, value) VALUES ('version', 1);")
-                    self.conn.commit()
+                    root_cur.execute("INSERT INTO settings (key, value) VALUES ('version', 1);")
+                    root_conn.commit()
                     version = 1
-                except:
-                    self.conn.rollback()
-                    raise
-            logging.info("Database is at version %d", version)
+            finally:
+                root_conn.close()
+
+        logging.info("Database is at version %d", version)
+
+    def get_schema_version(self):
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT value FROM settings WHERE key = 'version'")
+                return int(cur.fetchone()[0])
+        except psycopg2.ProgrammingError as e:
+            if 'relation "settings" does not exist' in str(e):
+                self.conn.rollback()
+                return 0
+            else:
+                raise
 
     def get_batch_to_process(self, model_version: int, max_batch_size: int=100):
         try:
@@ -237,7 +274,7 @@ def main():
     parser.add_argument(
         "--user",
         type=str,
-        default=None,
+        default="spv2",
         help="database user"
     )
     parser.add_argument(
@@ -246,9 +283,29 @@ def main():
         default=None,
         help="database password"
     )
+    parser.add_argument(
+        "--root-user",
+        type=str,
+        default="root",
+        help="database user"
+    )
+    parser.add_argument(
+        "--root-password",
+        type=str,
+        default=None,
+        help="database password"
+    )
     args = parser.parse_args()
 
-    todo_list = DBTodoList(**args.__dict__)
+    todo_list = DBTodoList(
+        host = args.host,
+        port = args.port,
+        dbname = args.dbname,
+        user = args.user,
+        password = args.password,
+        root_user = args.root_user,
+        root_password = args.root_password
+    )
 
     logging.info("Loading model settings ...")
     model_settings = settings.default_model_settings
@@ -316,14 +373,18 @@ def main():
 
             # pick out errors and write them to the DB
             paper_id_to_error = {}
-            for line in dataprep2.json_from_file(json_file_name):
-                if not "error" in line:
-                    continue
-                line = line["error"]
-                paper_id = line["docName"]
-                paper_id = s3_url_to_paper_id[paper_id]
-                paper_id_to_error[paper_id] = line
-            todo_list.post_errors(model_version, paper_id_to_error)
+            try:
+                for line in dataprep2.json_from_file(json_file_name):
+                    if not "error" in line:
+                        continue
+                    line = line["error"]
+                    paper_id = line["docName"]
+                    paper_id = s3_url_to_paper_id[paper_id]
+                    paper_id_to_error[paper_id] = line
+                todo_list.post_errors(model_version, paper_id_to_error)
+            except UnicodeDecodeError:
+                print("Oy!")
+                raise
 
             # make unlabeled tokens file
             logging.info("Making unlabeled tokens ...")

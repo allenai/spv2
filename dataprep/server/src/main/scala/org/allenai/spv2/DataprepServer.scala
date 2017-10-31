@@ -235,10 +235,10 @@ class DataprepServer extends AbstractHandler with Logging {
                   val file = tempDir.resolve(fileSha + ".pdf")
                   Files.copy(new ByteArrayInputStream(pdfBytes), file)
                   logger.info(s"Downloaded $httpUrl to $file")
-                  PreprocessingSuccess(line, fileSha, file)
+                  PreprocessingSuccess(url, fileSha, file)
               }
             } catch {
-              case NonFatal(e) => PreprocessingFailure(line, e)
+              case NonFatal(e) => PreprocessingFailure(url, e)
             }
           }
         )
@@ -251,6 +251,8 @@ class DataprepServer extends AbstractHandler with Logging {
 
   private def writeResponse(files: Seq[PreprocessingResult], response: HttpServletResponse): Unit = {
     response.setContentType("application/json")
+    response.setCharacterEncoding("UTF-8")
+
     files.iterator.parMap {
       case PreprocessingSuccess(docName, docSha, file) =>
         val attempt = Resource.using(Files.newInputStream(file)) { is =>
