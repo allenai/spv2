@@ -259,6 +259,11 @@ def main():
 
     logging.getLogger().setLevel(logging.DEBUG)
 
+    default_password = os.environ.get("SPV2_PASSWORD")
+    default_root_password = os.environ.get("SPV2_ROOT_PASSWORD")
+    default_dataprep_host = os.environ.get("SPV2_DATAPREP_SERVICE_HOST", "localhost")
+    default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_SERVICE_PORT", "8080"))
+
     parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
     parser.add_argument(
         "--host",
@@ -287,7 +292,7 @@ def main():
     parser.add_argument(
         "--password",
         type=str,
-        default=None,
+        default=default_password,
         help="database password"
     )
     parser.add_argument(
@@ -299,8 +304,20 @@ def main():
     parser.add_argument(
         "--root-password",
         type=str,
-        default=None,
+        default=default_root_password,
         help="database password"
+    )
+    parser.add_argument(
+        "--dataprep-host",
+        type=str,
+        default=default_dataprep_host,
+        help="Host where the dataprep service is running"
+    )
+    parser.add_argument(
+        "--dataprep-port",
+        type=str,
+        default=default_dataprep_port,
+        help="Port where the dataprep service is running"
     )
     args = parser.parse_args()
 
@@ -367,7 +384,7 @@ def main():
             getting_json_time = time.time()
             json_file_name = os.path.join(temp_dir, "tokens.json")
             with open(json_file_name, "wb") as json_file:
-                dataprep_conn = http.client.HTTPConnection("localhost", 8080, timeout=600)
+                dataprep_conn = http.client.HTTPConnection(args.dataprep_host, args.dataprep_port, timeout=600)
                 dataprep_conn.request("POST", "/v1/json/urls", body=json_request_body)
                 with dataprep_conn.getresponse() as dataprep_response:
                     if dataprep_response.status < 200 or dataprep_response.status >= 300:
@@ -380,20 +397,18 @@ def main():
 
             # pick out errors and write them to the DB
             paper_id_to_error = {}
-            try:
-                for line in dataprep2.json_from_file(json_file_name):
-                    if not "error" in line:
-                        continue
-                    error = line["error"]
-                    error["message"] = _sanitize_for_json(error["message"])
-                    error["stackTrace"] = _sanitize_for_json(error["stackTrace"])
-                    paper_id = error["docName"]
-                    paper_id = s3_url_to_paper_id[paper_id]
-                    paper_id_to_error[paper_id] = error
-                todo_list.post_errors(model_version, paper_id_to_error)
-            except UnicodeDecodeError:
-                print("Oy!")
-                raise
+            for line in dataprep2.json_from_file(json_file_name):
+                if not "error" in line:
+                    continue
+                error = line["error"]
+                error["message"] = _sanitize_for_json(error["message"])
+                error["stackTrace"] = _sanitize_for_json(error["stackTrace"])
+                paper_id = error["docName"]
+                paper_id = s3_url_to_paper_id[paper_id]
+                paper_id_to_error[paper_id] = error
+                logging.info("Paper %s has error %s", paper_id, error["message"])
+            todo_list.post_errors(model_version, paper_id_to_error)
+            logging.info("Wrote %d errors to database", len(paper_id_to_error))
 
             # make unlabeled tokens file
             logging.info("Making unlabeled tokens ...")

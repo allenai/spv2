@@ -1,0 +1,65 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: spv2-dataprep
+  labels:
+    application: spv2-dataprep
+    contact: dirkg
+  namespace: s2-spv2-dev
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        application: spv2-dataprep
+    spec:
+      containers:
+      - name: spv2-dataprep-service
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:1.4-SNAPSHOT
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: backend-http
+        resources:
+          requests:
+            cpu: 8
+            memory: 8Gi
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-access-key-id
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-secret-access-key
+          - name: AWS_DEFAULT_REGION
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-default-region
+      nodeSelector:
+        beta.kubernetes.io/instance-type: "m4.4xlarge"
+      tolerations:
+        - key: "BigCpuOnly"
+          operator: "Equal"
+          value: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spv2-dataprep
+  labels:
+    contact: dirkg
+    application: spv2-dataprep
+  namespace: s2-spv2-dev
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    name: http
+    targetPort: backend-http
+  selector:
+    application: spv2-dataprep
