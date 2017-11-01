@@ -16,7 +16,6 @@ spec:
       containers:
       - name: spv2-dataprep-service
         image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:1.4-SNAPSHOT
-        imagePullPolicy: Always
         ports:
         - containerPort: 8080
           name: backend-http

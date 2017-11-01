@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: spv2-service
-        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/server:1.0
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/server:1.1
         ports:
         - containerPort: 8081
           name: backend-http
@@ -23,6 +23,32 @@ spec:
           requests:
             cpu: 7
             memory: 4Gi
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-access-key-id
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-secret-access-key
+          - name: AWS_DEFAULT_REGION
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-default-region
+          - name: SPV2_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: rds-password
+          - name: SPV2_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: rds-root-password
 ---
 apiVersion: v1
 kind: Service
