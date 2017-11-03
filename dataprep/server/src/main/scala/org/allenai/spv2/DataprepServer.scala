@@ -44,10 +44,12 @@ object DataprepServer extends Logging {
 }
 
 class DataprepServer extends AbstractHandler with Logging {
-  private implicit val ec: ExecutionContext = ExecutionContext.fromExecutorService(
-    Executors.newFixedThreadPool(8),
-    { t: Throwable => logger.error("Uncaught exception in worker thread", t) }
-  )
+  private def executionContext(size: Int): ExecutionContext = {
+    ExecutionContext.fromExecutorService(
+      Executors.newFixedThreadPool(size),
+      { t: Throwable => logger.error("Uncaught exception in worker thread", t) }
+    )
+  }
 
   private val routes: Map[String, (HttpServletRequest, HttpServletResponse) => Unit] = Map(
     "/v1/json/tar" -> handleTar,
@@ -202,8 +204,11 @@ class DataprepServer extends AbstractHandler with Logging {
   private val s3UrlPattern = """^s3://([-\w]+)/(.*)$""".r
   private val httpUrlPattern = """^(https?://.*)$""".r
   private lazy val s3 = AmazonS3ClientBuilder.defaultClient()
+  private val downloadExecutionContext = executionContext(100)
 
   private def handleUrls(request: HttpServletRequest, response: HttpServletResponse): Unit = {
+    implicit val ec = downloadExecutionContext
+
     // handles URLs, one per line
     val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
     try {
@@ -255,7 +260,10 @@ class DataprepServer extends AbstractHandler with Logging {
     }
   }
 
+  private val parseExecutionContext = executionContext(8)
   private def writeResponse(files: Seq[PreprocessingResult], response: HttpServletResponse): Unit = {
+    implicit val ec = parseExecutionContext
+
     response.setContentType("application/json")
     response.setCharacterEncoding("UTF-8")
 
