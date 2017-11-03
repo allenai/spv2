@@ -20,8 +20,9 @@ import org.apache.commons.io.FileUtils
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.rendering.{ ImageType, PDFRenderer }
 import org.apache.pdfbox.tools.imageio.ImageIOUtil
-import org.eclipse.jetty.server.{ Request, Server }
+import org.eclipse.jetty.server.{ Request, Server, ServerConnector }
 import org.eclipse.jetty.server.handler.AbstractHandler
+import org.eclipse.jetty.util.thread.QueuedThreadPool
 
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
@@ -35,7 +36,13 @@ object DataprepServer extends Logging {
     // suppress the Dock icon on OS X
     System.setProperty("apple.awt.UIElement", "true")
 
-    val server = new Server(8080)
+    val jettyThreadPool = new QueuedThreadPool(16)
+    val server = new Server(jettyThreadPool)
+
+    val connector = new ServerConnector(server)
+    connector.setPort(8080)
+    server.setConnectors(Array(connector))
+
     server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize", 10000000)
     server.setHandler(new DataprepServer())
     server.start()
