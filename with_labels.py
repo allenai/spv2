@@ -5,8 +5,8 @@ import typing
 import re
 import time
 import os
-#os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
-#os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 from keras.layers import Embedding, Input, LSTM, Dense
 from keras.layers.merge import Concatenate
@@ -15,6 +15,9 @@ from keras.models import Model
 from keras.layers import Masking
 from keras.optimizers import Adam
 from keras_contrib.layers import CRF
+from keras.engine.topology import Layer
+from keras import backend as K
+import tensorflow as tf
 
 import sklearn
 import sklearn.metrics
@@ -24,6 +27,77 @@ import dataprep2
 import unicodedata
 import pickle
 from multiset import Multiset
+
+def shift(tensor, k, axis=0, fill=0):
+    assert k != 0, 'k must not be zero.'
+    rank = len(tensor.get_shape())
+    paddings = np.zeros((rank, 2), dtype=np.int32)
+    direction = 0 if k > 0 else 1
+    paddings[axis, direction] = abs(k)
+    padded = tf.pad(tensor, paddings, mode="CONSTANT", constant_values=fill)
+    slice_begin = tf.zeros((rank, ), dtype=tf.int32)
+    if direction == 0:
+        slice_end = tf.shape(tensor, out_type=tf.int32)
+        slice_end_offset = np.zeros((rank, ), dtype=np.int32)
+        slice_end_mask = np.ones((rank, ), dtype=np.int32)
+        slice_end_offset[axis] = -k
+        slice_end_mask[axis] = 0
+        slice_end = slice_end * slice_end_mask + slice_end_offset
+    else:
+        slice_end = tf.shape(padded, out_type=tf.int32)
+        slice_begin_offset = np.zeros((rank, ), dtype=np.int32)
+        slice_begin_offset[axis] = -k
+        slice_begin = slice_begin + slice_begin_offset
+    sliced = tf.strided_slice(padded, slice_begin, slice_end, None)
+    sliced.set_shape(tensor.shape)
+    return sliced
+
+
+class shift_layer(Layer):
+
+    def __init__(self, k, axis=0, fill=0.0):
+        # self.tensor = tensor
+        # self.supports_masking = True
+        self.k = k
+        self.axis = axis
+        self.fill = fill
+        super(shift_layer, self).__init__()
+
+    def build(self, input_shape):
+        super(shift_layer, self).build(input_shape)  # Be sure to call this somewhere!
+
+    def call(self, tensor, mask=[1]):
+        # tensor = self.tensor
+        k = self.k
+        axis = self.axis
+        fill = self.fill
+
+        assert k != 0, 'k must not be zero.'
+        rank = len(tensor.get_shape())
+        paddings = np.zeros((rank, 2), dtype=np.int32)
+        direction = 0 if k > 0 else 1
+        paddings[axis, direction] = abs(k)
+        padded = tf.pad(tensor, paddings, mode="CONSTANT", constant_values=fill)
+        slice_begin = tf.zeros((rank, ), dtype=tf.int32)
+        if direction == 0:
+            slice_end = tf.shape(tensor, out_type=tf.int32)
+            slice_end_offset = np.zeros((rank, ), dtype=np.int32)
+            slice_end_mask = np.ones((rank, ), dtype=np.int32)
+            slice_end_offset[axis] = -k
+            slice_end_mask[axis] = 0
+            slice_end = slice_end * slice_end_mask + slice_end_offset
+        else:
+            slice_end = tf.shape(padded, out_type=tf.int32)
+            slice_begin_offset = np.zeros((rank, ), dtype=np.int32)
+            slice_begin_offset[axis] = -k
+            slice_begin = slice_begin + slice_begin_offset
+        sliced = tf.strided_slice(padded, slice_begin, slice_end, None)
+        sliced.set_shape(tensor.shape)
+
+        return sliced
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
 
 
 #
@@ -73,6 +147,7 @@ def model_with_labels(
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
     logging.info("numeric_masked:\t%s", numeric_masked.shape)
 
+
     pdftokens_combined = Concatenate(
         name='pdftoken_combined', axis=2
     )([pageno_embedding, token_embedding, font_embedding, numeric_masked])
@@ -86,6 +161,10 @@ def model_with_labels(
 
     lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
     logging.info("lstm2:\t%s", lstm2.shape)
+
+    # shifted_lstm2 = shift_layer(-1, axis=1, fill=0)(numeric_masked)
+    # logging.info("shifted_lstm2 the  w t:\t%s", type(shifted_lstm2))
+    # logging.info("shifted_lstm2:\t%s", shifted_lstm2.shape)
 
     crf = CRF(units=7)
     crf_layer = crf(lstm2)
@@ -458,6 +537,7 @@ def evaluate_model(
 
 
                 indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
+
                 # authors must all come from the same page
                 labeled_bibtitles_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -526,15 +606,16 @@ def evaluate_model(
 #
 
                 indices_predicted_bibtitle = np.where(page_predictions == dataprep2.BIBTITLE_LABEL)[0]
+                # indices_predicted_bibtitle = fill_missing_title(indices_predicted_bibtitle, 2)
 
-                # bibtitle must all be in the same font
-                if len(indices_predicted_bibtitle) > 0:
-                    bibtitle_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibtitle)
-                    bibtitle_fonts_on_page, bibtitle_font_counts_on_page = \
-                        np.unique(bibtitle_fonts_on_page, return_counts=True)
-                    bibtitle_font_on_page = bibtitle_fonts_on_page[np.argmax(bibtitle_font_counts_on_page)]
-                    indices_predicted_bibtitle = \
-                        [i for i in indices_predicted_bibtitle if page.font_hashes[i] == bibtitle_font_on_page]
+                # # bibtitle must all be in the same font
+                # if len(indices_predicted_bibtitle) > 0:
+                #     bibtitle_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibtitle)
+                #     bibtitle_fonts_on_page, bibtitle_font_counts_on_page = \
+                #         np.unique(bibtitle_fonts_on_page, return_counts=True)
+                #     bibtitle_font_on_page = bibtitle_fonts_on_page[np.argmax(bibtitle_font_counts_on_page)]
+                #     indices_predicted_bibtitle = \
+                #         [i for i in indices_predicted_bibtitle if page.font_hashes[i] == bibtitle_font_on_page]
 
                 # authors must all come from the same page
                 predicted_bibtitles_on_page = [
@@ -568,13 +649,13 @@ def evaluate_model(
                 indices_predicted_bibvenue = np.where(page_predictions == dataprep2.BIBVENUE_LABEL)[0]
 
                 # bibtitle must all be in the same font
-                if len(indices_predicted_bibvenue) > 0:
-                    bibvenue_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibvenue)
-                    bibvenue_fonts_on_page, bibvenue_font_counts_on_page = \
-                        np.unique(bibvenue_fonts_on_page, return_counts=True)
-                    bibvenue_font_on_page = bibvenue_fonts_on_page[np.argmax(bibvenue_font_counts_on_page)]
-                    indices_predicted_bibvenue = \
-                        [i for i in indices_predicted_bibvenue if page.font_hashes[i] == bibvenue_font_on_page]
+                # if len(indices_predicted_bibvenue) > 0:
+                #     bibvenue_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibvenue)
+                #     bibvenue_fonts_on_page, bibvenue_font_counts_on_page = \
+                #         np.unique(bibvenue_fonts_on_page, return_counts=True)
+                #     bibvenue_font_on_page = bibvenue_fonts_on_page[np.argmax(bibvenue_font_counts_on_page)]
+                #     indices_predicted_bibvenue = \
+                #         [i for i in indices_predicted_bibvenue if page.font_hashes[i] == bibvenue_font_on_page]
 
                 # authors must all come from the same page
                 predicted_bibvenues_on_page = [
@@ -638,7 +719,6 @@ def evaluate_model(
 
                 chunks = a.split()
                 comb_pos = -1
-                print(chunks)
                 for i in range(0, len(chunks)-1):
                     if len(chunks[i])==1 and len(chunks[i+1])==1:
                         comb_pos = i
@@ -738,6 +818,15 @@ def evaluate_model(
             # calculate author P/R
             # gold_bibtitles = set(map(normalize_author, gold_bibtitles))
             # predicted_bibtitles = set(map(normalize_author, predicted_bibtitles))
+
+            gold_bibtitles_set_array = []
+            for e in gold_bibtitles:
+                if e is None:
+                    continue
+                strip_e = e.strip()
+                if len(strip_e) > 0:
+                    gold_bibtitles_set_array.append(strip_e)
+
             gold_bibtitles = set(gold_bibtitles)
             predicted_bibtitles = set(predicted_bibtitles)
             precision = 0
@@ -747,6 +836,10 @@ def evaluate_model(
             if len(gold_bibtitles) > 0:
                 recall = len(gold_bibtitles & predicted_bibtitles) / len(gold_bibtitles)
             log_file.write("Bib title P/R:       %.3f / %.3f\n" % (precision, recall))
+            log_file.write("---\n")
+            for e in (gold_bibtitles - predicted_bibtitles):
+                log_file.write('{}\n'.format(e))
+            log_file.write("---\n")
 
             if len(gold_bibtitles) > 0:
                 bibtitle_prs.append((precision, recall))
@@ -759,7 +852,7 @@ def evaluate_model(
                     unsorted_bib_author.sort()
                     sorted_bib_author = unsorted_bib_author
 
-                    log_file.write("Gold bib author:      {}\traw:\t{}\n".format(" ".join(sorted_bib_author), " ".join(gold_bibauthor[::-1])))
+                    log_file.write("Gold bib author:      {}\n".format(" ".join(sorted_bib_author)))
 
             labeled_bibauthors = [" ".join(ats) for ats in labeled_bibauthors]
             if len(labeled_bibauthors) <= 0:
@@ -777,7 +870,7 @@ def evaluate_model(
                     unsorted_bib_author.sort()
                     sorted_bib_author = unsorted_bib_author
 
-                    log_file.write("Predicted bib author:      {}\traw:\t{}\n".format(" ".join(sorted_bib_author), predicted_bibauthor))
+                    log_file.write("Predicted bib author:      {}\n".format(" ".join(sorted_bib_author)))
 
             # calculate author P/R
             gold_bibauthors_set = Multiset()
@@ -958,6 +1051,9 @@ def train(
         dataprep2.GloveVectors(model_settings.glove_vectors),
         model_settings.minimum_token_frequency
     )
+
+    K.set_session(K.tf.Session(config=K.tf.ConfigProto(device_count = {'GPU': 1}, inter_op_parallelism_threads=4, intra_op_parallelism_threads = 4)))
+
     model = model_with_labels(model_settings, embeddings)
     model.summary()
 
@@ -1105,7 +1201,7 @@ def get_word_set():
         with open(path) as f:
             for line in f:
                 word = line.strip()
-                word_set.add(word)
+                word_set.add(word.lower())
     return word_set
 
 
@@ -1115,6 +1211,9 @@ def remove_hyphens(predicted_bibtitles, word_set):
             if j >= len(predicted_bibtitles[i])-1:
                 break
             if predicted_bibtitles[i][j] == '-':
+                possible_word = ''.join([predicted_bibtitles[i][j-1], '-',predicted_bibtitles[i][j+1]])
+                if possible_word in word_set or possible_word.lower() in word_set:
+                    continue
                 possible_word = ''.join([predicted_bibtitles[i][j-1], predicted_bibtitles[i][j+1]])
                 if possible_word in word_set or possible_word.lower() in word_set:
                     predicted_bibtitles[i][j-1] = possible_word
@@ -1122,6 +1221,18 @@ def remove_hyphens(predicted_bibtitles, word_set):
                     predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
 
     return predicted_bibtitles
+
+
+def fill_missing_title(array, t):
+    pos = 1
+    while True:
+        if pos < len(array)-1:
+            if array[pos] - array[pos-1] != 1 and array[pos] - array[pos-1] <= 1 + t:
+                array = np.insert(array, pos, list(range(array[pos-1]+1, array[pos])))
+            pos += 1
+        else:
+            break
+    return array
 
 
 
@@ -1189,7 +1300,9 @@ def main():
 
     model_settings = model_settings._replace(tokens_per_batch=args.tokens_per_batch)
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
-    print(model_settings)
+    # print(model_settings)
+    # temp(args.pmc_dir, model_settings)
+    # return
 
     model = train(
         args.start_weights,
@@ -1204,56 +1317,14 @@ def main():
 
 
 
-
-
-
-def temp():
-    def normalize(s: str) -> str:
-        return unicodedata.normalize("NFKC", s).lower()
-
-    def normalize_author(a: str) -> str:
-        a = a.split(",", 2)
-        if len(a) == 1:
-            a = a[0]
-        else:
-            a = "%s %s" % (a[1], a[0])
-
-        # Put spaces between adjacent capital letters, so that "HJ Farnsworth" becomes
-        # "H J Farnsworth".
-        while True:
-            new_a = re.sub(_adjacent_capitals_re, "\\1 \\2", a)
-            if new_a == a:
-                break
-            a = new_a
-
-        a = normalize(a)
-        a = a.replace(".", " ")
-        a = _multiple_spaces_re.sub(" ", a)
-        a = a.strip()
-
-        chunks = a.split()
-        comb_pos = -1
-        print(chunks)
-        for i in range(0, len(chunks)-1):
-            if len(chunks[i])==1 and len(chunks[i+1])==1:
-                comb_pos = i
-        if comb_pos != -1:
-            new_chunks = []
-            for i in range(0, len(chunks)):
-                if i != comb_pos:
-                    new_chunks.append(chunks[i])
-                else:
-                    new_chunks.append(''.join([chunks[i], chunks[i+1]]))
-                    chunks[i+1] = ''
-
-            a = ' '.join(new_chunks)
-
-        return a.strip()
-
-    unsorted_bib_author = normalize_author('WC Hatcher').split()
-    print(unsorted_bib_author)
-    unsorted_bib_author.sort()
-    print(unsorted_bib_author)
+def temp(pmc_dir, model_settings):
+    print(pmc_dir)
+    train_docs = dataprep2.documents(
+        pmc_dir,
+        model_settings,
+        document_set=dataprep2.DocumentSet.TRAIN)
+    for e in train_docs:
+        break
 
 
 
