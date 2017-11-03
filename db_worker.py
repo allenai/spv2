@@ -383,15 +383,34 @@ def main():
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
             json_file_name = os.path.join(temp_dir, "tokens.json")
-            with open(json_file_name, "wb") as json_file:
-                dataprep_conn = http.client.HTTPConnection(args.dataprep_host, args.dataprep_port, timeout=600)
-                dataprep_conn.request("POST", "/v1/json/urls", body=json_request_body)
-                with dataprep_conn.getresponse() as dataprep_response:
-                    if dataprep_response.status < 200 or dataprep_response.status >= 300:
-                        raise ValueError("Error %d from dataprep server at %s" % (
-                            dataprep_response.status,
-                            dataprep_conn.host))
-                    _send_all(dataprep_response, json_file)
+
+            attempts_left = 5
+            while True:
+                attempts_left -= 1
+                try:
+                    with open(json_file_name, "wb") as json_file:
+                        dataprep_conn = http.client.HTTPConnection(
+                            args.dataprep_host,
+                            args.dataprep_port,
+                            timeout=600)
+                        dataprep_conn.request("POST", "/v1/json/urls", body=json_request_body)
+                        with dataprep_conn.getresponse() as dataprep_response:
+                            if dataprep_response.status < 200 or dataprep_response.status >= 300:
+                                raise ValueError("Error %d from dataprep server at %s" % (
+                                    dataprep_response.status,
+                                    dataprep_conn.host))
+                            _send_all(dataprep_response, json_file)
+                    break
+                except Exception as e:
+                    if attempts_left > 0:
+                        logging.warning(
+                            "Error '%s' while getting JSON. %d attempts left.",
+                            str(e),
+                            attempts_left)
+                        time.sleep(30)
+                    else:
+                        raise
+
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
 
