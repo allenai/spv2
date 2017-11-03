@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream
 import java.net.SocketTimeoutException
 import java.nio.file.{ Files, Path, StandardCopyOption }
 import java.security.{ DigestInputStream, MessageDigest }
+import java.util.concurrent.Executors
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
 import com.amazonaws.services.s3.AmazonS3ClientBuilder
@@ -24,8 +25,8 @@ import org.eclipse.jetty.server.handler.AbstractHandler
 
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.JavaConverters._
+import scala.concurrent.ExecutionContext
 import scala.util.{ Failure, Random, Success, Try }
 import scalaj.http.{ Http, HttpResponse }
 
@@ -43,6 +44,11 @@ object DataprepServer extends Logging {
 }
 
 class DataprepServer extends AbstractHandler with Logging {
+  private implicit val ec: ExecutionContext = ExecutionContext.fromExecutorService(
+    Executors.newFixedThreadPool(8),
+    { t: Throwable => logger.error("Uncaught exception in worker thread", t) }
+  )
+
   private val routes: Map[String, (HttpServletRequest, HttpServletResponse) => Unit] = Map(
     "/v1/json/tar" -> handleTar,
     "/v1/json/targz" -> handleTargz,
