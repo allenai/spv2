@@ -606,16 +606,6 @@ def evaluate_model(
 #
 
                 indices_predicted_bibtitle = np.where(page_predictions == dataprep2.BIBTITLE_LABEL)[0]
-                # indices_predicted_bibtitle = fill_missing_title(indices_predicted_bibtitle, 2)
-
-                # # bibtitle must all be in the same font
-                # if len(indices_predicted_bibtitle) > 0:
-                #     bibtitle_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibtitle)
-                #     bibtitle_fonts_on_page, bibtitle_font_counts_on_page = \
-                #         np.unique(bibtitle_fonts_on_page, return_counts=True)
-                #     bibtitle_font_on_page = bibtitle_fonts_on_page[np.argmax(bibtitle_font_counts_on_page)]
-                #     indices_predicted_bibtitle = \
-                #         [i for i in indices_predicted_bibtitle if page.font_hashes[i] == bibtitle_font_on_page]
 
                 # authors must all come from the same page
                 predicted_bibtitles_on_page = [
@@ -826,6 +816,7 @@ def evaluate_model(
                 strip_e = e.strip()
                 if len(strip_e) > 0:
                     gold_bibtitles_set_array.append(strip_e)
+            gold_bibtitles = gold_bibtitles_set_array
 
             gold_bibtitles = set(gold_bibtitles)
             predicted_bibtitles = set(predicted_bibtitles)
@@ -913,7 +904,6 @@ def evaluate_model(
                 bibauthor_prs.append((precision, recall))
 
 
-
             gold_bibvenues = doc.gold_bib_venues[:]
             for gold_bibvenue in gold_bibvenues:
                 log_file.write("Gold bib venue:      %s\n" % gold_bibvenue)
@@ -931,6 +921,16 @@ def evaluate_model(
             else:
                 for predicted_bibvenue in predicted_bibvenues:
                     log_file.write("Predicted bib venue: %s\n" % predicted_bibvenue)
+
+
+            gold_bibvenues_set_array = []
+            for e in gold_bibvenues:
+                if e is None:
+                    continue
+                strip_e = e.strip()
+                if len(strip_e) > 0:
+                    gold_bibvenues_set_array.append(strip_e)
+            gold_bibvenues = gold_bibvenues_set_array
 
             # calculate author P/R
             gold_bibvenues_set = Multiset()
@@ -951,7 +951,7 @@ def evaluate_model(
             if len(gold_bibvenues) > 0:
                 recall = len(gold_bibvenues & predicted_bibvenues) / len(gold_bibvenues)
             log_file.write("Bib venue P/R:       %.3f / %.3f\n" % (precision, recall))
-            if len(gold_bibvenues) > 0:
+            if len(gold_bibvenues) > 0 and len(labeled_bibvenues) > 0:
                 bibvenue_prs.append((precision, recall))
 
 
@@ -1221,21 +1221,6 @@ def remove_hyphens(predicted_bibtitles, word_set):
                     predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
 
     return predicted_bibtitles
-
-
-def fill_missing_title(array, t):
-    pos = 1
-    while True:
-        if pos < len(array)-1:
-            if array[pos] - array[pos-1] != 1 and array[pos] - array[pos-1] <= 1 + t:
-                array = np.insert(array, pos, list(range(array[pos-1]+1, array[pos])))
-            pos += 1
-        else:
-            break
-    return array
-
-
-
 
 
 #
