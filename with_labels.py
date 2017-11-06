@@ -674,16 +674,6 @@ def evaluate_model(
                 ]
                 predicted_bibyears += predicted_bibyears_on_page
 
-
-
-
-
-
-# add predict & previous label
-
-
-
-
             def normalize(s: str) -> str:
                 return unicodedata.normalize("NFKC", s).lower()
 
@@ -827,10 +817,10 @@ def evaluate_model(
             if len(gold_bibtitles) > 0:
                 recall = len(gold_bibtitles & predicted_bibtitles) / len(gold_bibtitles)
             log_file.write("Bib title P/R:       %.3f / %.3f\n" % (precision, recall))
-            log_file.write("---\n")
-            for e in (gold_bibtitles - predicted_bibtitles):
-                log_file.write('{}\n'.format(e))
-            log_file.write("---\n")
+            # log_file.write("---\n")
+            # for e in (gold_bibtitles - predicted_bibtitles):
+            #     log_file.write('{}\n'.format(e))
+            # log_file.write("---\n")
 
             if len(gold_bibtitles) > 0:
                 bibtitle_prs.append((precision, recall))
@@ -1052,7 +1042,7 @@ def train(
         model_settings.minimum_token_frequency
     )
 
-    K.set_session(K.tf.Session(config=K.tf.ConfigProto(device_count = {'GPU': 1}, inter_op_parallelism_threads=4, intra_op_parallelism_threads = 4)))
+    # K.set_session(K.tf.Session(config=K.tf.ConfigProto(device_count = {'GPU': 1}, inter_op_parallelism_threads=4, intra_op_parallelism_threads = 4)))
 
     model = model_with_labels(model_settings, embeddings)
     model.summary()
@@ -1128,7 +1118,8 @@ def train(
                         now - batch_start_time,
                         metric_string)
                 time_since_last_eval = now - time_at_last_eval
-                if time_since_last_eval > 60 * 60:
+                # if time_since_last_eval > 60 * 60:
+                if time_since_last_eval > 60 * 1:
                     logging.info(
                         "It's been %.0f seconds since the last eval. Triggering another one.",
                         time_since_last_eval)
@@ -1196,7 +1187,7 @@ def train(
 
 def get_word_set():
     word_set = set()
-    path = '/websail/common/embeddings/glove/840B/glove.840B.300d.vocab'
+    path = './glove.840B.300d.vocab'
     if os.path.exists(path):
         with open(path) as f:
             for line in f:
