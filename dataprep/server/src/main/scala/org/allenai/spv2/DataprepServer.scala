@@ -277,7 +277,7 @@ class DataprepServer extends AbstractHandler with Logging {
     files.iterator.parMap {
       case PreprocessingSuccess(docName, docSha, file) =>
         val attempt = Resource.using(Files.newInputStream(file)) { is =>
-          PreprocessPdf.tryGetDocument(is, docName, docSha)
+          PreprocessPdf.tryGetDocumentWithTimeout(is, docName, docSha, 60000)
         }
         JsonFormat.toJsonString(attempt)
       case PreprocessingFailure(docId, e) =>
