@@ -3,7 +3,7 @@
 set -e
 set -x
 
-VERSION=1.2
+VERSION=1.3
 
 docker build -t spv2/server:$VERSION -f Dockerfile.server .
 docker build -t spv2/db_worker:$VERSION -f Dockerfile.db_worker .
