@@ -8,4 +8,4 @@ COPY server/target/scala-2.11/spv2-dataprep-server-assembly-${version}.jar /spv2
 
 EXPOSE 8080
 
-CMD ["java", "-Xmx8G", "-jar", "dataprep.jar"]
+CMD ["java", "-Xmx2G", "-jar", "dataprep.jar"]

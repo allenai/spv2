@@ -7,7 +7,7 @@ metadata:
     contact: dirkg
   namespace: s2-spv2-dev
 spec:
-  replicas: 2
+  replicas: 16
   template:
     metadata:
       labels:
@@ -15,14 +15,14 @@ spec:
     spec:
       containers:
       - name: spv2-dataprep-service
-        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:1.6-SNAPSHOT
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.0-SNAPSHOT
         ports:
         - containerPort: 8080
           name: backend-http
         resources:
           requests:
-            cpu: 8
-            memory: 8Gi
+            cpu: 0.7
+            memory: 2Gi
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -39,12 +39,6 @@ spec:
               secretKeyRef:
                 name: spv2-secrets
                 key: aws-default-region
-      nodeSelector:
-        beta.kubernetes.io/instance-type: "m4.4xlarge"
-      tolerations:
-        - key: "BigCpuOnly"
-          operator: "Equal"
-          value: "true"
 ---
 apiVersion: v1
 kind: Service
