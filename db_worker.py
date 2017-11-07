@@ -354,7 +354,8 @@ def main():
 
     # async http stuff
     async_event_loop = asyncio.get_event_loop()
-    session = aiohttp.ClientSession(loop = async_event_loop, read_timeout=120, conn_timeout=120)
+    connector = aiohttp.TCPConnector(loop=async_event_loop, force_close=True)
+    session = aiohttp.ClientSession(connector=connector, read_timeout=120, conn_timeout=120)
     write_lock = asyncio.Lock()
     async def write_json_tokens_to_file(paper_id: str, json_file):
         url = "http://%s:%d/v1/json/paperid/%s" % (args.dataprep_host, args.dataprep_port, paper_id)
