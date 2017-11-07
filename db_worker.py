@@ -387,13 +387,13 @@ def main():
             except Exception as e:
                 if attempts_left > 0:
                     logging.error(
-                        "Error %s from dataprep server for paper id %s. %d attempts left.",
+                        "Error %r from dataprep server for paper id %s. %d attempts left.",
                         e,
                         paper_id,
                         attempts_left)
                 else:
                     logging.error(
-                        "Error %s from dataprep server for paper id %s. Dropping paper.",
+                        "Error %r from dataprep server for paper id %s. Dropping paper.",
                         e,
                         paper_id)
                     break
