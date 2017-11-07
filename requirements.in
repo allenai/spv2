@@ -1,12 +1,11 @@
 keras
 tensorflow
 mmh3
-pytest
 h5py
 sklearn
 cffi
 pydot_ng
 manhole
 git+https://www.github.com/farizrahman4u/keras-contrib.git
-boto3
 psycopg2
+aiohttp

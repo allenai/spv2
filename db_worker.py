@@ -4,6 +4,9 @@ import psycopg2.extras
 import os
 import time
 import typing
+import asyncio
+import aiohttp
+import async_timeout
 
 class DBTodoList:
     EXPECTED_VERSION = 1
@@ -349,6 +352,52 @@ def main():
     model.load_weights("model/B40.h5")
     model_version = 1
 
+    # async http stuff
+    async_event_loop = asyncio.get_event_loop()
+    session = aiohttp.ClientSession(loop = async_event_loop, read_timeout=60, conn_timeout=60)
+    write_lock = asyncio.Lock()
+    async def write_json_tokens_to_file(paper_id: str, json_file):
+        url = "http://%s:%d/v1/json/paperid/%s" % (args.dataprep_host, args.dataprep_port, paper_id)
+        attempts_left = 5
+        while True:
+            attempts_left -= 1
+            try:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        with await write_lock:
+                            while True:
+                                chunk = await response.content.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                json_file.write(chunk)
+                            break
+                    else:
+                        if attempts_left > 0:
+                            logging.error(
+                                "Error %d from dataprep server for paper id %s. %d attempts left.",
+                                response.status,
+                                paper_id,
+                                attempts_left)
+                        else:
+                            logging.error(
+                                "Error %d from dataprep server for paper id %s. Dropping paper.",
+                                response.status,
+                                paper_id)
+                            break
+            except Exception as e:
+                if attempts_left > 0:
+                    logging.error(
+                        "Error %s from dataprep server for paper id %s. %d attempts left.",
+                        e,
+                        paper_id,
+                        attempts_left)
+                else:
+                    logging.error(
+                        "Error %s from dataprep server for paper id %s. Dropping paper.",
+                        e,
+                        paper_id)
+                    break
+
     logging.info("Starting to process tasks")
     total_paper_ids_processed = 0
     start_time = time.time()
@@ -364,53 +413,14 @@ def main():
             time.sleep(20)
             continue
 
-        # make URLs from the paperids
-        json_request_body = []
-        s3_url_to_paper_id = {}
-        templates = ["s3://ai2-s2-pdfs/%s/%s.pdf", "s3://ai2-s2-pdfs-private/%s/%s.pdf"]
-        for paper_id in paper_ids:
-            json_request_line = []
-            for template in templates:
-                url = template % (paper_id[:4], paper_id[4:])
-                json_request_line.append(url)
-                s3_url_to_paper_id[url] = paper_id
-            json_request_line = " ".join(json_request_line)
-            json_request_body.append(json_request_line)
-        json_request_body = "\n".join(json_request_body)
-
         with tempfile.TemporaryDirectory(prefix="SPV2DBWorker-") as temp_dir:
             # make JSON out of the papers
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
             json_file_name = os.path.join(temp_dir, "tokens.json")
-
-            attempts_left = 5
-            while True:
-                attempts_left -= 1
-                try:
-                    with open(json_file_name, "wb") as json_file:
-                        dataprep_conn = http.client.HTTPConnection(
-                            args.dataprep_host,
-                            args.dataprep_port,
-                            timeout=600)
-                        dataprep_conn.request("POST", "/v1/json/urls", body=json_request_body)
-                        with dataprep_conn.getresponse() as dataprep_response:
-                            if dataprep_response.status < 200 or dataprep_response.status >= 300:
-                                raise ValueError("Error %d from dataprep server at %s" % (
-                                    dataprep_response.status,
-                                    dataprep_conn.host))
-                            _send_all(dataprep_response, json_file)
-                    break
-                except Exception as e:
-                    if attempts_left > 0:
-                        logging.warning(
-                            "Error '%s' while getting JSON. %d attempts left.",
-                            str(e),
-                            attempts_left)
-                        time.sleep(30)
-                    else:
-                        raise
-
+            with open(json_file_name, "wb") as json_file:
+                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_ids]
+                async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
 
@@ -423,7 +433,8 @@ def main():
                 error["message"] = _sanitize_for_json(error["message"])
                 error["stackTrace"] = _sanitize_for_json(error["stackTrace"])
                 paper_id = error["docName"]
-                paper_id = s3_url_to_paper_id[paper_id]
+                if paper_id.endswith(".pdf"):
+                    paper_id = paper_id[:-4]
                 paper_id_to_error[paper_id] = error
                 logging.info("Paper %s has error %s", paper_id, error["message"])
             todo_list.post_errors(model_version, paper_id_to_error)
