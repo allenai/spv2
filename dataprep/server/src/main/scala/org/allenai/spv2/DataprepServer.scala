@@ -22,7 +22,7 @@ object DataprepServer extends Logging {
     // suppress the Dock icon on OS X
     System.setProperty("apple.awt.UIElement", "true")
 
-    val jettyThreadPool = new QueuedThreadPool(4)
+    val jettyThreadPool = new QueuedThreadPool(10)
     val server = new Server(jettyThreadPool)
     val connector = new ServerConnector(server, 1, 1)
     connector.setPort(8080)
@@ -117,7 +117,9 @@ class DataprepServer extends AbstractHandler with Logging {
     val result = downloadedFile match {
       case DownloadSuccess(docName, docSha, file) =>
         val attempt = Resource.using(Files.newInputStream(file)) { is =>
-          PreprocessPdf.tryGetDocumentWithTimeout(is, docName, docSha, 60000)
+          synchronized {
+            PreprocessPdf.tryGetDocumentWithTimeout(is, docName, docSha, 60000)
+          }
         }
         JsonFormat.toJsonString(attempt)
       case DownloadFailure(docId, e) =>
@@ -138,10 +140,12 @@ class DataprepServer extends AbstractHandler with Logging {
             response.sendError(400, "PDF has no pages")
           } else {
             try {
-              val renderer = new PDFRenderer(document)
-              val dpi = 100
-              val image = renderer.renderImageWithDPI(0, dpi, ImageType.RGB)
-              ImageIOUtil.writeImage(image, "png", response.getOutputStream, dpi)
+              synchronized {
+                val renderer = new PDFRenderer(document)
+                val dpi = 100
+                val image = renderer.renderImageWithDPI(0, dpi, ImageType.RGB)
+                ImageIOUtil.writeImage(image, "png", response.getOutputStream, dpi)
+              }
             } catch {
               case NonFatal(e) =>
                 logger.error("Error while making PNG", e)
