@@ -438,6 +438,8 @@ def main():
                     paper_id = paper_id[:-4]
                 paper_id_to_error[paper_id] = error
                 logging.info("Paper %s has error %s", paper_id, error["message"])
+            if len(paper_id_to_error) > len(paper_ids) / 2:
+                raise ValueError("More than half of the batch failed to preprocess. Something is afoot. We're giving up.")
             todo_list.post_errors(model_version, paper_id_to_error)
             logging.info("Wrote %d errors to database", len(paper_id_to_error))
 
