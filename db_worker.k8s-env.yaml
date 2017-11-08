@@ -12,7 +12,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: spv2-dbworker
-          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:1.4
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:1.5
           resources:
             requests:
               cpu: 4
