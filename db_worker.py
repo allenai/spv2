@@ -414,7 +414,7 @@ def main():
             time.sleep(20)
             continue
 
-        with tempfile.TemporaryDirectory(prefix="SPV2DBWorker-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="SPv2DBWorker-") as temp_dir:
             # make JSON out of the papers
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
