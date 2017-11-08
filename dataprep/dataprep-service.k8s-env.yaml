@@ -7,7 +7,7 @@ metadata:
     contact: dirkg
   namespace: s2-spv2-dev
 spec:
-  replicas: 8
+  replicas: 24
   template:
     metadata:
       labels:
@@ -15,14 +15,14 @@ spec:
     spec:
       containers:
       - name: spv2-dataprep-service
-        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.2-SNAPSHOT
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.4-SNAPSHOT
         ports:
         - containerPort: 8080
           name: backend-http
         resources:
           requests:
             cpu: 0.7
-            memory: 2Gi
+            memory: 3Gi
         env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
@@ -39,6 +39,22 @@ spec:
               secretKeyRef:
                 name: spv2-secrets
                 key: aws-default-region
+        readinessProbe:
+          httpGet:
+            path: /v1/k8sReadyCheck
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 1
+          failureThreshold: 1
+          timeoutSeconds: 1
+        livenessProbe:
+          httpGet:
+            path: /v1/json/paperid/1a5a7efb4b5678a208f6b2919dc565e5e5d7c308
+            port: 8080
+          initialDelaySeconds: 240
+          periodSeconds: 120
+          failureThreshold: 3
+          timeoutSeconds: 120
 ---
 apiVersion: v1
 kind: Service

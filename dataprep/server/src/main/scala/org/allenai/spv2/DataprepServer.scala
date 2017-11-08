@@ -1,6 +1,7 @@
 package org.allenai.spv2
 
 import java.nio.file.{ Files, Path, StandardCopyOption }
+import java.util.concurrent.Semaphore
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
 import com.amazonaws.services.s3.AmazonS3ClientBuilder
@@ -24,7 +25,7 @@ object DataprepServer extends Logging {
 
     val jettyThreadPool = new QueuedThreadPool(10)
     val server = new Server(jettyThreadPool)
-    val connector = new ServerConnector(server, 1, 1)
+    val connector = new ServerConnector(server, 0, 1)
     connector.setPort(8080)
     server.setConnectors(Array(connector))
     server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize", 10000000)
@@ -35,9 +36,12 @@ object DataprepServer extends Logging {
 }
 
 class DataprepServer extends AbstractHandler with Logging {
+  private val parallelParsingPermits = new Semaphore(1)
+
   private case class Route(expectedMethod: String, f: (HttpServletRequest, HttpServletResponse) => Unit)
 
   private val getRoutes: Map[String, Route] = Map(
+    "/v1/k8sReadyCheck" -> Route("GET", k8sReadyCheck),
     "/v1/json/paperid/" -> Route("GET", paperIdToJsonHandler),
     "/v1/png/paperid/" -> Route("GET", paperIdToPngHandler)
   )
@@ -70,6 +74,13 @@ class DataprepServer extends AbstractHandler with Logging {
       case None => response.setStatus(404)
     }
     baseRequest.setHandled(true)
+  }
+
+  private def k8sReadyCheck(request: HttpServletRequest, response: HttpServletResponse): Unit = {
+    if(parallelParsingPermits.availablePermits() > 0)
+      response.setStatus(200)
+    else
+      response.sendError(429, "Server is busy")
   }
 
   private trait DownloadResult {
@@ -117,8 +128,11 @@ class DataprepServer extends AbstractHandler with Logging {
     val result = downloadedFile match {
       case DownloadSuccess(docName, docSha, file) =>
         val attempt = Resource.using(Files.newInputStream(file)) { is =>
-          synchronized {
+          parallelParsingPermits.acquire()
+          try {
             PreprocessPdf.tryGetDocumentWithTimeout(is, docName, docSha, 60000)
+          } finally {
+            parallelParsingPermits.release()
           }
         }
         JsonFormat.toJsonString(attempt)
@@ -140,11 +154,14 @@ class DataprepServer extends AbstractHandler with Logging {
             response.sendError(400, "PDF has no pages")
           } else {
             try {
-              synchronized {
+              parallelParsingPermits.acquire()
+              try {
                 val renderer = new PDFRenderer(document)
                 val dpi = 100
                 val image = renderer.renderImageWithDPI(0, dpi, ImageType.RGB)
                 ImageIOUtil.writeImage(image, "png", response.getOutputStream, dpi)
+              } finally {
+                parallelParsingPermits.release()
               }
             } catch {
               case NonFatal(e) =>
