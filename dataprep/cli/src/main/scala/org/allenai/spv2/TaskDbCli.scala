@@ -34,7 +34,7 @@ object TaskDbCli {
       )
 
       if(config.paperIds.isEmpty) {
-        taskdb.trackedPaperIds(config.modelVersion).foreach(println)
+        taskdb.resultsAsJsonStrings(config.modelVersion).foreach(println)
       } else {
         taskdb.submitPaperIds(config.paperIds.iterator, config.modelVersion)
       }
