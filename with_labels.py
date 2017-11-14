@@ -1118,8 +1118,7 @@ def train(
                         now - batch_start_time,
                         metric_string)
                 time_since_last_eval = now - time_at_last_eval
-                # if time_since_last_eval > 60 * 60:
-                if time_since_last_eval > 60 * 1:
+                if time_since_last_eval > 60 * 60:
                     logging.info(
                         "It's been %.0f seconds since the last eval. Triggering another one.",
                         time_since_last_eval)
