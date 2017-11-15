@@ -1576,7 +1576,7 @@ def documents(
     document_set:DocumentSet = DocumentSet.TRAIN
 ):
     if document_set is DocumentSet.TEST:
-        buckets = range(0xf0, 0x100
+        buckets = range(0xf0, 0x100)
     elif document_set is DocumentSet.VALIDATE:
         buckets = range(0xe0, 0xf0)
     else:
