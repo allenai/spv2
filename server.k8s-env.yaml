@@ -5,7 +5,7 @@ metadata:
   labels:
     application: spv2-service
     contact: dirkg
-  namespace: s2-spv2-dev
+  namespace: spv2
 spec:
   replicas: 2
   template:

@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: spv2-dbworker
-  namespace: s2-spv2-dev
+  namespace: spv2
   labels:
     contact: dirkg
 spec:

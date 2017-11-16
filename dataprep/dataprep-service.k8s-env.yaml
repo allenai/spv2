@@ -5,7 +5,7 @@ metadata:
   labels:
     application: spv2-dataprep
     contact: dirkg
-  namespace: s2-spv2-dev
+  namespace: spv2
 spec:
   replicas: 24
   template:
@@ -63,7 +63,7 @@ metadata:
   labels:
     contact: dirkg
     application: spv2-dataprep
-  namespace: s2-spv2-dev
+  namespace: spv2
 spec:
   ports:
   - port: 80
