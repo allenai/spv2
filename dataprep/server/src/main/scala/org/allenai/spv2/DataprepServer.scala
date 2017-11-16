@@ -1,39 +1,33 @@
 package org.allenai.spv2
 
-import java.io.ByteArrayInputStream
-import java.net.SocketTimeoutException
 import java.nio.file.{ Files, Path, StandardCopyOption }
-import java.security.{ DigestInputStream, MessageDigest }
+import java.util.concurrent.Semaphore
 import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
 import com.amazonaws.services.s3.AmazonS3ClientBuilder
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
-import org.allenai.common.ParIterator._
 import org.allenai.spv2.document.{ Attempt, Error }
-import org.apache.commons.compress.archivers.ArchiveInputStream
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
-import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream
-import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
-import org.apache.commons.io.FileUtils
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.rendering.{ ImageType, PDFRenderer }
 import org.apache.pdfbox.tools.imageio.ImageIOUtil
-import org.eclipse.jetty.server.{ Request, Server }
+import org.eclipse.jetty.server.{ Request, Server, ServerConnector }
 import org.eclipse.jetty.server.handler.AbstractHandler
+import org.eclipse.jetty.util.thread.QueuedThreadPool
 
+import scala.annotation.tailrec
 import scala.util.control.NonFatal
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.collection.JavaConverters._
-import scala.util.{ Failure, Random, Success, Try }
-import scalaj.http.{ Http, HttpResponse }
 
 object DataprepServer extends Logging {
   def main(args: Array[String]): Unit = {
     // suppress the Dock icon on OS X
     System.setProperty("apple.awt.UIElement", "true")
 
-    val server = new Server(8080)
+    val jettyThreadPool = new QueuedThreadPool(10)
+    val server = new Server(jettyThreadPool)
+    val connector = new ServerConnector(server, 0, 1)
+    connector.setPort(8080)
+    server.setConnectors(Array(connector))
     server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize", 10000000)
     server.setHandler(new DataprepServer())
     server.start()
@@ -42,13 +36,14 @@ object DataprepServer extends Logging {
 }
 
 class DataprepServer extends AbstractHandler with Logging {
-  private val routes: Map[String, (HttpServletRequest, HttpServletResponse) => Unit] = Map(
-    "/v1/json/tar" -> handleTar,
-    "/v1/json/targz" -> handleTargz,
-    "/v1/json/zip" -> handleZip,
-    "/v1/json/pdf" -> handlePdf,
-    "/v1/json/urls" -> handleUrls,
-    "/v1/png/pdf" -> handleMakingPng
+  private val parallelParsingPermits = new Semaphore(1)
+
+  private case class Route(expectedMethod: String, f: (HttpServletRequest, HttpServletResponse) => Unit)
+
+  private val getRoutes: Map[String, Route] = Map(
+    "/v1/k8sReadyCheck" -> Route("GET", k8sReadyCheck),
+    "/v1/json/paperid/" -> Route("GET", paperIdToJsonHandler),
+    "/v1/png/paperid/" -> Route("GET", paperIdToPngHandler)
   )
 
   override def handle(
@@ -57,9 +52,13 @@ class DataprepServer extends AbstractHandler with Logging {
     request: HttpServletRequest,
     response: HttpServletResponse
   ): Unit = {
-    routes.get(target) match {
-      case Some(f) =>
-        if(request.getMethod == "POST") {
+    val matchingRoute = getRoutes.find {
+      case (path, _) => target.startsWith(path)
+    }.map(_._2)
+
+    matchingRoute match {
+      case Some(Route(expectedMethod, f)) =>
+        if(request.getMethod == expectedMethod) {
           try {
             f(request, response)
           } catch {
@@ -77,218 +76,129 @@ class DataprepServer extends AbstractHandler with Logging {
     baseRequest.setHandled(true)
   }
 
-  private def handleTar(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    handleArchive(request, response, "tar", new TarArchiveInputStream(request.getInputStream))
+  private def k8sReadyCheck(request: HttpServletRequest, response: HttpServletResponse): Unit = {
+    if(parallelParsingPermits.availablePermits() > 0)
+      response.setStatus(200)
+    else
+      response.sendError(429, "Server is busy")
   }
 
-  private def handleTargz(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    handleArchive(
-      request,
-      response,
-      "tar.gz",
-      new TarArchiveInputStream(new GzipCompressorInputStream(request.getInputStream)))
-  }
-
-  private def handleZip(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    handleArchive(request, response, "zip", new ZipArchiveInputStream(request.getInputStream))
-  }
-
-  private trait PreprocessingResult {
+  private trait DownloadResult {
     def docName: String
   }
-  private case class PreprocessingSuccess(docName: String, docSha: String, file: Path) extends PreprocessingResult
-  private case class PreprocessingFailure(docName: String, e: Throwable) extends PreprocessingResult
+  private case class DownloadSuccess(docName: String, docSha: String, file: Path) extends DownloadResult
+  private case class DownloadFailure(docName: String, e: Throwable) extends DownloadResult
 
-  private def handleArchive(
-    request: HttpServletRequest,
-    response: HttpServletResponse,
-    suffix: String,
-    getArchiveInputStream: => ArchiveInputStream
-  ): Unit = {
-    val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
-    try {
-      val tarSha1 = MessageDigest.getInstance("SHA-1")
-      tarSha1.reset()
-      // tarSha1 will be the sha of the shas of the pdfs in the tar file
-
-      val preprocessingResults = Resource.using(getArchiveInputStream) { tarIs =>
-        val pdfSha1 = MessageDigest.getInstance("SHA-1")
-        pdfSha1.reset()
-
-        Iterator.continually(tarIs.getNextEntry).
-          takeWhile(_ != null).
-          filterNot(_.isDirectory).
-          filter(_.getName.endsWith(".pdf")).
-          map { entry =>
-            try {
-              logger.info(s"Extracting ${entry.getName}")
-              val pdfSha1Stream = new DigestInputStream(tarIs, pdfSha1)
-              val tempFile = tempDir.resolve("in-progress.pdf")
-              Files.copy(pdfSha1Stream, tempFile)
-              val pdfSha1Bytes = pdfSha1.digest()
-              tarSha1.update(pdfSha1Bytes)
-              val tempFileSha = Utilities.toHex(pdfSha1Bytes)
-              val outputFile = tempDir.resolve(tempFileSha + ".pdf")
-              Files.move(tempFile, outputFile, StandardCopyOption.REPLACE_EXISTING)
-              logger.info(s"Extracted ${entry.getName} to $outputFile")
-              PreprocessingSuccess(entry.getName, tempFileSha, outputFile)
-            } catch {
-              case NonFatal(e) => PreprocessingFailure(entry.getName, e)
-            }
-          }.toList
-      }
-
-      val outputSha = Utilities.toHex(tarSha1.digest())
-      response.setHeader("Location", s"${request.getRequestURI}/$outputSha.$suffix")
-      response.setStatus(200) // Should be 201, but we didn't really create anything.
-
-      writeResponse(preprocessingResults, response)
-    } finally {
-      FileUtils.deleteDirectory(tempDir.toFile)
+  @tailrec
+  private def firstSuccessOrFirstFailure(
+    tries: Iterator[DownloadResult],
+    defaultFailure: Option[DownloadResult] = None
+  ): DownloadResult = {
+    val next = tries.next()
+    next match {
+      case _: DownloadSuccess => next
+      case _: DownloadFailure =>
+        val newDefaultFailure = defaultFailure.getOrElse(next)
+        if (tries.hasNext) {
+          firstSuccessOrFirstFailure(tries, Some(newDefaultFailure))
+        } else {
+          newDefaultFailure
+        }
     }
   }
 
-  private def handlePdf(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    val pdfSha1 = MessageDigest.getInstance("SHA-1")
-    pdfSha1.reset()
-    val pdfSha1Stream = new DigestInputStream(request.getInputStream, pdfSha1)
-
-    val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
-    try {
-      val filename = "single-document.pdf"
-      val preprocessingResult = try {
-        val tempFile = tempDir.resolve(filename)
-        Files.copy(pdfSha1Stream, tempFile)
-        val pdfSha1Bytes = pdfSha1.digest()
-        val tempFileSha = Utilities.toHex(pdfSha1Bytes)
-        val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
-        Files.move(tempFile, renamedFile)
-        response.setHeader("Location", s"${request.getRequestURI}/$tempFileSha.json")
-        PreprocessingSuccess(filename, tempFileSha, renamedFile)
-      } catch {
-        case NonFatal(e) => PreprocessingFailure(filename, e)
-      }
-      writeResponse(Seq(preprocessingResult), response)
-    } finally {
-      FileUtils.deleteDirectory(tempDir.toFile)
-    }
-  }
-
-  private val s3UrlPattern = """^s3://([-\w]+)/(.*)$""".r
-  private val httpUrlPattern = """^(https?://.*)$""".r
   private lazy val s3 = AmazonS3ClientBuilder.defaultClient()
 
-  private def handleUrls(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    // handles URLs, one per line
-    val tempDir = Files.createTempDirectory(this.getClass.getSimpleName)
+  private def paperIdToJsonHandler(request: HttpServletRequest, response: HttpServletResponse): Unit = {
+    val downloadedPdf = downloadPdf(request)
     try {
-      val preprocessingResults = request.getReader.lines().iterator().asScala.parMap { line =>
-        try {
-          val pdfSha1 = MessageDigest.getInstance("SHA-1")
-          pdfSha1.reset()
-
-          line match {
-            case s3UrlPattern(bucket, key) =>
-              Resource.using(s3.getObject(bucket, key).getObjectContent) { is =>
-                val pdfSha1Stream = new DigestInputStream(is, pdfSha1)
-                val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
-                try {
-                  Files.copy(pdfSha1Stream, tempFile, StandardCopyOption.REPLACE_EXISTING)
-                  val pdfSha1Bytes = pdfSha1.digest()
-                  val tempFileSha = Utilities.toHex(pdfSha1Bytes)
-                  val renamedFile = tempDir.resolve(tempFileSha + ".pdf")
-                  Files.move(tempFile, renamedFile, StandardCopyOption.REPLACE_EXISTING)
-                  logger.info(s"Downloaded $line to $renamedFile")
-                  PreprocessingSuccess(line, tempFileSha, renamedFile)
-                } finally {
-                  Files.deleteIfExists(tempFile)
-                }
-              }
-            case httpUrlPattern(url) =>
-              val request = Http(url).timeout(10000, 60000)
-              val pdfBytes = withRetries(() => request.asBytes).body
-              val pdfSha1Bytes = pdfSha1.digest(pdfBytes)
-              val fileSha = Utilities.toHex(pdfSha1Bytes)
-              val file = tempDir.resolve(fileSha + ".pdf")
-              Files.copy(new ByteArrayInputStream(pdfBytes), file)
-              logger.info(s"Downloaded $url to $file")
-              PreprocessingSuccess(line, fileSha, file)
-          }
-        } catch {
-          case NonFatal(e) => PreprocessingFailure(line, e)
-        }
-      }.toList
-      writeResponse(preprocessingResults, response)
+      writeJsonResponse(downloadedPdf, response)
     } finally {
-      FileUtils.deleteDirectory(tempDir.toFile)
+      downloadedPdf match {
+        case DownloadSuccess(_, _, tempFile) => Files.deleteIfExists(tempFile)
+        case _ => /* nothing */
+      }
     }
   }
 
-  private def writeResponse(files: Seq[PreprocessingResult], response: HttpServletResponse): Unit = {
+  private def writeJsonResponse(downloadedFile: DownloadResult, response: HttpServletResponse): Unit = {
     response.setContentType("application/json")
-    files.iterator.parMap {
-      case PreprocessingSuccess(docName, docSha, file) =>
+    response.setCharacterEncoding("UTF-8")
+
+    val result = downloadedFile match {
+      case DownloadSuccess(docName, docSha, file) =>
         val attempt = Resource.using(Files.newInputStream(file)) { is =>
-          PreprocessPdf.tryGetDocument(is, docName, docSha)
+          parallelParsingPermits.acquire()
+          try {
+            PreprocessPdf.tryGetDocumentWithTimeout(is, docName, docSha, 60000)
+          } finally {
+            parallelParsingPermits.release()
+          }
         }
         JsonFormat.toJsonString(attempt)
-      case PreprocessingFailure(docId, e) =>
+      case DownloadFailure(docId, e) =>
         val error = Error(docId, e.getMessage, Some(Utilities.stackTraceAsString(e)))
         JsonFormat.toJsonString(Attempt().withError(error))
-    }.foreach(response.getWriter.println)
+    }
+
+    response.getWriter.println(result)
   }
 
-  private val random = new Random
-  private val defaultMaxRetries = 10
-  private def withRetries[T](f: () => HttpResponse[T], retries: Int = defaultMaxRetries): HttpResponse[T] = if (retries <= 0) {
-    f()
-  } else {
-    val backOff = defaultMaxRetries - retries + 1 // define a back off multiplier
-    val sleepTime = (random.nextInt(5000) + 5000) * backOff
-    // sleep between 5 * backOff and 10 * backOff seconds
-    // If something goes wrong, we sleep a random amount of time, to make sure that we don't slam
-    // the server, get timeouts, wait for exactly the same amount of time on all threads, and then
-    // slam the server again.
-
-    Try(f()) match {
-      case Failure(e: SocketTimeoutException) =>
-        logger.warn(s"$e while querying. $retries retries left.")
-        Thread.sleep(sleepTime)
-        withRetries(f, retries - 1)
-
-      case Success(response) if response.isServerError =>
-        logger.warn(s"Got response code ${response.statusLine} while querying. $retries retries left.")
-        Thread.sleep(sleepTime)
-        withRetries(f, retries - 1)
-
-      case Failure(e) => throw e
-
-      case Success(response) => response
+  private def paperIdToPngHandler(request: HttpServletRequest, response: HttpServletResponse): Unit = {
+    val downloadedPdf = downloadPdf(request)
+    downloadedPdf match {
+      case DownloadSuccess(_, _, tempFile) => try {
+        Resource.using(Files.newInputStream(tempFile)) { is =>
+          val document = PDDocument.load(is)
+          if(document.getNumberOfPages <= 0) {
+            response.sendError(400, "PDF has no pages")
+          } else {
+            try {
+              parallelParsingPermits.acquire()
+              try {
+                val renderer = new PDFRenderer(document)
+                val dpi = 100
+                val image = renderer.renderImageWithDPI(0, dpi, ImageType.RGB)
+                ImageIOUtil.writeImage(image, "png", response.getOutputStream, dpi)
+              } finally {
+                parallelParsingPermits.release()
+              }
+            } catch {
+              case NonFatal(e) =>
+                logger.error("Error while making PNG", e)
+                response.sendError(500, e.getMessage)
+            }
+          }
+        }
+      } finally {
+        Files.deleteIfExists(tempFile)
+      }
+      case _: DownloadFailure =>
+        writeJsonResponse(downloadedPdf, response)
     }
   }
 
-  private def handleMakingPng(request: HttpServletRequest, response: HttpServletResponse): Unit = {
-    try {
-      val pdfShaDigest = MessageDigest.getInstance("SHA-1")
-      pdfShaDigest.reset()
-      val pdfSha1Stream = new DigestInputStream(request.getInputStream, pdfShaDigest)
-      val document = PDDocument.load(pdfSha1Stream)
-      val pdfShaBytes = pdfShaDigest.digest()
-      val pdfSha = Utilities.toHex(pdfShaBytes)
+  private def downloadPdf(request: HttpServletRequest): DownloadResult = {
+    val paperId = request.getRequestURI.split('/').last
+    require(paperId.length == 40)
 
-      if(document.getNumberOfPages <= 0) {
-        response.sendError(400, "PDF has no pages")
-      } else {
-        val renderer = new PDFRenderer(document)
-        val dpi = 100
-        val image = renderer.renderImageWithDPI(0, dpi, ImageType.RGB)
-        response.setHeader("Location", s"${request.getRequestURI}/$pdfSha.png")
-        ImageIOUtil.writeImage(image, "png", response.getOutputStream, dpi)
+    val ai2PaperBuckets = Seq("ai2-s2-pdfs", "ai2-s2-pdfs-private")
+    val key = paperId.take(4) + "/" + paperId.drop(4) + ".pdf"
+    val docName = paperId + ".pdf"
+
+    val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
+    firstSuccessOrFirstFailure {
+      ai2PaperBuckets.iterator.map { bucket =>
+        try {
+          Resource.using(s3.getObject(bucket, key).getObjectContent) { is =>
+            Files.copy(is, tempFile, StandardCopyOption.REPLACE_EXISTING)
+            logger.info(s"Downloaded paper $paperId to $tempFile")
+            DownloadSuccess(docName, paperId, tempFile)
+          }
+        } catch {
+          case NonFatal(e) => DownloadFailure(docName, e)
+        }
       }
-    } catch {
-      case NonFatal(e) =>
-        logger.error("Error while making PNG", e)
-        response.sendError(500, e.getMessage)
     }
   }
 }

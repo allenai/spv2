@@ -5,7 +5,7 @@ import java.nio.file.{ Files, Paths }
 import java.security.{ DigestInputStream, MessageDigest }
 import java.text.Normalizer
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.{ Calendar, NoSuchElementException, List => JavaList }
+import java.util.{ Calendar, NoSuchElementException, Timer, TimerTask, List => JavaList }
 
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
@@ -252,12 +252,85 @@ object PreprocessPdf extends Logging {
     }
   }
 
+  private class ParsingTimeout extends RuntimeException {}
+  private val parserKillerTimer = new Timer("Dataprep killer timer", true)
+  private val parseNumbersInProgress = scala.collection.mutable.Set[Int]()
+  private val nextParseNumber = new AtomicInteger
+  def tryGetDocumentWithTimeout(
+    is: InputStream,
+    docName: String,
+    docSha: String,
+    timeout: Long
+  ): Attempt = {
+    val parseNumber = nextParseNumber.getAndIncrement
+
+    val t = Thread.currentThread
+
+    val killTaskHard = new TimerTask() {
+      override def run(): Unit = {
+        parseNumbersInProgress.synchronized {
+          if (parseNumbersInProgress.contains(parseNumber)) {
+            logger.info(s"Killing parsing thread ${t.getId} because it's taking too long")
+            t.stop()
+            // I know this is dangerous. This is a last resort.
+          }
+        }
+      }
+    }
+
+    val killTaskSoftly = new TimerTask() {
+      override def run(): Unit = {
+        parseNumbersInProgress.synchronized {
+          if (parseNumbersInProgress.contains(parseNumber)) {
+            logger.info(s"Interrupting parsing thread ${t.getId} because it's taking too long")
+            t.interrupt()
+          }
+        }
+      }
+    }
+
+    parseNumbersInProgress.synchronized {
+      parseNumbersInProgress.add(parseNumber)
+    }
+
+    var wasInterrupted = false
+    parserKillerTimer.schedule(killTaskSoftly, timeout)
+    parserKillerTimer.schedule(killTaskHard, 3 * timeout)
+    val result = try {
+      try {
+        tryGetDocument(is, docName, docSha)
+      } catch {
+        case e: ThreadDeath =>
+          throw new RuntimeException("Dataprep killer got impatient", e)
+      }
+    } finally {
+      parseNumbersInProgress.synchronized {
+        parseNumbersInProgress.remove(parseNumber)
+      }
+
+      // This clears the interrupted flag, in case it happened after we were already done parsing,
+      // but before we could remove the parse number. We don't want to leave this function with
+      // the interrupted flag set on the thread.
+      // Actually, the window of opportunity is from the last time that tryGetDocument() checks
+      // the flag to the time we remove the parse number, which is quite a bit bigger.
+      wasInterrupted = Thread.interrupted
+    }
+
+    if (wasInterrupted) {
+      logger.info(s"Overriding interruption of parsing thread ${t.getId} because it finished before we could react")
+    }
+    assert(!Thread.interrupted)
+
+    result
+  }
+
   def tryGetDocument(is: InputStream, docName: String, docSha: String): Attempt = {
     try {
       val doc = getDocument(is, docName, docSha)
       Attempt().withDoc(doc)
     } catch {
-      case NonFatal(e) =>
+      case e: Throwable =>
+        // Catch all exceptions, even OOM (for large documents) and ClassNotFound (for encrypted documents)
         val error = Error(docName = docName, e.getMessage, Some(Utilities.stackTraceAsString(e)))
         Attempt().withError(error)
     }
