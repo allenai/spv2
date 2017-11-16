@@ -658,16 +658,16 @@ def evaluate_model(
 
                 indices_predicted_bibyear = np.where(page_predictions == dataprep2.BIBYEAR_LABEL)[0]
 
-                # bibtitle must all be in the same font
-                if len(indices_predicted_bibyear) > 0:
-                    bibyear_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibyear)
-                    bibyear_fonts_on_page, bibyear_font_counts_on_page = \
-                        np.unique(bibyear_fonts_on_page, return_counts=True)
-                    bibyear_font_on_page = bibyear_fonts_on_page[np.argmax(bibyear_font_counts_on_page)]
-                    indices_predicted_bibyear = \
-                        [i for i in indices_predicted_bibyear if page.font_hashes[i] == bibyear_font_on_page]
 
-                # authors must all come from the same page
+                # if len(indices_predicted_bibyear) > 0:
+                #     bibyear_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibyear)
+                #     bibyear_fonts_on_page, bibyear_font_counts_on_page = \
+                #         np.unique(bibyear_fonts_on_page, return_counts=True)
+                #     bibyear_font_on_page = bibyear_fonts_on_page[np.argmax(bibyear_font_counts_on_page)]
+                #     indices_predicted_bibyear = \
+                #         [i for i in indices_predicted_bibyear if page.font_hashes[i] == bibyear_font_on_page]
+
+
                 predicted_bibyears_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibyear)
@@ -964,7 +964,16 @@ def evaluate_model(
                 for predicted_bibyear in predicted_bibyears:
                     log_file.write("Predicted bib year: %s\n" % predicted_bibyear)
 
-            # calculate author P/R
+
+            gold_bibyears_set_array = []
+            for e in gold_bibyears:
+                if e is None:
+                    continue
+                strip_e = e.strip()
+                if len(strip_e) > 0:
+                    gold_bibyears_set_array.append(strip_e)
+            gold_bibyears = gold_bibyears_set_array
+
             gold_bibyears_set = Multiset()
             for e in gold_bibyears:
                 gold_bibyears_set.add(e)
