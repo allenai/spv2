@@ -603,8 +603,6 @@ def evaluate_model(
                 if len(predicted_authors_on_page) > len(predicted_authors):
                     predicted_authors = predicted_authors_on_page
 
-#
-
                 indices_predicted_bibtitle = np.where(page_predictions == dataprep2.BIBTITLE_LABEL)[0]
 
                 # authors must all come from the same page
@@ -618,16 +616,8 @@ def evaluate_model(
 
                 indices_predicted_bibauthor = np.where(page_predictions == dataprep2.BIBAUTHOR_LABEL)[0]
 
-                # bibtitle must all be in the same font
-                if len(indices_predicted_bibauthor) > 0:
-                    bibauthor_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibauthor)
-                    bibauthor_fonts_on_page, bibauthor_font_counts_on_page = \
-                        np.unique(bibauthor_fonts_on_page, return_counts=True)
-                    bibauthor_font_on_page = bibauthor_fonts_on_page[np.argmax(bibauthor_font_counts_on_page)]
-                    indices_predicted_bibauthor = \
-                        [i for i in indices_predicted_bibauthor if page.font_hashes[i] == bibauthor_font_on_page]
 
-                # authors must all come from the same page
+                # bib authors must all come from the same page
                 predicted_bibauthors_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibauthor)
@@ -635,19 +625,9 @@ def evaluate_model(
                 predicted_bibauthors += predicted_bibauthors_on_page
 
 
-
                 indices_predicted_bibvenue = np.where(page_predictions == dataprep2.BIBVENUE_LABEL)[0]
 
-                # bibtitle must all be in the same font
-                # if len(indices_predicted_bibvenue) > 0:
-                #     bibvenue_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibvenue)
-                #     bibvenue_fonts_on_page, bibvenue_font_counts_on_page = \
-                #         np.unique(bibvenue_fonts_on_page, return_counts=True)
-                #     bibvenue_font_on_page = bibvenue_fonts_on_page[np.argmax(bibvenue_font_counts_on_page)]
-                #     indices_predicted_bibvenue = \
-                #         [i for i in indices_predicted_bibvenue if page.font_hashes[i] == bibvenue_font_on_page]
-
-                # authors must all come from the same page
+                # bibvenue must all come from the same page
                 predicted_bibvenues_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibvenue)
@@ -657,15 +637,6 @@ def evaluate_model(
 
 
                 indices_predicted_bibyear = np.where(page_predictions == dataprep2.BIBYEAR_LABEL)[0]
-
-
-                # if len(indices_predicted_bibyear) > 0:
-                #     bibyear_fonts_on_page = np.take(page.font_hashes, indices_predicted_bibyear)
-                #     bibyear_fonts_on_page, bibyear_font_counts_on_page = \
-                #         np.unique(bibyear_fonts_on_page, return_counts=True)
-                #     bibyear_font_on_page = bibyear_fonts_on_page[np.argmax(bibyear_font_counts_on_page)]
-                #     indices_predicted_bibyear = \
-                #         [i for i in indices_predicted_bibyear if page.font_hashes[i] == bibyear_font_on_page]
 
 
                 predicted_bibyears_on_page = [
@@ -817,10 +788,6 @@ def evaluate_model(
             if len(gold_bibtitles) > 0:
                 recall = len(gold_bibtitles & predicted_bibtitles) / len(gold_bibtitles)
             log_file.write("Bib title P/R:       %.3f / %.3f\n" % (precision, recall))
-            # log_file.write("---\n")
-            # for e in (gold_bibtitles - predicted_bibtitles):
-            #     log_file.write('{}\n'.format(e))
-            # log_file.write("---\n")
 
             if len(gold_bibtitles) > 0:
                 bibtitle_prs.append((precision, recall))
@@ -863,15 +830,6 @@ def evaluate_model(
                     sorted_bib_author = unsorted_bib_author
 
                     gold_bibauthors_set.add(normalize_author(' '.join(sorted_bib_author)))
-
-            # gold_bib_authors = ["%s %s" % tuple(gold_author) for gold_author in gold_authors]
-            # for gold_author in gold_authors:
-            #     log_file.write("Gold author:      %s\n" % gold_author)
-            #
-            #
-            # for author in gold_bibauthors:
-            #     for e in author:
-            #         gold_bibauthors_set.add(normalize_author(e))
 
             predicted_bibauthors_set = Multiset()
             for e in predicted_bibauthors:
@@ -945,7 +903,6 @@ def evaluate_model(
                 bibvenue_prs.append((precision, recall))
 
 
-
             gold_bibyears = doc.gold_bib_years[:]
             for gold_bibyear in gold_bibyears:
                 log_file.write("Gold bib year:      %s\n" % gold_bibyear)
@@ -963,7 +920,6 @@ def evaluate_model(
             else:
                 for predicted_bibyear in predicted_bibyears:
                     log_file.write("Predicted bib year: %s\n" % predicted_bibyear)
-
 
             gold_bibyears_set_array = []
             for e in gold_bibyears:
