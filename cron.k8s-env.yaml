@@ -1,0 +1,18 @@
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: cron
+  namespace: spv2
+  labels:
+    contact: dirkg
+spec:
+  schedule: "@daily"
+  concurrencyPolicy: Replace
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cron
+            image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/cron:1.6
+          restartPolicy: Never
