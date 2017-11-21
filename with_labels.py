@@ -999,7 +999,7 @@ def train(
     pmc_dir: str,
     output_filename: str,
     training_batches: int=144000,
-    test_batches: int=10000,
+    test_doc_count: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings
 ):
     """Returns a trained model using the data in dir as training data"""
@@ -1106,8 +1106,8 @@ def train(
                         pmc_dir,
                         output_filename + ".log",
                         dataprep2.DocumentSet.TEST,
-                        test_batches
-                    )  # TODO: batches != docs
+                        test_doc_count
+                    )
                     scored_results.append((now - start_time, trained_batches, ev_result))
                     print_scored_results(now - start_time)
 
@@ -1237,7 +1237,7 @@ def main():
         "--training-batches", default=144000, type=int, help="number of batches to train on"
     )
     parser.add_argument(
-        "--test-batches", default=10000, type=int, help="number of batches to test on"
+        "--test-doc-count", default=10000, type=int, help="number of documents to test on"
     )
     args = parser.parse_args()
 
@@ -1250,7 +1250,7 @@ def main():
         args.pmc_dir,
         args.output,
         args.training_batches,
-        args.test_batches,
+        args.test_doc_count,
         model_settings
     )
 
