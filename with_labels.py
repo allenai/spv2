@@ -1055,7 +1055,7 @@ def train(
     if training_batches > 0:
         trained_batches = 0
         while trained_batches < training_batches:
-            logging.info("Starting new epoch batches = {}".format(trained_batches))
+            logging.info("Starting new epoch. Batches trained so far: {}".format(trained_batches))
             train_docs = dataprep2.documents(
                 pmc_dir,
                 model_settings,
