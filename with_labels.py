@@ -299,7 +299,9 @@ class PagePool:
             if new_slice_token_count > desired_slice_size and len(slice) > 0:
                 slice = self._prepare_slice_for_release(slice, desired_slice_size)
                 self.slice_start += 1
-                self.slice_start %= len(self.pool)
+                if self.slice_start > len(self.pool):
+                    logging.info("Page pool wrapped around. Will now start serving small pages again.")
+                    self.slice_start %= len(self.pool)
                 return slice
 
             slice.append(self.pool[self.slice_start])
