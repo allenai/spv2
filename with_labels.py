@@ -1243,9 +1243,7 @@ def main():
 
     model_settings = model_settings._replace(tokens_per_batch=args.tokens_per_batch)
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
-    # print(model_settings)
-    # temp(args.pmc_dir, model_settings)
-    # return
+    print(model_settings)
 
     model = train(
         args.start_weights,
@@ -1258,19 +1256,5 @@ def main():
 
     model.save(args.output, overwrite=True)
 
-
-
-def temp(pmc_dir, model_settings):
-    print(pmc_dir)
-    train_docs = dataprep2.documents(
-        pmc_dir,
-        model_settings,
-        document_set=dataprep2.DocumentSet.TRAIN)
-    for e in train_docs:
-        break
-
-
-
 if __name__ == "__main__":
-    # temp()
     main()
