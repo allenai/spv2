@@ -1188,11 +1188,6 @@ def main():
         manhole.install()
 
     logging.getLogger().setLevel(logging.DEBUG)
-    logging.basicConfig(filename='logging.txt',
-                            filemode='a',
-                            format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                            datefmt='%M/%D/%H:%M:%S',
-                            level=logging.DEBUG)
 
     model_settings = settings.default_model_settings
 
