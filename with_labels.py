@@ -1041,8 +1041,14 @@ def train(
             _, _, _, _, _, _, _, title_p, title_r, author_p, author_r, \
                 bib_title_p, bib_title_r, bib_author_p, bib_author_r, \
                 bib_venue_p, bib_venue_r, bib_year_p, bib_year_r = ev_result
-            return (f1(title_p, title_r) + f1(author_p, author_r) + f1(bib_title_p, bib_title_r) + \
-                f1(bib_author_p, bib_author_r) + f1(bib_venue_p, bib_venue_r) + f1(bib_year_p, bib_year_r)) / 6
+            return (
+                f1(title_p, title_r) +
+                f1(author_p, author_r) +
+                f1(bib_title_p, bib_title_r) +
+                f1(bib_author_p, bib_author_r) +
+                f1(bib_venue_p, bib_venue_r) +
+                f1(bib_year_p, bib_year_r)
+            ) / 6
         return [combined_score(ev_result) for _, _, ev_result in scored_results]
 
     start_time = None
