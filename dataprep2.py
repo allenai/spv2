@@ -51,7 +51,7 @@ def json_from_file(filename: str):
     else:
         open_fn = open
 
-    with open_fn(filename, "rt", encoding="UTF-8") as p:
+    with open_fn(filename, "rt", encoding="UTF-8", errors="replace") as p:
         for line in p:
             try:
                 yield json.loads(line)
@@ -412,6 +412,14 @@ def make_unlabeled_tokens_file(
             compression_opts=9)
 
         for json_doc in json_from_files(json_file_names):
+            if "error" in json_doc:
+                if ignore_errors:
+                    continue
+                else:
+                    raise ValueError("Received error document when error was not expected")
+            if "doc" in json_doc:
+                json_doc = json_doc["doc"]
+
             # find the proper doc id
             if "docName" in json_doc:
                 doc_name = json_doc["docName"]

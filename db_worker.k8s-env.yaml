@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spv2-dbworker
+  namespace: spv2
+  labels:
+    contact: dirkg
+spec:
+  parallelism: 24
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: spv2-dbworker
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:1.6
+          resources:
+            requests:
+              cpu: 4
+              memory: 4Gi
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: spv2-secrets
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spv2-secrets
+                  key: aws-secret-access-key
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: spv2-secrets
+                  key: aws-default-region
+            - name: SPV2_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spv2-secrets
+                  key: rds-password
+            - name: SPV2_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spv2-secrets
+                  key: rds-root-password
