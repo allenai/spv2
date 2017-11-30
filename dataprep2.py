@@ -1581,7 +1581,8 @@ def tokenstats_for_pmc_dir(pmc_dir: str) -> TokenStatistics:
 def documents(
     pmc_dir: str,
     model_settings: settings.ModelSettings,
-    document_set:DocumentSet = DocumentSet.TRAIN
+    document_set: DocumentSet = DocumentSet.TRAIN,
+    bucket_count: typing.Optional[int] = None
 ):
     if document_set is DocumentSet.TEST:
         buckets = range(0xf0, 0x100)
@@ -1590,6 +1591,8 @@ def documents(
     else:
         buckets = range(0x00, 0xe0)
     buckets = ["%02x" % x for x in buckets]
+    if bucket_count is not None:
+        buckets = buckets[:bucket_count]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
