@@ -9,3 +9,4 @@ manhole
 git+https://www.github.com/farizrahman4u/keras-contrib.git
 psycopg2
 aiohttp
+datadog

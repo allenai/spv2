@@ -43,3 +43,8 @@ spec:
                 secretKeyRef:
                   name: spv2-secrets
                   key: rds-root-password
+            - name: DATADOG_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: datadog-secrets
+                  key: api-key
