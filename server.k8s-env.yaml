@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: spv2-service
-        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/server:1.2
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/server:1.8
         ports:
         - containerPort: 8081
           name: backend-http
