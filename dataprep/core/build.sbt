@@ -7,6 +7,7 @@ libraryDependencies ++= Seq(
   "org.apache.pdfbox" % "fontbox" % "2.0.5" exclude ("commons-logging", "commons-logging"),
   "org.apache.pdfbox" % "pdfbox-tools" % "2.0.5" exclude ("commons-logging", "commons-logging"),
   "org.slf4j" % "jcl-over-slf4j" % "1.7.25",
+  "org.slf4j" % "slf4j-api" % "1.7.25",
   "org.allenai.common" %% "common-core" % "1.4.10",
   "org.bouncycastle" % "bcprov-jdk16" % "1.46",
   "org.bouncycastle" % "bcmail-jdk16" % "1.46",
