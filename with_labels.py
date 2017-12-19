@@ -16,6 +16,7 @@ from keras.layers import Masking
 from keras.optimizers import Adam
 from keras_contrib.layers import CRF
 from keras.engine.topology import Layer
+from keras.layers import multiply
 from keras import backend as K
 import tensorflow as tf
 
@@ -173,7 +174,6 @@ def model_with_labels(
     model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=crf_layer)
     model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
     return model
-
 
 #
 # Prepare the Data 🐙
@@ -540,7 +540,7 @@ def evaluate_model(
 
                 indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
 
-                # authors must all come from the same page
+                # bibtitles must all come from the same page
                 labeled_bibtitles_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibtitle)
@@ -549,7 +549,7 @@ def evaluate_model(
 
 
                 indices_labeled_bibauthor = np.where(page_labels == dataprep2.BIBAUTHOR_LABEL)[0]
-                # authors must all come from the same page
+                # bibauthors must all come from the same page
                 labeled_bibauthors_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibauthor)
@@ -1147,7 +1147,7 @@ def train(
         output_filename + ".log",
         dataprep2.DocumentSet.VALIDATE
     )
-    scored_results.append((float('inf'), training_batches, final_ev))
+    scored_results.append((float('inf'), trained_batches, final_ev))
 
     print_scored_results()
 
@@ -1158,7 +1158,7 @@ def get_word_set():
     word_set = set()
     path = './glove.840B.300d.vocab'
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="UTF-8") as f:
             for line in f:
                 word = line.strip()
                 word_set.add(word.lower())
