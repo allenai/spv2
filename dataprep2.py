@@ -482,10 +482,7 @@ def make_unlabeled_tokens_file(
                 page_in_h5["dimensions"] = (width, height)
 
                 # Get the tokens from the page
-                try:
-                    json_tokens = json_page["tokens"]
-                except KeyError:
-                    json_tokens = []
+                json_tokens = json_page.get("tokens", [])
 
                 # Filter out tokens that have NaN in them
                 numeric_fields = ["left", "right", "top", "bottom", "fontSize", "fontSpaceWidth"]
