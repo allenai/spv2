@@ -6,7 +6,7 @@ metadata:
   labels:
     contact: dirkg
 spec:
-  parallelism: 24
+  parallelism: 8
   template:
     spec:
       restartPolicy: OnFailure
