@@ -22,7 +22,7 @@ versions side-by-side, and make sure we re-run all the papers when we get a new 
 ### Kubernetes
 
 SPv2 does most of its processing in Kubernetes, under the `spv2-prod` namespace. Kubernetes
-schedules a cronjon that runs daily. Roughly speaking, the cron job processes all the papers that
+schedules a cronjob that runs daily. Roughly speaking, the cron job processes all the papers that
 are marked as "Scheduled" in the Task DB, until they are either "Done" or "Failed". Details about
 this job are below.
 
