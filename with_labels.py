@@ -536,8 +536,6 @@ def evaluate_model(
                 if len(labeled_authors_on_page) > len(labeled_authors):
                     labeled_authors = labeled_authors_on_page
 
-
-
                 indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
 
                 # bibtitles must all come from the same page
