@@ -1108,7 +1108,7 @@ def train(
 
                 # check if this one is better than the last one
                 combined_scores = get_combined_scores()
-                if True: # combined_scores[-1] == max(combined_scores):
+                if combined_scores[-1] == max(combined_scores):
                     logging.info(
                        "High score (%.3f)! Saving model to %s",
                        max(combined_scores),
