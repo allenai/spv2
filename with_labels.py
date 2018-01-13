@@ -13,6 +13,7 @@ from keras.layers.merge import Concatenate
 from keras.layers.wrappers import TimeDistributed, Bidirectional
 from keras.models import Model
 from keras.layers import Masking
+from keras.layers import Activation, Dense
 from keras.optimizers import Adam
 from keras_contrib.layers import CRF
 from keras.engine.topology import Layer
@@ -141,7 +142,9 @@ def model_with_labels(
             output_dim=FONT_VECTOR_SIZE)(font_input)
     logging.info("font_embedding:\t%s", font_embedding.shape)
 
-    numeric_inputs = Input(name='numeric_inputs', shape=(None, 15)) # DEBUG: put back the vision features
+    # numeric_inputs = Input(name='numeric_inputs', shape=(None, 15)) # DEBUG: put back the vision features
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 18)) # added vision and tranformed_font_size feature
+    # numeric_inputs = Input(name='numeric_inputs', shape=(None, 23)) # DEBUG: put back the vision features
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
@@ -165,16 +168,24 @@ def model_with_labels(
 
     logging.info("lstm2:\t%s", lstm2.shape)
 
-    # shifted_lstm2 = shift_layer(-1, axis=1, fill=0)(numeric_masked)
-    # logging.info("shifted_lstm2 the  w t:\t%s", type(shifted_lstm2))
-    # logging.info("shifted_lstm2:\t%s", shifted_lstm2.shape)
 
-    crf = CRF(units=7)
-    crf_layer = crf(lstm2)
-    logging.info("crf:\t%s", crf_layer.shape)
+    # removed CRF
+    one_hot_output = TimeDistributed(
+    Dense(len(dataprep2.POTENTIAL_LABELS)), name="one_hot_output")(lstm2)
+    logging.info("one_hot_output:\t%s", one_hot_output.shape)
+    softmax = TimeDistributed(Activation('softmax'), name="softmax")(one_hot_output)
+    model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=softmax)
+    model.compile(Adam(), "categorical_crossentropy", metrics=["accuracy"], sample_weight_mode="temporal")
 
-    model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=crf_layer)
-    model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
+
+
+    # crf = CRF(units=7)
+    # crf_layer = crf(lstm2)
+    # logging.info("crf:\t%s", crf_layer.shape)
+
+    # model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=crf_layer)
+    # # model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
+    # model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy], sample_weight_mode="temporal")
     return model
 
 
@@ -189,7 +200,12 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
         dtype=np.int32)
     token_inputs = page.token_hashes
     font_inputs = page.font_hashes
-    numeric_inputs = page.scaled_numeric_features[:,:15] # DEBUG: put back the vision features
+    # numeric_inputs = page.scaled_numeric_features[:,:15] # DEBUG: put back the vision features
+    numeric_inputs = page.scaled_numeric_features[:,:17] # added vision feature
+    tranformed_font_size = gen_transformed_font_size(page.numeric_features[:,4:5])
+    numeric_inputs = np.concatenate((page.scaled_numeric_features[:,:17], tranformed_font_size), axis=-1) # added vision & transformed font feature
+
+    # numeric_inputs = np.concatenate((page.scaled_numeric_features[:,:17], page.numeric_features[:,:6]), axis=-1) # added vision & position & raw fs and ws feature
 
     labels_as_ints = page.labels
     labels_one_hot = np.zeros(
@@ -203,6 +219,22 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
             raise
 
     return (page_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
+
+
+# map raw_font_size to [-0.5, 0.5] clip at [5, 30]
+def gen_transformed_font_size(raw_font_size):
+    ret = np.zeros_like(raw_font_size)
+
+    for i in range(0, raw_font_size.shape[0]):
+        for j in range(0, raw_font_size.shape[1]):
+            if raw_font_size[i][j] <= 5:
+                ret[i][j] = -0.5
+            elif raw_font_size[i][j] >= 30:
+                ret[i][j] = 0.5
+            else:
+                ret[i][j] = (raw_font_size[i][j] - 17.5)/25.0
+
+    return ret
 
 def page_length_for_doc_page_pair(doc_page_pair) -> int:
     return len(doc_page_pair[1].tokens)
@@ -698,7 +730,7 @@ def evaluate_model(
             log_file.write("Labeled title: %s\n" % labeled_title)
 
             predicted_title = " ".join(predicted_title)
-            log_file.write("Actual title:  %s\n" % predicted_title)
+            log_file.write("Predicted title:  %s\n" % predicted_title)
 
             # calculate title P/R
             title_score = 0.0
@@ -706,7 +738,6 @@ def evaluate_model(
                 title_score = 1.0
             log_file.write("Score:         %s\n" % title_score)
             title_prs.append((title_score, title_score))
-
 
 
             # print authors
@@ -1074,7 +1105,31 @@ def train(
 
                 batch_start_time = time.time()
                 x, y = batch
-                metrics = model.train_on_batch(x, y)
+                # print(len(x))
+                # print(len(y))
+                # print(y[0])
+                # print(y[0].shape)
+                #
+                # print(y.shape)
+
+                class_weight = {dataprep2.NONE_LABEL: 1.0,
+                                dataprep2.TITLE_LABEL: 100.0,
+                                dataprep2.AUTHOR_LABEL: 100.0,
+                                dataprep2.BIBTITLE_LABEL: 20.0,
+                                dataprep2.BIBAUTHOR_LABEL: 20.0,
+                                dataprep2.BIBVENUE_LABEL: 20.0,
+                                dataprep2.BIBYEAR_LABEL: 30.0}
+                sample_weight = np.zeros((y.shape[0], y.shape[1]))
+                for i in range(0, y.shape[0]):
+                    for j in range(0, y.shape[1]):
+                        index = np.argmax(y[i][j])
+                        if y[i][j][index] != 1.0:
+                            sample_weight[i][j] = 0.0
+                        else:
+                            sample_weight[i][j] = class_weight[index]
+
+
+                metrics = model.train_on_batch(x, y, sample_weight = sample_weight)
 
                 trained_batches += 1
                 if trained_batches >= training_batches:
@@ -1116,7 +1171,7 @@ def train(
 
                     # check if this one is better than the last one
                     combined_scores = get_combined_scores()
-                    if True: # combined_scores[-1] == max(combined_scores):
+                    if combined_scores[-1] == max(combined_scores):
                         logging.info(
                            "High score (%.3f)! Saving model to %s",
                            max(combined_scores),

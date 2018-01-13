@@ -363,6 +363,7 @@ UNLABELED_TOKENS_VERSION = "bibauth"
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
 POTENTIAL_LABELS = [None, "title", "author", "bibtitle", "bibauthor", "bibvenue", "bibyear"]
+# POTENTIAL_LABELS = [None, "title", "author"]
 NONE_LABEL = 0
 TITLE_LABEL = POTENTIAL_LABELS.index("title")
 AUTHOR_LABEL = POTENTIAL_LABELS.index("author")
@@ -370,6 +371,13 @@ BIBTITLE_LABEL = POTENTIAL_LABELS.index("bibtitle")
 BIBAUTHOR_LABEL = POTENTIAL_LABELS.index("bibauthor")
 BIBVENUE_LABEL = POTENTIAL_LABELS.index("bibvenue")
 BIBYEAR_LABEL = POTENTIAL_LABELS.index("bibyear")
+
+# TITLE_LABEL = POTENTIAL_LABELS.index("title")
+# AUTHOR_LABEL = POTENTIAL_LABELS.index("author")
+# BIBTITLE_LABEL = 0
+# BIBAUTHOR_LABEL = 0
+# BIBVENUE_LABEL = 0
+# BIBYEAR_LABEL = 0
 
 MAX_DOCS_PER_BUCKET = 6100
 MAX_PAGE_COUNT = 50
@@ -1584,11 +1592,11 @@ def documents(
     document_set:DocumentSet = DocumentSet.TRAIN
 ):
     if document_set is DocumentSet.TEST:
-        buckets = range(0xf0, 0x100)
+        buckets = range(0x0b, 0x0c)
     elif document_set is DocumentSet.VALIDATE:
-        buckets = range(0xe0, 0xf0)
+        buckets = range(0x0a, 0x0b)
     else:
-        buckets = range(0x00, 0xe0)
+        buckets = range(0x00, 0x0a)
     buckets = ["%02x" % x for x in buckets]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
