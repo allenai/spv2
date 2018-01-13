@@ -358,7 +358,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄
 #
 
-UNLABELED_TOKENS_VERSION = "bibauth"
+UNLABELED_TOKENS_VERSION = "tokens5"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -531,7 +531,7 @@ def unlabeled_tokens_file(bucket_path: str):
 
     temp_unlabeled_tokens_path = unlabeled_tokens_path + ".%d.temp" % os.getpid()
     make_unlabeled_tokens_file(
-        os.path.join(bucket_path, "tokens3.json.bz2"),
+        os.path.join(bucket_path, "tokens5.json.bz2"),
         temp_unlabeled_tokens_path)
     os.rename(temp_unlabeled_tokens_path, unlabeled_tokens_path)
     return h5py.File(unlabeled_tokens_path, "r")
@@ -541,7 +541,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "bibauth"
+LABELED_TOKENS_VERSION = "tokens5"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -613,7 +613,7 @@ def labeled_tokens_file(bucket_path: str):
                 logging.info("Labeling %s", doc_id)
 
                 nxml_path = re.sub("\\.pdf$", ".nxml", doc_id)
-                nxml_path = os.path.join(bucket_path, "docs", nxml_path)
+                nxml_path = os.path.join(bucket_path, "..", nxml_path)
                 try:
                     with open(nxml_path) as nxml_file:
                         nxml = ET.parse(nxml_file).getroot()
@@ -1198,7 +1198,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "bibauth"
+FEATURIZED_TOKENS_VERSION = "tokens5"
 
 def make_featurized_tokens_file(
     output_file_name: str,
@@ -1589,7 +1589,8 @@ def tokenstats_for_pmc_dir(pmc_dir: str) -> TokenStatistics:
 def documents(
     pmc_dir: str,
     model_settings: settings.ModelSettings,
-    document_set:DocumentSet = DocumentSet.TRAIN
+    document_set: DocumentSet = DocumentSet.TRAIN,
+    bucket_count: typing.Optional[int] = None
 ):
     if document_set is DocumentSet.TEST:
         buckets = range(0x0b, 0x0c)
@@ -1598,6 +1599,8 @@ def documents(
     else:
         buckets = range(0x00, 0x0a)
     buckets = ["%02x" % x for x in buckets]
+    if bucket_count is not None:
+        buckets = buckets[:bucket_count]
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)

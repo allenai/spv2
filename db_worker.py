@@ -250,8 +250,8 @@ def _sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
 def main():
     import tempfile
     import argparse
-    import http.client
     import h5py
+    import datadog
 
     import settings
     import dataprep2
@@ -260,7 +260,7 @@ def main():
         import manhole
         manhole.install()
 
-    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.INFO)
 
     default_password = os.environ.get("SPV2_PASSWORD")
     default_root_password = os.environ.get("SPV2_ROOT_PASSWORD")
@@ -334,6 +334,15 @@ def main():
         root_password = args.root_password
     )
 
+    # start datadog
+    datadog.initialize(api_key=os.environ.get("DATADOG_API_KEY"))
+    stats = datadog.ThreadStats()
+    stats.start()
+    datadog_prefix = args.host.split(".")[0]
+    if datadog_prefix.startswith("spv2-"):
+        datadog_prefix = datadog_prefix[5:]
+    datadog_prefix = "spv2.%s." % datadog_prefix
+
     logging.info("Loading model settings ...")
     model_settings = settings.default_model_settings
 
@@ -376,8 +385,10 @@ def main():
                                 if not chunk:
                                     break
                                 f.write(chunk)
+                            stats.increment(datadog_prefix + "dataprep.success")
                             break
                         else:
+                            stats.increment(datadog_prefix + "dataprep.failure")
                             if attempts_left > 0:
                                 logging.error(
                                     "Error %d from dataprep server for paper id %s. %d attempts left.",
@@ -385,6 +396,7 @@ def main():
                                     paper_id,
                                     attempts_left)
                             else:
+                                stats.increment(datadog_prefix + "dataprep.gave_up")
                                 logging.error(
                                     "Error %d from dataprep server for paper id %s. Giving up.",
                                     response.status,
@@ -399,6 +411,7 @@ def main():
                                 json.dump(error, f)
                                 break
                 except Exception as e:
+                    stats.increment(datadog_prefix + "dataprep.failure")
                     if attempts_left > 0:
                         logging.error(
                             "Error %r from dataprep server for paper id %s. %d attempts left.",
@@ -406,6 +419,7 @@ def main():
                             paper_id,
                             attempts_left)
                     else:
+                        stats.increment(datadog_prefix + "dataprep.gave_up")
                         logging.error(
                             "Error %r from dataprep server for paper id %s. Giving up.",
                             e,
@@ -440,6 +454,7 @@ def main():
                 return
             time.sleep(20)
             continue
+        stats.increment(datadog_prefix + "attempts", len(paper_ids))
 
         with tempfile.TemporaryDirectory(prefix="SPv2DBWorker-") as temp_dir:
             # make JSON out of the papers
@@ -451,6 +466,7 @@ def main():
                 async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
+            stats.timing(datadog_prefix + "get_json", getting_json_time)
 
             # pick out errors and write them to the DB
             paper_id_to_error = {}
@@ -468,6 +484,7 @@ def main():
             if len(paper_id_to_error) > len(paper_ids) / 2:
                 raise ValueError("More than half of the batch failed to preprocess. Something is afoot. We're giving up.")
             todo_list.post_errors(model_version, paper_id_to_error)
+            stats.increment(datadog_prefix + "errors", len(paper_id_to_error))
             logging.info("Wrote %d errors to database", len(paper_id_to_error))
 
             # make unlabeled tokens file
@@ -481,6 +498,7 @@ def main():
             os.remove(json_file_name)
             making_unlabeled_tokens_time = time.time() - making_unlabeled_tokens_time
             logging.info("Made unlabeled tokens in %.2f seconds", making_unlabeled_tokens_time)
+            stats.timing(datadog_prefix + "make_unlabeled", making_unlabeled_tokens_time)
 
             # make featurized tokens file
             logging.info("Making featurized tokens ...")
@@ -499,6 +517,7 @@ def main():
                 # to it.
             making_featurized_tokens_time = time.time() - making_featurized_tokens_time
             logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
+            stats.timing(datadog_prefix + "make_featurized", making_featurized_tokens_time)
 
             logging.info("Making and sending results ...")
             make_and_send_results_time = time.time()
@@ -519,10 +538,12 @@ def main():
                 }
 
                 todo_list.post_results(model_version, results)
+                stats.increment(datadog_prefix + "successes", len(results))
                 total_paper_ids_processed += len(results)
 
             make_and_send_results_time = time.time() - make_and_send_results_time
             logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
+            stats.timing(datadog_prefix + "make_results", make_and_send_results_time)
 
         # report progress
         paper_ids_per_hour = 3600 * total_paper_ids_processed / (time.time() - start_time)

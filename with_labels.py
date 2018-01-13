@@ -17,6 +17,7 @@ from keras.layers import Activation, Dense
 from keras.optimizers import Adam
 from keras_contrib.layers import CRF
 from keras.engine.topology import Layer
+from keras.layers import multiply
 from keras import backend as K
 import tensorflow as tf
 
@@ -187,7 +188,6 @@ def model_with_labels(
     # # model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
     # model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy], sample_weight_mode="temporal")
     return model
-
 
 #
 # Prepare the Data 🐙
@@ -503,7 +503,7 @@ def evaluate_model(
 
     docpage_to_results = {}
     while len(page_pool) > 0:
-        slice = page_pool.get_slice(model_settings.tokens_per_batch)
+        slice = page_pool.get_slice(32 * 1024)  # For evaluation, we always use the biggest batch size we can.
         x, y = batch_from_page_group(model_settings, slice)
         raw_predictions_for_slice = model.predict_on_batch(x)
         raw_labels_for_slice = y
@@ -575,7 +575,7 @@ def evaluate_model(
 
                 indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
 
-                # authors must all come from the same page
+                # bibtitles must all come from the same page
                 labeled_bibtitles_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibtitle)
@@ -584,7 +584,7 @@ def evaluate_model(
 
 
                 indices_labeled_bibauthor = np.where(page_labels == dataprep2.BIBAUTHOR_LABEL)[0]
-                # authors must all come from the same page
+                # bibauthors must all come from the same page
                 labeled_bibauthors_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibauthor)
@@ -1032,7 +1032,7 @@ def train(
     start_weights_filename,
     pmc_dir: str,
     output_filename: str,
-    training_batches: int=144000,
+    training_buckets: typing.Optional[int]=None,
     test_doc_count: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings
 ):
@@ -1208,7 +1208,7 @@ def train(
         output_filename + ".log",
         dataprep2.DocumentSet.VALIDATE
     )
-    scored_results.append((float('inf'), training_batches, final_ev))
+    scored_results.append((float('inf'), trained_batches, final_ev))
 
     print_scored_results()
 
@@ -1219,7 +1219,7 @@ def get_word_set():
     word_set = set()
     path = './glove.840B.300d.vocab'
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="UTF-8") as f:
             for line in f:
                 word = line.strip()
                 word_set.add(word.lower())
@@ -1292,7 +1292,7 @@ def main():
         help="file containing the GloVe vectors"
     )
     parser.add_argument(
-        "--training-batches", default=144000, type=int, help="number of batches to train on"
+        "--training-buckets", default=None, type=int, help="number of buckets to train on"
     )
     parser.add_argument(
         "--test-doc-count", default=10000, type=int, help="number of documents to test on"
@@ -1317,7 +1317,7 @@ def main():
         args.start_weights,
         args.pmc_dir,
         args.output,
-        args.training_batches,
+        args.training_buckets,
         args.test_doc_count,
         model_settings
     )
