@@ -1593,11 +1593,14 @@ def documents(
     bucket_count: typing.Optional[int] = None
 ):
     if document_set is DocumentSet.TEST:
-        buckets = range(0x0b, 0x0c)
+        buckets = range(0xf0, 0x100)
+        # buckets = range(0x0b, 0x0c)
     elif document_set is DocumentSet.VALIDATE:
-        buckets = range(0x0a, 0x0b)
+        buckets = range(0xe0, 0xf0)
+        # buckets = range(0x0a, 0x0b)
     else:
-        buckets = range(0x00, 0x0a)
+        buckets = range(0x00, 0xe0)
+        # buckets = range(0x00, 0x0a)
     buckets = ["%02x" % x for x in buckets]
     if bucket_count is not None:
         buckets = buckets[:bucket_count]
