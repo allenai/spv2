@@ -1140,7 +1140,7 @@ def train(
                     now - batch_start_time,
                     metric_string)
             time_since_last_eval = now - time_at_last_eval
-            if time_since_last_eval > 2 * 60 * 60:
+            if time_since_last_eval > 60 * 60:
                 logging.info(
                     "It's been %.0f seconds since the last eval. Triggering another one.",
                     time_since_last_eval)
@@ -1177,8 +1177,8 @@ def train(
 
                 # check if we've stopped improving
                 best_score = max(combined_scores)
-                if all([score < best_score for score in combined_scores[-10:]]):
-                    logging.info("No improvement for ten hours. Stopping training.")
+                if all([score < best_score for score in combined_scores[-3:]]):
+                    logging.info("No improvement for three hours. Stopping training.")
                     training_buckets = 0 # signal that we're done training
                     break
 
