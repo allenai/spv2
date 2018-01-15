@@ -571,7 +571,7 @@ def train(
     embeddings = dataprep2.CombinedEmbeddings(
         dataprep2.tokenstats_for_pmc_dir(pmc_dir),
         dataprep2.GloveVectors(model_settings.glove_vectors),
-        model_settings.minimum_token_frequency
+        model_settings.embedded_tokens_fraction
     )
     model = model_with_labels(model_settings, embeddings)
     model.summary()
