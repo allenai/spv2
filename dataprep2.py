@@ -135,7 +135,12 @@ class TokenStatistics(object):
             old_count = self.tokens.get(token, 0)
             self.tokens[token] = old_count + new_count
         self.tokens = list(self.tokens.items())
-        self.tokens.sort(key=lambda x: -x[1])
+        self.tokens.sort(key=lambda x: (-x[1], x[0]))
+
+        # print ten least frequent tokens
+        logging.info("Ten least frequent tokens:")
+        for token, count in self.tokens[-10:]:
+            logging.info("    %s", token)
 
         # prepare font sizes and token widths
         self.percentile_function_for_font_size = percentile_function_from_counts(font_sizes)
