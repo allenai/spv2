@@ -243,14 +243,14 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     page_lengths = list(map(page_length_for_doc_page_pair, page_group))
     max_length = max(page_lengths)
 
-    #padded_token_count = max_length * len(page_group)
-    #unpadded_token_count = sum(page_lengths)
-    #waste = float(padded_token_count - unpadded_token_count) / padded_token_count
-    #logging.debug(
-    #    "Batching page group with %d pages, %d tokens, %.2f%% waste",
-    #    len(page_group),
-    #    max_length,
-    #    waste * 100)
+    padded_token_count = max_length * len(page_group)
+    unpadded_token_count = sum(page_lengths)
+    waste = float(padded_token_count - unpadded_token_count) / padded_token_count
+    logging.debug(
+       "Batching page group with %d pages, %d tokens, %.2f%% waste",
+       len(page_group),
+       max_length,
+       waste * 100)
 
     batch_inputs = [[], [], [], []]
     batch_outputs = []
@@ -1063,7 +1063,9 @@ def train(
             print("All scores from this run:")
         else:
             print("All scores after %.0f seconds:" % training_time)
-        print("time\tbatch_count\tauc_none\tauc_titles\tauc_authors\ttitle_p\ttitle_r\tauthor_p\tauthor_r")
+        print("time\tbatch_count\tauc_none\tauc_titles\tauc_authors\tauc_bibtitle\tauc_bibauthor\tauc_bibvenue\t" +
+              "auc_bibyear\ttitle_p\ttitle_r\tauthor_p\tauthor_r\tbibtitle_p\tbibtitle_r\tbibauthor_p\tbibauthor_r" +
+        "\tbibvenue_p\tbibvenue_r\tbibyear_p\tbibyear_r")
         for time_elapsed, batch_count, ev_result in scored_results:
             print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
     def get_combined_scores() -> typing.List[float]:
@@ -1086,110 +1088,100 @@ def train(
         return [combined_score(ev_result) for _, _, ev_result in scored_results]
 
     start_time = None
-    if training_batches > 0:
-        trained_batches = 0
-        while trained_batches < training_batches:
-            logging.info("Starting new epoch. Batches trained so far: {}".format(trained_batches))
-            train_docs = dataprep2.documents(
-                pmc_dir,
-                model_settings,
-                document_set=dataprep2.DocumentSet.TRAIN)
-            training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
-            for batch in dataprep2.threaded_generator(training_data):
-                if trained_batches == 0:
-                    # It takes a while to get here the first time, since things have to be
-                    # loaded from cache, the page pool has to be filled up, and so on, so we
-                    # don't officially start until we get here for the first time.
-                    start_time = time.time()
-                    time_at_last_eval = start_time
+    trained_batches = 0
+    while training_buckets != 0:
+        logging.info("Starting new epoch. Batches trained so far: {}".format(trained_batches))
+        train_docs = dataprep2.documents(
+            pmc_dir,
+            model_settings,
+            document_set=dataprep2.DocumentSet.TRAIN,
+            bucket_count=training_buckets)
+        training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+        for batch in dataprep2.threaded_generator(training_data):
+            if trained_batches == 0:
+                # It takes a while to get here the first time, since things have to be
+                # loaded from cache, the page pool has to be filled up, and so on, so we
+                # don't officially start until we get here for the first time.
+                start_time = time.time()
+                time_at_last_eval = start_time
 
-                batch_start_time = time.time()
-                x, y = batch
-                # print(len(x))
-                # print(len(y))
-                # print(y[0])
-                # print(y[0].shape)
-                #
-                # print(y.shape)
+            batch_start_time = time.time()
+            x, y = batch
+            class_weight = {dataprep2.NONE_LABEL: 2.0,
+                            dataprep2.TITLE_LABEL: 100.0,
+                            dataprep2.AUTHOR_LABEL: 100.0,
+                            dataprep2.BIBTITLE_LABEL: 20.0,
+                            dataprep2.BIBAUTHOR_LABEL: 20.0,
+                            dataprep2.BIBVENUE_LABEL: 20.0,
+                            dataprep2.BIBYEAR_LABEL: 30.0}
+            sample_weight = np.zeros((y.shape[0], y.shape[1]))
+            for i in range(0, y.shape[0]):
+                for j in range(0, y.shape[1]):
+                    index = np.argmax(y[i][j])
+                    if y[i][j][index] != 1.0:
+                        sample_weight[i][j] = 0.0
+                    else:
+                        sample_weight[i][j] = class_weight[index]
 
-                class_weight = {dataprep2.NONE_LABEL: 1.0,
-                                dataprep2.TITLE_LABEL: 100.0,
-                                dataprep2.AUTHOR_LABEL: 100.0,
-                                dataprep2.BIBTITLE_LABEL: 20.0,
-                                dataprep2.BIBAUTHOR_LABEL: 20.0,
-                                dataprep2.BIBVENUE_LABEL: 20.0,
-                                dataprep2.BIBYEAR_LABEL: 30.0}
-                sample_weight = np.zeros((y.shape[0], y.shape[1]))
-                for i in range(0, y.shape[0]):
-                    for j in range(0, y.shape[1]):
-                        index = np.argmax(y[i][j])
-                        if y[i][j][index] != 1.0:
-                            sample_weight[i][j] = 0.0
-                        else:
-                            sample_weight[i][j] = class_weight[index]
+            metrics = model.train_on_batch(x, y, sample_weight=sample_weight)
 
+            trained_batches += 1
 
-                metrics = model.train_on_batch(x, y, sample_weight = sample_weight)
+            now = time.time()
+            if trained_batches % 1 == 0:
+                metric_string = ", ".join(
+                    ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
+                )
+                logging.info(
+                    "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
+                    trained_batches,
+                    now - start_time,
+                    (now - start_time) / trained_batches,
+                    now - batch_start_time,
+                    metric_string)
+            time_since_last_eval = now - time_at_last_eval
+            if time_since_last_eval > 2 * 60 * 60:
+                logging.info(
+                    "It's been %.0f seconds since the last eval. Triggering another one.",
+                    time_since_last_eval)
 
-                trained_batches += 1
-                if trained_batches >= training_batches:
-                    logging.info("Training done!")
+                eval_start_time = time.time()
+
+                logging.info("Writing temporary model to %s", output_filename)
+                model.save(output_filename, overwrite=True)
+                ev_result = evaluate_model(
+                    model,
+                    model_settings,
+                    pmc_dir,
+                    output_filename + ".log",
+                    dataprep2.DocumentSet.TEST,
+                    test_doc_count
+                )
+                scored_results.append((now - start_time, trained_batches, ev_result))
+                print_scored_results(now - start_time)
+
+                # check if this one is better than the last one
+                combined_scores = get_combined_scores()
+                if combined_scores[-1] == max(combined_scores):
+                    logging.info(
+                       "High score (%.3f)! Saving model to %s",
+                       max(combined_scores),
+                       best_model_filename)
+                    model.save(best_model_filename, overwrite=True)
+
+                eval_end_time = time.time()
+                # adjust start time to ignore the time we spent evaluating
+                start_time += eval_end_time - eval_start_time
+
+                time_at_last_eval = eval_end_time
+
+                # check if we've stopped improving
+                best_score = max(combined_scores)
+                if all([score < best_score for score in combined_scores[-10:]]):
+                    logging.info("No improvement for ten hours. Stopping training.")
+                    training_buckets = 0 # signal that we're done training
                     break
 
-                now = time.time()
-                if trained_batches % 1 == 0:
-                    metric_string = ", ".join(
-                        ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
-                    )
-                    logging.info(
-                        "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
-                        trained_batches,
-                        now - start_time,
-                        (now - start_time) / trained_batches,
-                        now - batch_start_time,
-                        metric_string)
-                time_since_last_eval = now - time_at_last_eval
-                if time_since_last_eval > 60 * 60:
-                    logging.info(
-                        "It's been %.0f seconds since the last eval. Triggering another one.",
-                        time_since_last_eval)
-
-                    eval_start_time = time.time()
-
-                    logging.info("Writing temporary model to %s", output_filename)
-                    model.save(output_filename, overwrite=True)
-                    ev_result = evaluate_model(
-                        model,
-                        model_settings,
-                        pmc_dir,
-                        output_filename + ".log",
-                        dataprep2.DocumentSet.TEST,
-                        test_doc_count
-                    )
-                    scored_results.append((now - start_time, trained_batches, ev_result))
-                    print_scored_results(now - start_time)
-
-                    # check if this one is better than the last one
-                    combined_scores = get_combined_scores()
-                    if combined_scores[-1] == max(combined_scores):
-                        logging.info(
-                           "High score (%.3f)! Saving model to %s",
-                           max(combined_scores),
-                           best_model_filename)
-                        model.save(best_model_filename, overwrite=True)
-
-                    eval_end_time = time.time()
-                    # adjust start time to ignore the time we spent evaluating
-                    start_time += eval_end_time - eval_start_time
-
-                    time_at_last_eval = eval_end_time
-
-                    # check if we've stopped improving
-                    best_score = max(combined_scores)
-                    if all([score < best_score for score in combined_scores[-3:]]):
-                        logging.info("No improvement for three hours. Stopping training.")
-                        trained_batches = training_batches  # Signaling to the outer loop that we're done.
-                        break
 
         logging.info("Writing temporary final model to %s", output_filename)
         model.save(output_filename, overwrite=True)
