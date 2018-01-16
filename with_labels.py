@@ -503,7 +503,7 @@ def evaluate_model(
 
     docpage_to_results = {}
     while len(page_pool) > 0:
-        slice = page_pool.get_slice(32 * 1024)  # For evaluation, we always use the biggest batch size we can.
+        slice = page_pool.get_slice(128 * 1024)  # For evaluation, we always use the biggest batch size we can.
         x, y = batch_from_page_group(model_settings, slice)
         raw_predictions_for_slice = model.predict_on_batch(x)
         raw_labels_for_slice = y
@@ -540,7 +540,6 @@ def evaluate_model(
             labeled_bibvenues = []
             labeled_bibyears = []
 
-
             predicted_title = np.empty(shape=(0,), dtype=np.unicode)
             predicted_authors = []
             predicted_bibtitles = []
@@ -571,8 +570,6 @@ def evaluate_model(
                 if len(labeled_authors_on_page) > len(labeled_authors):
                     labeled_authors = labeled_authors_on_page
 
-
-
                 indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
 
                 # bibtitles must all come from the same page
@@ -582,7 +579,6 @@ def evaluate_model(
                 ]
                 labeled_bibtitles += labeled_bibtitles_on_page
 
-
                 indices_labeled_bibauthor = np.where(page_labels == dataprep2.BIBAUTHOR_LABEL)[0]
                 # bibauthors must all come from the same page
                 labeled_bibauthors_on_page = [
@@ -590,7 +586,6 @@ def evaluate_model(
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibauthor)
                 ]
                 labeled_bibauthors += labeled_bibauthors_on_page
-
 
                 indices_labeled_bibvenue = np.where(page_labels == dataprep2.BIBVENUE_LABEL)[0]
                 # authors must all come from the same page
@@ -600,7 +595,6 @@ def evaluate_model(
                 ]
                 labeled_bibvenues += labeled_bibvenues_on_page
 
-
                 indices_labeled_bibyear = np.where(page_labels == dataprep2.BIBYEAR_LABEL)[0]
                 # authors must all come from the same page
                 labeled_bibyears_on_page = [
@@ -608,8 +602,6 @@ def evaluate_model(
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibyear)
                 ]
                 labeled_bibyears += labeled_bibyears_on_page
-
-
 
                 # find predicted titles and authors
                 page_predictions = page_raw_predictions.argmax(axis=1)
@@ -649,10 +641,7 @@ def evaluate_model(
                 ]
                 predicted_bibtitles += predicted_bibtitles_on_page
 
-
-
                 indices_predicted_bibauthor = np.where(page_predictions == dataprep2.BIBAUTHOR_LABEL)[0]
-
 
                 # bib authors must all come from the same page
                 predicted_bibauthors_on_page = [
@@ -660,7 +649,6 @@ def evaluate_model(
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibauthor)
                 ]
                 predicted_bibauthors += predicted_bibauthors_on_page
-
 
                 indices_predicted_bibvenue = np.where(page_predictions == dataprep2.BIBVENUE_LABEL)[0]
 
@@ -671,10 +659,7 @@ def evaluate_model(
                 ]
                 predicted_bibvenues += predicted_bibvenues_on_page
 
-
-
                 indices_predicted_bibyear = np.where(page_predictions == dataprep2.BIBYEAR_LABEL)[0]
-
 
                 predicted_bibyears_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -887,7 +872,6 @@ def evaluate_model(
             if len(gold_bibauthors) > 0:
                 bibauthor_prs.append((precision, recall))
 
-
             gold_bibvenues = doc.gold_bib_venues[:]
             for gold_bibvenue in gold_bibvenues:
                 log_file.write("Gold bib venue:      %s\n" % gold_bibvenue)
@@ -905,7 +889,6 @@ def evaluate_model(
             else:
                 for predicted_bibvenue in predicted_bibvenues:
                     log_file.write("Predicted bib venue: %s\n" % predicted_bibvenue)
-
 
             gold_bibvenues_set_array = []
             for e in gold_bibvenues:
@@ -989,9 +972,6 @@ def evaluate_model(
 
             if len(gold_bibyears) > 0:
                 bibyear_prs.append((precision, recall))
-
-
-
 
     # Calculate P/R and AUC
     y_score = np.concatenate([raw_prediction for raw_prediction, _ in docpage_to_results.values()])
@@ -1089,13 +1069,16 @@ def train(
 
     start_time = None
     trained_batches = 0
-    while training_buckets != 0:
-        logging.info("Starting new epoch. Batches trained so far: {}".format(trained_batches))
-        train_docs = dataprep2.documents(
+    if training_buckets != 0:
+        logging.info("Starting training")
+        def forever(g: typing.Generator) -> typing.Generator:
+            while True:
+                yield from g
+        train_docs = forever(dataprep2.documents(
             pmc_dir,
             model_settings,
             document_set=dataprep2.DocumentSet.TRAIN,
-            bucket_count=training_buckets)
+            bucket_count=training_buckets))
         training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
         for batch in dataprep2.threaded_generator(training_data):
             if trained_batches == 0:
@@ -1179,12 +1162,7 @@ def train(
                 best_score = max(combined_scores)
                 if all([score < best_score for score in combined_scores[-3:]]):
                     logging.info("No improvement for three hours. Stopping training.")
-                    training_buckets = 0 # signal that we're done training
                     break
-
-
-        logging.info("Writing temporary final model to %s", output_filename)
-        model.save(output_filename, overwrite=True)
 
     if len(scored_results) > 0:
         model.load_weights(best_model_filename)
