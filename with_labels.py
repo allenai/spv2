@@ -1107,12 +1107,12 @@ def train(
 
             batch_start_time = time.time()
             x, y = batch
-            class_weight = {dataprep2.NONE_LABEL: 2.0,
+            class_weight = {dataprep2.NONE_LABEL: 1.0,
                             dataprep2.TITLE_LABEL: 100.0,
                             dataprep2.AUTHOR_LABEL: 100.0,
-                            dataprep2.BIBTITLE_LABEL: 20.0,
-                            dataprep2.BIBAUTHOR_LABEL: 20.0,
-                            dataprep2.BIBVENUE_LABEL: 20.0,
+                            dataprep2.BIBTITLE_LABEL: 15.0,
+                            dataprep2.BIBAUTHOR_LABEL: 15.0,
+                            dataprep2.BIBVENUE_LABEL: 15.0,
                             dataprep2.BIBYEAR_LABEL: 30.0}
             sample_weight = np.zeros((y.shape[0], y.shape[1]))
             for i in range(0, y.shape[0]):
