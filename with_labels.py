@@ -1160,8 +1160,8 @@ def train(
 
                 # check if we've stopped improving
                 best_score = max(combined_scores)
-                if all([score < best_score for score in combined_scores[-3:]]):
-                    logging.info("No improvement for three hours. Stopping training.")
+                if all([score < best_score for score in combined_scores[-5:]]):
+                    logging.info("No improvement for five hours. Stopping training.")
                     break
 
     if len(scored_results) > 0:
