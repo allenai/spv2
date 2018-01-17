@@ -503,7 +503,7 @@ def evaluate_model(
 
     docpage_to_results = {}
     while len(page_pool) > 0:
-        slice = page_pool.get_slice(128 * 1024)  # For evaluation, we always use the biggest batch size we can.
+        slice = page_pool.get_slice(32 * 1024)  # For evaluation, we always use the biggest batch size we can.
         x, y = batch_from_page_group(model_settings, slice)
         raw_predictions_for_slice = model.predict_on_batch(x)
         raw_labels_for_slice = y
@@ -1093,10 +1093,10 @@ def train(
             class_weight = {dataprep2.NONE_LABEL: 1.0,
                             dataprep2.TITLE_LABEL: 100.0,
                             dataprep2.AUTHOR_LABEL: 100.0,
-                            dataprep2.BIBTITLE_LABEL: 15.0,
-                            dataprep2.BIBAUTHOR_LABEL: 15.0,
+                            dataprep2.BIBTITLE_LABEL: 5.0,
+                            dataprep2.BIBAUTHOR_LABEL: 5.0,
                             dataprep2.BIBVENUE_LABEL: 15.0,
-                            dataprep2.BIBYEAR_LABEL: 30.0}
+                            dataprep2.BIBYEAR_LABEL: 50.0}
             sample_weight = np.zeros((y.shape[0], y.shape[1]))
             for i in range(0, y.shape[0]):
                 for j in range(0, y.shape[1]):

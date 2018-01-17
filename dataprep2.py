@@ -1599,7 +1599,7 @@ def documents(
         # buckets = range(0x0a, 0x0b)
         buckets = range(0xe0, 0xf0)
     else:
-        buckets = range(0x00, 0xe0)
+        buckets = range(0x00, 0x0a)
     buckets = ["%02x" % x for x in buckets]
     if bucket_count is not None:
         buckets = buckets[:bucket_count]
