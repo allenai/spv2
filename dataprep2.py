@@ -929,7 +929,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "15tkst"
+FEATURIZED_TOKENS_VERSION = "16tord"
 
 def make_featurized_tokens_file(
     output_file_name: str,
