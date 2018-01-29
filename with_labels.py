@@ -484,7 +484,19 @@ def evaluate_model(
     word_set = get_word_set()
 
     def test_docs() -> typing.Generator[dataprep2.Document, None, None]:
-        docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
+        # docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
+
+        docs = dataprep2.documents(
+            pmc_dir,
+            model_settings,
+            doc_set,
+            training_buckets=training_buckets,
+            validation_buckets=validation_buckets,
+            testing_buckets=testing_buckets,
+            training_bucket_start=training_bucket_start,
+            validation_bucket_start=validation_bucket_start,
+            testing_bucket_start=testing_bucket_start)
+
         if test_doc_count is not None:
             docs = list(itertools.islice(docs, 0, test_doc_count))
 
@@ -1080,12 +1092,26 @@ def train(
 
     start_time = None
     trained_batches = 0
-    if training_buckets != 0:
-        logging.info("Starting training")
-        def forever(g: typing.Generator) -> typing.Generator:
-            while True:
-                yield from g
-        train_docs = forever(dataprep2.documents(
+    # if training_buckets != 0:
+    #     logging.info("Starting training")
+    #     def forever(g: typing.Generator) -> typing.Generator:
+    #         while True:
+    #             yield from g
+    #     train_docs = forever(dataprep2.documents(
+    #         pmc_dir,
+    #         model_settings,
+    #         document_set=dataprep2.DocumentSet.TRAIN,
+    #         training_buckets=training_buckets,
+    #         validation_buckets=validation_buckets,
+    #         testing_buckets=testing_buckets,
+    #         training_bucket_start=training_bucket_start,
+    #         validation_bucket_start=validation_bucket_start,
+    #         testing_bucket_start=testing_bucket_start))
+    #     training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+    #     count = 0
+    while training_buckets != 0:
+        logging.info("Starting new epoch. Batches trained so far: {}".format(trained_batches))
+        train_docs = dataprep2.documents(
             pmc_dir,
             model_settings,
             document_set=dataprep2.DocumentSet.TRAIN,
@@ -1094,10 +1120,13 @@ def train(
             testing_buckets=testing_buckets,
             training_bucket_start=training_bucket_start,
             validation_bucket_start=validation_bucket_start,
-            testing_bucket_start=testing_bucket_start))
+            testing_bucket_start=testing_bucket_start)
         training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+
         count = 0
         for batch in dataprep2.threaded_generator(training_data):
+            logging.info("count {}".format(count))
+            count += 1
             if trained_batches == 0:
                 # It takes a while to get here the first time, since things have to be
                 # loaded from cache, the page pool has to be filled up, and so on, so we
@@ -1186,6 +1215,7 @@ def train(
                 if all([score < best_score for score in combined_scores[-3:]]):
                     logging.info("No improvement for three hours. Stopping training.")
                     break
+
 
     if len(scored_results) > 0:
         model.load_weights(best_model_filename)

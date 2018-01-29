@@ -1601,8 +1601,8 @@ def documents(
     if document_set is DocumentSet.TEST:
         # buckets = range(0x0b, 0x0c)
         buckets = range(0xf0, 0x100)
-        if (not training_buckets is None) and (not training_bucket_start is None):
-            buckets = range(training_bucket_start, training_bucket_start+training_buckets)
+        if (not testing_buckets is None) and (not testing_bucket_start is None):
+            buckets = range(testing_bucket_start, testing_bucket_start+testing_buckets)
     elif document_set is DocumentSet.VALIDATE:
         # buckets = range(0x0a, 0x0b)
         buckets = range(0xe0, 0xf0)
@@ -1610,32 +1610,12 @@ def documents(
             buckets = range(validation_bucket_start, validation_bucket_start+validation_buckets)
     else:
         buckets = range(0x00, 0xe0)
-        if (not testing_buckets is None) and (not testing_bucket_start is None):
-            buckets = range(testing_bucket_start, testing_bucket_start+testing_buckets)
+        if (not training_buckets is None) and (not training_bucket_start is None):
+            buckets = range(training_bucket_start, training_bucket_start+training_buckets)
+
 
     buckets = ["%02x" % x for x in buckets]
 
-
-    if document_set is DocumentSet.TEST:
-        print('test')
-        print(buckets)
-        print(training_buckets)
-        print(training_bucket_start)
-        print(validation_buckets)
-        print(validation_bucket_start)
-        print(testing_buckets)
-        print(testing_bucket_start)
-        assert(True == False)
-    elif document_set is DocumentSet.VALIDATE:
-        print('validate')
-        print(buckets)
-        print(training_buckets)
-        print(training_bucket_start)
-        print(validation_buckets)
-        print(validation_bucket_start)
-        print(testing_buckets)
-        print(testing_bucket_start)
-        assert(True == False)
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
