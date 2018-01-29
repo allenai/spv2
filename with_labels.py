@@ -469,7 +469,13 @@ def evaluate_model(
     pmc_dir: str,
     log_filename: str,
     doc_set: dataprep2.DocumentSet = dataprep2.DocumentSet.TEST,
-    test_doc_count: int = None
+    test_doc_count: int = None,
+    training_buckets: typing.Optional[int]=None,
+    validation_buckets: typing.Optional[int]=None,
+    testing_buckets: typing.Optional[int]=None,
+    training_bucket_start: typing.Optional[int]=None,
+    validation_bucket_start: typing.Optional[int]=None,
+    testing_bucket_start: typing.Optional[int]=None
 ):
     #
     # Load and prepare documents
@@ -1013,6 +1019,11 @@ def train(
     pmc_dir: str,
     output_filename: str,
     training_buckets: typing.Optional[int]=None,
+    validation_buckets: typing.Optional[int]=None,
+    testing_buckets: typing.Optional[int]=None,
+    training_bucket_start: typing.Optional[int]=None,
+    validation_bucket_start: typing.Optional[int]=None,
+    testing_bucket_start: typing.Optional[int]=None,
     test_doc_count: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings
 ):
@@ -1078,8 +1089,14 @@ def train(
             pmc_dir,
             model_settings,
             document_set=dataprep2.DocumentSet.TRAIN,
-            bucket_count=training_buckets))
+            training_buckets=training_buckets,
+            validation_buckets=validation_buckets,
+            testing_buckets=testing_buckets,
+            training_bucket_start=training_bucket_start,
+            validation_bucket_start=validation_bucket_start,
+            testing_bucket_start=testing_bucket_start))
         training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+        count = 0
         for batch in dataprep2.threaded_generator(training_data):
             if trained_batches == 0:
                 # It takes a while to get here the first time, since things have to be
@@ -1123,7 +1140,7 @@ def train(
                     now - batch_start_time,
                     metric_string)
             time_since_last_eval = now - time_at_last_eval
-            if time_since_last_eval > 60 * 60:
+            if time_since_last_eval > 60 * 1:
                 logging.info(
                     "It's been %.0f seconds since the last eval. Triggering another one.",
                     time_since_last_eval)
@@ -1138,7 +1155,13 @@ def train(
                     pmc_dir,
                     output_filename + ".log",
                     dataprep2.DocumentSet.TEST,
-                    test_doc_count
+                    test_doc_count,
+                    training_buckets=training_buckets,
+                    validation_buckets=validation_buckets,
+                    testing_buckets=testing_buckets,
+                    training_bucket_start=training_bucket_start,
+                    validation_bucket_start=validation_bucket_start,
+                    testing_bucket_start=testing_bucket_start
                 )
                 scored_results.append((now - start_time, trained_batches, ev_result))
                 print_scored_results(now - start_time)
@@ -1160,8 +1183,8 @@ def train(
 
                 # check if we've stopped improving
                 best_score = max(combined_scores)
-                if all([score < best_score for score in combined_scores[-5:]]):
-                    logging.info("No improvement for five hours. Stopping training.")
+                if all([score < best_score for score in combined_scores[-3:]]):
+                    logging.info("No improvement for three hours. Stopping training.")
                     break
 
     if len(scored_results) > 0:
@@ -1176,7 +1199,13 @@ def train(
         model_settings,
         pmc_dir,
         output_filename + ".log",
-        dataprep2.DocumentSet.VALIDATE
+        dataprep2.DocumentSet.VALIDATE,
+        training_buckets=training_buckets,
+        validation_buckets=validation_buckets,
+        testing_buckets=testing_buckets,
+        training_bucket_start=training_bucket_start,
+        validation_bucket_start=validation_bucket_start,
+        testing_bucket_start=testing_bucket_start
     )
     scored_results.append((float('inf'), trained_batches, final_ev))
 
@@ -1213,6 +1242,8 @@ def remove_hyphens(predicted_bibtitles, word_set):
 
     return predicted_bibtitles
 
+def auto_int(x):
+    return int(x, 0)
 
 #
 # Main program 🎛
@@ -1265,6 +1296,21 @@ def main():
         "--training-buckets", default=None, type=int, help="number of buckets to train on"
     )
     parser.add_argument(
+        "--validation-buckets", default=None, type=int, help="number of buckets to validate on"
+    )
+    parser.add_argument(
+        "--testing-buckets", default=None, type=int, help="number of buckets to test on"
+    )
+    parser.add_argument(
+        "--training-bucket-start", default=None, type=auto_int, help="the first bucket to train on"
+    )
+    parser.add_argument(
+        "--validation-bucket-start", default=None, type=auto_int, help="the first bucket to validate on"
+    )
+    parser.add_argument(
+        "--testing-bucket-start", default=None, type=auto_int, help="the first bucket to test on"
+    )
+    parser.add_argument(
         "--test-doc-count", default=10000, type=int, help="number of documents to test on"
     )
 
@@ -1288,6 +1334,11 @@ def main():
         args.pmc_dir,
         args.output,
         args.training_buckets,
+        args.validation_buckets,
+        args.testing_buckets,
+        args.training_bucket_start,
+        args.validation_bucket_start,
+        args.testing_bucket_start,
         args.test_doc_count,
         model_settings
     )
