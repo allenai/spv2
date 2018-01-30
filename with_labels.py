@@ -381,7 +381,7 @@ def evaluate_model(
 
     docpage_to_results = {}
     while len(page_pool) > 0:
-        slice = page_pool.get_slice(model_settings.tokens_per_batch)
+        slice = page_pool.get_slice(128 * 1024)  # For evaluation, we always use the biggest batch size we can.
         x, y = batch_from_page_group(model_settings, slice)
         raw_predictions_for_slice = model.predict_on_batch(x)
         raw_labels_for_slice = y
@@ -571,7 +571,7 @@ def train(
     embeddings = dataprep2.CombinedEmbeddings(
         dataprep2.tokenstats_for_pmc_dir(pmc_dir),
         dataprep2.GloveVectors(model_settings.glove_vectors),
-        model_settings.minimum_token_frequency
+        model_settings.embedded_tokens_fraction
     )
     model = model_with_labels(model_settings, embeddings)
     model.summary()

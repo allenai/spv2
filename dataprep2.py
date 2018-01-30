@@ -113,6 +113,7 @@ class TokenStatistics(object):
     def __init__(self, filename):
         self.filename = filename
         self.tokens = None
+        self.token_count = None
         self.cum_font_sizes = None
         self.cum_space_widths = None
         # We load all this stuff lazily.
@@ -127,12 +128,19 @@ class TokenStatistics(object):
 
         # prepare normalized tokens
         self.tokens = {}
+        self.token_count = 0
         for token, new_count in texts.items():
+            self.token_count += new_count
             token = normalize(token)
             old_count = self.tokens.get(token, 0)
             self.tokens[token] = old_count + new_count
         self.tokens = list(self.tokens.items())
-        self.tokens.sort(key=lambda x: -x[1])
+        self.tokens.sort(key=lambda x: (-x[1], x[0]))
+
+        # print ten least frequent tokens
+        logging.info("Ten least frequent tokens:")
+        for token, count in self.tokens[-10:]:
+            logging.info("    %s", token)
 
         # prepare font sizes and token widths
         self.percentile_function_for_font_size = percentile_function_from_counts(font_sizes)
@@ -169,6 +177,16 @@ class TokenStatistics(object):
             if count < min_freq:
                 break
             yield token
+
+    def get_tokens_up_to_fraction(self, fraction: float) -> typing.Generator[str, None, None]:
+        self._ensure_loaded()
+        # We can do this because self.tokens is sorted.
+        count_yielded = 0
+        for token, count in self.tokens:
+            yield token
+            count_yielded += count
+            if count_yielded / self.token_count >= fraction:
+                break
 
 class VisionOutput(object):
     BoundingBox = collections.namedtuple("BoundingBox", [
@@ -292,11 +310,11 @@ class CombinedEmbeddings(object):
         self,
         tokenstats: TokenStatistics,
         glove: GloveVectors,
-        min_token_freq: int
+        embedded_tokens_fraction: int
     ):
         self.tokenstats = tokenstats
         self.glove = glove
-        self.min_token_freq = min_token_freq
+        self.embedded_tokens_fraction = embedded_tokens_fraction
 
         self.token2index = None
         self.matrix = None
@@ -309,7 +327,7 @@ class CombinedEmbeddings(object):
         self.token2index = {
             token: index + 2        # index 0 is the keras masking value, index 1 is the OOV token
             for index, token
-            in enumerate(self.tokenstats.get_tokens_with_minimum_frequency(self.min_token_freq))
+            in enumerate(self.tokenstats.get_tokens_up_to_fraction(self.embedded_tokens_fraction))
         }
         self.token2index[self.OOV] = self.OOV_INDEX
         # check whether there are duplicate indices
@@ -334,6 +352,16 @@ class CombinedEmbeddings(object):
             inv_count + oov_count,
             inv_count,
             (100 * inv_count) / (inv_count + oov_count))
+
+        # Print the 30 most frequent tokens that could not be found in glove
+        logging.info("Top tokens not found in Glove:")
+        tokens_printed = 0
+        for token in self.tokenstats.get_tokens_with_minimum_frequency(0):
+            if token not in self.token2index:
+                logging.info("    %s", token)
+                tokens_printed += 1
+                if tokens_printed >= 30:
+                    break
 
     def index_for_token(self, token: str) -> int:
         self._ensure_loaded()
@@ -454,10 +482,7 @@ def make_unlabeled_tokens_file(
                 page_in_h5["dimensions"] = (width, height)
 
                 # Get the tokens from the page
-                try:
-                    json_tokens = json_page["tokens"]
-                except KeyError:
-                    json_tokens = []
+                json_tokens = json_page.get("tokens", [])
 
                 # Filter out tokens that have NaN in them
                 numeric_fields = ["left", "right", "top", "bottom", "fontSize", "fontSpaceWidth"]
@@ -901,7 +926,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "15tkst"
+FEATURIZED_TOKENS_VERSION = "16tord"
 
 def make_featurized_tokens_file(
     output_file_name: str,
@@ -1116,7 +1141,7 @@ def featurized_tokens_file(
     featurizing_hash_components = (
         model_settings.max_page_number,
         model_settings.font_hash_size,
-        model_settings.minimum_token_frequency,
+        model_settings.embedded_tokens_fraction,
         # Strings get a different hash every time you run python, so they are pre-hashed with mmh3.
         mmh3.hash(os.path.basename(model_settings.glove_vectors))
     )
@@ -1280,7 +1305,7 @@ def documents(
 
     token_stats = tokenstats_for_pmc_dir(pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
-    embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
+    embeddings = CombinedEmbeddings(token_stats, glove, model_settings.embedded_tokens_fraction)
 
     for bucket in buckets:
         yield from documents_for_bucket(
@@ -1539,7 +1564,7 @@ def main():
 
     token_stats = tokenstats_for_pmc_dir(args.pmc_dir)
     glove = GloveVectors(model_settings.glove_vectors)
-    embeddings = CombinedEmbeddings(token_stats, glove, model_settings.minimum_token_frequency)
+    embeddings = CombinedEmbeddings(token_stats, glove, model_settings.embedded_tokens_fraction)
 
     for bucket_number in args.bucket_number:
         logging.info("Processing bucket %s", bucket_number)
