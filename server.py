@@ -232,7 +232,7 @@ def main():
     embeddings = dataprep2.CombinedEmbeddings(
         token_stats,
         dataprep2.GloveVectors(model_settings.glove_vectors),
-        model_settings.minimum_token_frequency
+        model_settings.embedded_tokens_fraction
     )
 
     logging.info("Loading model")
