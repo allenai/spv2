@@ -372,6 +372,8 @@ def main():
         with tempfile.NamedTemporaryFile(prefix="SPv2DBWorker-%s-" % paper_id, suffix=".json") as f:
             f.seek(0)
             f.truncate()
+            def write_json_to_output(json_object):
+                f.write(json.dumps(json_object).encode("utf-8"))
             while True:
                 attempts_left -= 1
                 try:
@@ -408,7 +410,7 @@ def main():
                                         "docName": "%s.pdf" % paper_id
                                     }
                                 }
-                                json.dump(error, f)
+                                write_json_to_output(error)
                                 break
                 except Exception as e:
                     stats.increment(datadog_prefix + "dataprep.failure")
@@ -431,7 +433,7 @@ def main():
                                 "docName": "%s.pdf" % paper_id
                             }
                         }
-                        json.dump(error, f)
+                        write_json_to_output(error)
                         break
 
             # append the tempfile to the json file
