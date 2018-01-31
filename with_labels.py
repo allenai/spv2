@@ -106,20 +106,33 @@ class shift_layer(Layer):
 # Make Model 👯
 #
 
+MAX_EMBEDDED_PAGES = 3
+
 def model_with_labels(
     model_settings: settings.ModelSettings,
     embeddings: dataprep2.CombinedEmbeddings
 ):
-    PAGENO_VECTOR_SIZE = model_settings.max_page_number * 2
+    PAGENO_VECTOR_SIZE = 8
+
     pageno_input = Input(name='pageno_input', shape=(None,))
     logging.info("pageno_input:\t%s", pageno_input.shape)
     pageno_embedding = \
         Embedding(
             name='pageno_embedding',
             mask_zero=True,
-            input_dim=model_settings.max_page_number+1,    # one for the mask
+            input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for "other", one for the mask
             output_dim=PAGENO_VECTOR_SIZE)(pageno_input)
     logging.info("pageno_embedding:\t%s", pageno_embedding.shape)
+
+    pageno_from_back_input = Input(name='pageno_from_back_input', shape=(None,))
+    logging.info("pageno_from_back_input:\t%s", pageno_from_back_input.shape)
+    pageno_from_back_embedding = \
+        Embedding(
+            name='pageno_from_back_embedding',
+            mask_zero=True,
+            input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for the mask
+            output_dim=PAGENO_VECTOR_SIZE)(pageno_from_back_input)
+    logging.info("pageno_from_back_embedding:\t%s", pageno_from_back_embedding.shape)
 
     token_input = Input(name='token_input', shape=(None,))
     logging.info("token_input:\t%s", token_input.shape)
@@ -151,10 +164,15 @@ def model_with_labels(
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
     logging.info("numeric_masked:\t%s", numeric_masked.shape)
 
-
     pdftokens_combined = Concatenate(
         name='pdftoken_combined', axis=2
-    )([pageno_embedding, token_embedding, font_embedding, numeric_masked])
+    )([
+        pageno_embedding,
+        pageno_from_back_embedding,
+        token_embedding,
+        font_embedding,
+        numeric_masked
+    ])
     logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
 
     churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
@@ -175,7 +193,13 @@ def model_with_labels(
     Dense(len(dataprep2.POTENTIAL_LABELS)), name="one_hot_output")(lstm2)
     logging.info("one_hot_output:\t%s", one_hot_output.shape)
     softmax = TimeDistributed(Activation('softmax'), name="softmax")(one_hot_output)
-    model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=softmax)
+    model = Model(inputs=[
+        pageno_input,
+        pageno_from_back_input,
+        token_input,
+        font_input,
+        numeric_inputs
+    ], outputs=softmax)
     model.compile(Adam(), "categorical_crossentropy", metrics=["accuracy"], sample_weight_mode="temporal")
 
 
@@ -196,7 +220,11 @@ def model_with_labels(
 def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
     page_inputs = np.full(
         (len(page.tokens),),
-        page.page_number + 1,    # one for keras' mask
+        min(MAX_EMBEDDED_PAGES, page.page_number) + 1,    # one for keras' mask
+        dtype=np.int32)
+    page_from_back_inputs = np.full(
+        (len(page.tokens),),
+        min(MAX_EMBEDDED_PAGES, len(doc.pages) - page.page_number - 1) + 1,    # one for keras' mask
         dtype=np.int32)
     token_inputs = page.token_hashes
     font_inputs = page.font_hashes
@@ -218,7 +246,7 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
             logging.error("Error in document %s", doc.doc_id)
             raise
 
-    return (page_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
+    return (page_inputs, page_from_back_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
 
 
 # map raw_font_size to [-0.5, 0.5] clip at [5, 30]
@@ -252,7 +280,7 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
        max_length,
        waste * 100)
 
-    batch_inputs = [[], [], [], []]
+    batch_inputs = [[], [], [], [], []]
     batch_outputs = []
 
     for doc, page in page_group:
@@ -267,7 +295,8 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
             pad1D(featurized_input[0]),
             pad1D(featurized_input[1]),
             pad1D(featurized_input[2]),
-            np.pad(featurized_input[3], ((0, required_padding), (0, 0)), mode='constant')
+            pad1D(featurized_input[3]),
+            np.pad(featurized_input[4], ((0, required_padding), (0, 0)), mode='constant')
         )
         featurized_output = np.pad(
             featurized_output, ((0, required_padding), (0, 0)), mode='constant'
