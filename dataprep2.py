@@ -1198,7 +1198,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "tokens5"
+FEATURIZED_TOKENS_VERSION = "fsinpg"
 
 def make_featurized_tokens_file(
     output_file_name: str,
@@ -1258,25 +1258,13 @@ def make_featurized_tokens_file(
         # numeric features
         scaled_numeric_features = featurized_file.create_dataset(
             "token_scaled_numeric_features",
-            shape=(len(lab_token_text_features), 17),
+            shape=(len(lab_token_text_features), 19),
             dtype=np.float32,
             fillvalue=0.0,
             compression="gzip",
             compression_opts=9)
 
-        # capitalization features (these are numeric features)
-        #  8: First letter is upper (0.5) or not (-0.5)
-        #  9: Second letter is upper (0.5) or not (-0.5)
-        # 10: Fraction of uppers
-        # 11: First letter is lower (0.5) or not (-0.5)
-        # 12: Second letter is lower (0.5) or not (-0.5)
-        # 13: Fraction of lowers
-        # 14: Fraction of numerics
-        for token_index, token in enumerate(lab_token_text_features[:,0]):
-            scaled_numeric_features[token_index, 8:8+7] = \
-                stringmatch.capitalization_features(token)
-
-            # The -0.5 offset it applied at the end.
+        # The -0.5 offset it applied at the end.
 
         # sizes and positions (these are also numeric features)
         for json_metadata in lab_doc_metadata:
@@ -1334,6 +1322,20 @@ def make_featurized_tokens_file(
                 scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
                     space_width_percentiles_in_doc(numeric_features[:,5])
 
+                # font sizes and space widths relative to page
+                font_sizes_in_page = np.copy(numeric_features[:,4])
+                font_sizes_in_page.sort()
+                font_size_percentiles_in_page = percentile_function_from_values(font_sizes_in_page)
+
+                space_widths_in_page = np.copy(numeric_features[:,5])
+                space_widths_in_page.sort()
+                space_width_percentiles_in_page = percentile_function_from_values(space_widths_in_page)
+
+                scaled_numeric_features[first_token_index:one_past_last_token_index,8] = \
+                    font_size_percentiles_in_page(numeric_features[:,4])
+                scaled_numeric_features[first_token_index:one_past_last_token_index,9] = \
+                    space_width_percentiles_in_page(numeric_features[:,5])
+
                 # overlap the tokens' bounding boxes with bounding boxes from vision
                 bounding_boxes_from_vision = \
                     vision_output.boxes_for_sha_and_page(json_metadata["doc_sha"], page_number)
@@ -1386,12 +1388,22 @@ def make_featurized_tokens_file(
                             (compute_iofirst(coordinates, bb) for bb in author_bounding_boxes))
 
                     if best_title_iofirst > 0.1 and best_title_iofirst >= best_author_iofirst:
-                        scaled_numeric_features[first_token_index+token_index, 15] = 1.0
+                        scaled_numeric_features[first_token_index+token_index, 17] = 1.0
 
                     if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
-                        scaled_numeric_features[first_token_index+token_index, 16] = 1.0
+                        scaled_numeric_features[first_token_index+token_index, 18] = 1.0
 
-                # The -0.5 offset it applied at the end.
+        # capitalization features (these are numeric features)
+        # 10: First letter is upper (0.5) or not (-0.5)
+        # 11: Second letter is upper (0.5) or not (-0.5)
+        # 12: Fraction of uppers
+        # 13: First letter is lower (0.5) or not (-0.5)
+        # 14: Second letter is lower (0.5) or not (-0.5)
+        # 15: Fraction of lowers
+        # 16: Fraction of numerics
+        for token_index, token in enumerate(lab_token_text_features[:,0]):
+            scaled_numeric_features[token_index, 10:10+7] = \
+                stringmatch.capitalization_features(token)
 
         # shift everything so we end up with a range of -0.5 - +0.5
         scaled_numeric_features[:,:] -= 0.5
