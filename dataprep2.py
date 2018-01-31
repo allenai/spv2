@@ -617,7 +617,7 @@ def labeled_tokens_file(bucket_path: str):
                 logging.info("Labeling %s", doc_id)
 
                 nxml_path = re.sub("\\.pdf$", ".nxml", doc_id)
-                nxml_path = os.path.join(bucket_path, "docs", nxml_path)
+                nxml_path = os.path.join(bucket_path, "..", nxml_path)
                 try:
                     with open(nxml_path) as nxml_file:
                         nxml = ET.parse(nxml_file).getroot()
