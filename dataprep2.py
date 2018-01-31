@@ -386,7 +386,7 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄
 #
 
-UNLABELED_TOKENS_VERSION = "3corr"
+UNLABELED_TOKENS_VERSION = "tokens5master"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
@@ -541,7 +541,7 @@ def unlabeled_tokens_file(bucket_path: str):
 
     temp_unlabeled_tokens_path = unlabeled_tokens_path + ".%d.temp" % os.getpid()
     make_unlabeled_tokens_file(
-        os.path.join(bucket_path, "tokens3.json.bz2"),
+        os.path.join(bucket_path, "tokens5.json.bz2"),
         temp_unlabeled_tokens_path)
     os.rename(temp_unlabeled_tokens_path, unlabeled_tokens_path)
     return h5py.File(unlabeled_tokens_path, "r")
@@ -551,7 +551,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "12corr"
+LABELED_TOKENS_VERSION = "tokens5master"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -926,7 +926,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "16tord"
+FEATURIZED_TOKENS_VERSION = "tokens5master"
 
 def make_featurized_tokens_file(
     output_file_name: str,
