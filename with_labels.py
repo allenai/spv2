@@ -156,9 +156,7 @@ def model_with_labels(
             output_dim=FONT_VECTOR_SIZE)(font_input)
     logging.info("font_embedding:\t%s", font_embedding.shape)
 
-    # numeric_inputs = Input(name='numeric_inputs', shape=(None, 15)) # DEBUG: put back the vision features
-    numeric_inputs = Input(name='numeric_inputs', shape=(None, 18)) # added vision and tranformed_font_size feature
-    # numeric_inputs = Input(name='numeric_inputs', shape=(None, 23)) # DEBUG: put back the vision features
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 16)) # DEBUG: put back the vision features
     logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
     numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
@@ -228,12 +226,20 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
         dtype=np.int32)
     token_inputs = page.token_hashes
     font_inputs = page.font_hashes
-    # numeric_inputs = page.scaled_numeric_features[:,:15] # DEBUG: put back the vision features
-    numeric_inputs = page.scaled_numeric_features[:,:17] # added vision feature
-    tranformed_font_size = gen_transformed_font_size(page.numeric_features[:,4:5])
-    numeric_inputs = np.concatenate((page.scaled_numeric_features[:,:17], tranformed_font_size), axis=-1) # added vision & transformed font feature
+    numeric_inputs = page.scaled_numeric_features[:,:15] # DEBUG: put back the vision features
 
-    # numeric_inputs = np.concatenate((page.scaled_numeric_features[:,:17], page.numeric_features[:,:6]), axis=-1) # added vision & position & raw fs and ws feature
+    # add the numeric page number feature
+    if len(doc.pages) <= 1:
+        numeric_page_number_feature = np.full(
+            (len(page.tokens), 1),
+            0.0,
+            dtype=np.float32)
+    else:
+        numeric_page_number_feature = np.full(
+            (len(page.tokens), 1),
+            (page.page_number / (len(doc.pages) - 1)) - 0.5,
+            dtype=np.float32)
+    numeric_inputs = np.concatenate((numeric_inputs, numeric_page_number_feature), axis=-1)
 
     labels_as_ints = page.labels
     labels_one_hot = np.zeros(
@@ -247,22 +253,6 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
             raise
 
     return (page_inputs, page_from_back_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
-
-
-# map raw_font_size to [-0.5, 0.5] clip at [5, 30]
-def gen_transformed_font_size(raw_font_size):
-    ret = np.zeros_like(raw_font_size)
-
-    for i in range(0, raw_font_size.shape[0]):
-        for j in range(0, raw_font_size.shape[1]):
-            if raw_font_size[i][j] <= 5:
-                ret[i][j] = -0.5
-            elif raw_font_size[i][j] >= 30:
-                ret[i][j] = 0.5
-            else:
-                ret[i][j] = (raw_font_size[i][j] - 17.5)/25.0
-
-    return ret
 
 def page_length_for_doc_page_pair(doc_page_pair) -> int:
     return len(doc_page_pair[1].tokens)
