@@ -1423,7 +1423,7 @@ def featurized_tokens_file(
     # The hash of this structure becomes part of the filename, so if it changes, we essentially
     # invalidate the cache of featurized data.
     featurizing_hash_components = (
-        model_settings.max_page_number,
+        MAX_PAGE_COUNT,
         model_settings.font_hash_size,
         model_settings.minimum_token_frequency,
         # Strings get a different hash every time you run python, so they are pre-hashed with mmh3.
