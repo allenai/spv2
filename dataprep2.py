@@ -354,7 +354,7 @@ class CombinedEmbeddings(object):
             (100 * inv_count) / (inv_count + oov_count))
 
         # Print the 30 most frequent tokens that could not be found in glove
-        logging.info("Top tokens not found in Glove:")
+        logging.info("Top tokens not embedded:")
         tokens_printed = 0
         for token in self.tokenstats.get_tokens_with_minimum_frequency(0):
             if token not in self.token2index:
