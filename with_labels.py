@@ -50,7 +50,7 @@ def model_with_labels(
         Embedding(
             name='pageno_from_back_embedding',
             mask_zero=True,
-            input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for the mask
+            input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for "other", one for the mask
             output_dim=PAGENO_VECTOR_SIZE)(pageno_from_back_input)
     logging.info("pageno_from_back_embedding:\t%s", pageno_from_back_embedding.shape)
 
@@ -508,8 +508,6 @@ def evaluate_model(
                     labeled_authors = labeled_authors_on_page
 
                 indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
-
-                # bibtitles must all come from the same page
                 labeled_bibtitles_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibtitle)
@@ -517,7 +515,6 @@ def evaluate_model(
                 labeled_bibtitles += labeled_bibtitles_on_page
 
                 indices_labeled_bibauthor = np.where(page_labels == dataprep2.BIBAUTHOR_LABEL)[0]
-                # bibauthors must all come from the same page
                 labeled_bibauthors_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibauthor)
@@ -525,7 +522,6 @@ def evaluate_model(
                 labeled_bibauthors += labeled_bibauthors_on_page
 
                 indices_labeled_bibvenue = np.where(page_labels == dataprep2.BIBVENUE_LABEL)[0]
-                # authors must all come from the same page
                 labeled_bibvenues_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibvenue)
@@ -533,7 +529,6 @@ def evaluate_model(
                 labeled_bibvenues += labeled_bibvenues_on_page
 
                 indices_labeled_bibyear = np.where(page_labels == dataprep2.BIBYEAR_LABEL)[0]
-                # authors must all come from the same page
                 labeled_bibyears_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_labeled_bibyear)
@@ -571,7 +566,6 @@ def evaluate_model(
 
                 indices_predicted_bibtitle = np.where(page_predictions == dataprep2.BIBTITLE_LABEL)[0]
 
-                # authors must all come from the same page
                 predicted_bibtitles_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibtitle)
@@ -579,8 +573,6 @@ def evaluate_model(
                 predicted_bibtitles += predicted_bibtitles_on_page
 
                 indices_predicted_bibauthor = np.where(page_predictions == dataprep2.BIBAUTHOR_LABEL)[0]
-
-                # bib authors must all come from the same page
                 predicted_bibauthors_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibauthor)
@@ -588,8 +580,6 @@ def evaluate_model(
                 predicted_bibauthors += predicted_bibauthors_on_page
 
                 indices_predicted_bibvenue = np.where(page_predictions == dataprep2.BIBVENUE_LABEL)[0]
-
-                # bibvenue must all come from the same page
                 predicted_bibvenues_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibvenue)
@@ -597,7 +587,6 @@ def evaluate_model(
                 predicted_bibvenues += predicted_bibvenues_on_page
 
                 indices_predicted_bibyear = np.where(page_predictions == dataprep2.BIBYEAR_LABEL)[0]
-
                 predicted_bibyears_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibyear)
@@ -646,33 +635,32 @@ def evaluate_model(
                 return a.strip()
 
             # print titles
-            log_file.write("Gold title:    %s\n" % doc.gold_title)
+            log_file.write("Gold title:      %s\n" % doc.gold_title)
 
             labeled_title = " ".join(labeled_title)
-            log_file.write("Labeled title: %s\n" % labeled_title)
+            log_file.write("Labeled title:   %s\n" % labeled_title)
 
             predicted_title = " ".join(predicted_title)
-            log_file.write("Predicted title:  %s\n" % predicted_title)
+            log_file.write("Predicted title: %s\n" % predicted_title)
 
             # calculate title P/R
             title_score = 0.0
             if normalize(predicted_title) == normalize(doc.gold_title):
                 title_score = 1.0
-            log_file.write("Score:         %s\n" % title_score)
+            log_file.write("Score: %s\n" % title_score)
             title_prs.append((title_score, title_score))
-
 
             # print authors
             gold_authors = ["%s %s" % tuple(gold_author) for gold_author in doc.gold_authors]
             for gold_author in gold_authors:
-                log_file.write("Gold author:      %s\n" % gold_author)
+                log_file.write("Gold author:     %s\n" % gold_author)
 
             labeled_authors = [" ".join(ats) for ats in labeled_authors]
             if len(labeled_authors) <= 0:
                 log_file.write("No authors labeled\n")
             else:
                 for labeled_author in labeled_authors:
-                    log_file.write("Labeled author:   %s\n" % labeled_author)
+                    log_file.write("Labeled author:  %s\n" % labeled_author)
 
             predicted_authors = [" ".join(ats) for ats in predicted_authors]
             if len(predicted_authors) <= 0:
@@ -680,7 +668,6 @@ def evaluate_model(
             else:
                 for predicted_author in predicted_authors:
                     log_file.write("Predicted author: %s\n" % predicted_author)
-
 
             # calculate author P/R
             gold_authors = set(map(normalize_author, gold_authors))
@@ -691,22 +678,16 @@ def evaluate_model(
             recall = 0
             if len(gold_authors) > 0:
                 recall = len(gold_authors & predicted_authors) / len(gold_authors)
-            log_file.write("Author P/R:       %.3f / %.3f\n" % (precision, recall))
+            log_file.write("Author P/R: %.3f / %.3f\n" % (precision, recall))
             if len(gold_authors) > 0:
                 author_prs.append((precision, recall))
 
-
-
             # print bibtitles
-            # gold_bibtitles = ["%s %s" % tuple(gold_bibtitle) for gold_bibtitle in doc.gold_bib_titles]
-
             gold_bibtitles = doc.gold_bib_titles[:]
-            # print(gold_bibtitles)
             for gold_bibtitle in gold_bibtitles:
                 log_file.write("Gold bib title:      %s\n" % gold_bibtitle)
 
             labeled_bibtitles = [" ".join(ats) for ats in labeled_bibtitles]
-            # print(labeled_bibtitles)
             if len(labeled_bibtitles) <= 0:
                 log_file.write("No bib title labeled\n")
             else:
@@ -715,19 +696,14 @@ def evaluate_model(
 
             if len(word_set) > 0:
                 predicted_bibtitles = remove_hyphens(predicted_bibtitles, word_set)
-
             predicted_bibtitles = [" ".join(ats) for ats in predicted_bibtitles]
-            # print(predicted_bibtitles)
             if len(predicted_bibtitles) <= 0:
                 log_file.write("No bib title predicted\n")
             else:
                 for predicted_bibtitle in predicted_bibtitles:
                     log_file.write("Predicted bib title: %s\n" % predicted_bibtitle)
 
-            # calculate author P/R
-            # gold_bibtitles = set(map(normalize_author, gold_bibtitles))
-            # predicted_bibtitles = set(map(normalize_author, predicted_bibtitles))
-
+            # calculate bibtitle P/R
             gold_bibtitles_set_array = []
             for e in gold_bibtitles:
                 if e is None:
@@ -745,19 +721,18 @@ def evaluate_model(
             recall = 0
             if len(gold_bibtitles) > 0:
                 recall = len(gold_bibtitles & predicted_bibtitles) / len(gold_bibtitles)
-            log_file.write("Bib title P/R:       %.3f / %.3f\n" % (precision, recall))
+            log_file.write("Bibtitle P/R: %.3f / %.3f\n" % (precision, recall))
 
             if len(gold_bibtitles) > 0:
                 bibtitle_prs.append((precision, recall))
 
-
+            # print bibauthors
             gold_bibauthors = doc.gold_bib_authors[:]
             for gold_bibauthor_per_bib in gold_bibauthors:
                 for gold_bibauthor in gold_bibauthor_per_bib:
                     unsorted_bib_author = normalize_author(" ".join(gold_bibauthor[::-1])).split()
                     unsorted_bib_author.sort()
                     sorted_bib_author = unsorted_bib_author
-
                     log_file.write("Gold bib author:      {}\n".format(" ".join(sorted_bib_author)))
 
             labeled_bibauthors = [" ".join(ats) for ats in labeled_bibauthors]
@@ -775,10 +750,9 @@ def evaluate_model(
                     unsorted_bib_author = normalize_author(predicted_bibauthor).split()
                     unsorted_bib_author.sort()
                     sorted_bib_author = unsorted_bib_author
+                    log_file.write("Predicted bib author: {}\n".format(" ".join(sorted_bib_author)))
 
-                    log_file.write("Predicted bib author:      {}\n".format(" ".join(sorted_bib_author)))
-
-            # calculate author P/R
+            # calculate bibauthor P/R
             gold_bibauthors_set = Multiset()
 
             for gold_author_per_bib in gold_bibauthors:
@@ -786,7 +760,6 @@ def evaluate_model(
                     unsorted_bib_author = normalize_author(" ".join(gold_bibauthor[::-1])).split()
                     unsorted_bib_author.sort()
                     sorted_bib_author = unsorted_bib_author
-
                     gold_bibauthors_set.add(normalize_author(' '.join(sorted_bib_author)))
 
             predicted_bibauthors_set = Multiset()
@@ -794,7 +767,6 @@ def evaluate_model(
                 unsorted_bib_author = normalize_author(e).split()
                 unsorted_bib_author.sort()
                 sorted_bib_author = unsorted_bib_author
-
                 predicted_bibauthors_set.add(normalize_author(' '.join(sorted_bib_author)))
 
             gold_bibauthors = gold_bibauthors_set
@@ -805,10 +777,11 @@ def evaluate_model(
             recall = 0
             if len(gold_bibauthors) > 0:
                 recall = len(gold_bibauthors & predicted_bibauthors) / len(gold_bibauthors)
-            log_file.write("Bib author P/R:       %.3f / %.3f\n" % (precision, recall))
+            log_file.write("Bib author P/R: %.3f / %.3f\n" % (precision, recall))
             if len(gold_bibauthors) > 0:
                 bibauthor_prs.append((precision, recall))
 
+            # print bibvenues
             gold_bibvenues = doc.gold_bib_venues[:]
             for gold_bibvenue in gold_bibvenues:
                 log_file.write("Gold bib venue:      %s\n" % gold_bibvenue)
