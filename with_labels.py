@@ -1158,8 +1158,6 @@ def remove_hyphens(predicted_bibtitles, word_set):
 
     return predicted_bibtitles
 
-def auto_int(x):
-    return int(x, 0)
 
 #
 # Main program 🎛
@@ -1173,6 +1171,9 @@ def main():
     logging.getLogger().setLevel(logging.DEBUG)
 
     model_settings = settings.default_model_settings
+
+    def hex_int(x):
+        return int(x, 16)
 
     import argparse
     parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
@@ -1218,13 +1219,13 @@ def main():
         "--testing-buckets", default=None, type=int, help="number of buckets to test on"
     )
     parser.add_argument(
-        "--training-bucket-start", default=None, type=auto_int, help="the first bucket to train on"
+        "--training-bucket-start", default=None, type=hex_int, help="the first bucket to train on"
     )
     parser.add_argument(
-        "--validation-bucket-start", default=None, type=auto_int, help="the first bucket to validate on"
+        "--validation-bucket-start", default=None, type=hex_int, help="the first bucket to validate on"
     )
     parser.add_argument(
-        "--testing-bucket-start", default=None, type=auto_int, help="the first bucket to test on"
+        "--testing-bucket-start", default=None, type=hex_int, help="the first bucket to test on"
     )
     parser.add_argument(
         "--test-doc-count", default=10000, type=int, help="number of documents to test on"
