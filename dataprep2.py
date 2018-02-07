@@ -976,10 +976,11 @@ def labeled_tokens_file(bucket_path: str):
                                         author_matches.extend(find_string_in_page(author_variant))
                                 else:
                                     for author_variant in author_variants:
-                                        author_matches.extend(find_string_in_page(author_variant,
-                                                                            bib_all_matches[idx].first_token_index, \
-                                                                            bib_all_matches[
-                                                                                idx].one_past_last_token_index))
+                                        author_matches.extend(
+                                            find_string_in_page(
+                                                author_variant,
+                                                bib_all_matches[idx].first_token_index,
+                                                bib_all_matches[idx].one_past_last_token_index))
                                 if len(author_matches) > 0:
                                     return min(author_matches, key=bib_x_match_sort_key)
                                 else:
@@ -998,28 +999,17 @@ def labeled_tokens_file(bucket_path: str):
                             if len(bib_all_matches[idx]) == 0: # just find it anywhere:
                                 x_matches = list(find_string_in_page(s))
                             else:
-                                x_matches = list(find_string_in_page(s, bib_all_matches[idx].first_token_index, \
-                                                                   bib_all_matches[idx].one_past_last_token_index))
+                                x_matches = list(
+                                    find_string_in_page(
+                                        s,
+                                        bib_all_matches[idx].first_token_index,
+                                        bib_all_matches[idx].one_past_last_token_index))
                             if len(x_matches) > 0:
                                 out_matches[idx] = min(x_matches, key=bib_x_match_sort_key)
 
                     find_x_in_bounds(bib_venue_matches, gold_bib_venues)
                     find_x_in_bounds(bib_year_matches, gold_bib_years)
                     find_authors_in_bounds(bib_author_matches, gold_bib_authors)
-
-                    # for bib_venue_index, gold_bib_venue in enumerate(gold_bib_venues):
-                    #     if gold_bib_venue is None or len(gold_bib_venue)==0 or bib_venue_index < bib_entries_this_page[0] or \
-                    #             bib_venue_index > bib_entries_this_page[1]:
-                    #         continue
-                    #     bib_venue_matches_on_this_page = list(find_string_in_page(gold_bib_venue))
-                    #     for venue_match in sorted(bib_venue_matches_on_this_page, key=bib_x_match_sort_key):
-                    #         #TODO: use title, author matches as back-up for biball
-                    #         if len(bib_all_matches[bib_venue_index])==0 or \
-                    #                 (venue_match.first_token_index >= bib_all_matches[bib_venue_index].first_token_index \
-                    #                  and venue_match.one_past_last_token_index <= \
-                    #                 bib_all_matches[bib_venue_index].one_past_last_token_index):
-                    #             bib_venue_matches[bib_venue_index] = venue_match
-                    #             break # first one in bounds is the one we keep
 
                 found_matches = [sum(1 if not x is None and len(x) > 0 else 0 for x in y) for y in \
                                  [bib_title_matches, bib_author_matches, bib_year_matches, bib_venue_matches]]
@@ -1030,7 +1020,9 @@ def labeled_tokens_file(bucket_path: str):
                 nonempty_titles = sum(1 for x in gold_bib_titles if len(x) > 0)
                 paper_bib_authors = sum(len(y) for y in gold_bib_authors)
 
-                logging.info("found %s of %s titles (%s nonempty) for %s", found_matches, len(bib_title_matches), \
+                logging.info("found %s of %s titles (%s nonempty) for %s",
+                             found_matches,
+                             len(bib_title_matches),
                              nonempty_titles, doc_id)
                 logging.info("found %s of %s bib authors", num_bib_author_matches, paper_bib_authors)
                 # find the definitive author labels from the lists of potential matches we have now
