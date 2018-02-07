@@ -6,18 +6,12 @@ import re
 import time
 import os
 
-from keras.layers import Embedding, Input, LSTM, Dense
+from keras.layers import Embedding, Input, LSTM, Dense, Masking
 from keras.layers.merge import Concatenate
 from keras.layers.wrappers import TimeDistributed, Bidirectional
 from keras.models import Model
-from keras.layers import Masking
-from keras.layers import Activation, Dense
 from keras.optimizers import Adam
 from keras_contrib.layers import CRF
-from keras.engine.topology import Layer
-from keras.layers import multiply
-from keras import backend as K
-import tensorflow as tf
 
 import sklearn
 import sklearn.metrics
@@ -25,7 +19,6 @@ import sklearn.metrics
 import settings
 import dataprep2
 import unicodedata
-import pickle
 from multiset import Multiset
 
 
