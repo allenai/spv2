@@ -1595,12 +1595,10 @@ def documents(
 ):
 
     if document_set is DocumentSet.TEST:
-        # buckets = range(0x0b, 0x0c)
         buckets = range(0xf0, 0x100)
         if (not testing_buckets is None) and (not testing_bucket_start is None):
             buckets = range(testing_bucket_start, testing_bucket_start+testing_buckets)
     elif document_set is DocumentSet.VALIDATE:
-        # buckets = range(0x0a, 0x0b)
         buckets = range(0xe0, 0xf0)
         if (not validation_buckets is None) and (not validation_bucket_start is None):
             buckets = range(validation_bucket_start, validation_bucket_start+validation_buckets)
