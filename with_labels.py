@@ -96,10 +96,10 @@ def model_with_labels(
     churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
     logging.info("churned_tokens:\t%s", churned_tokens.shape)
 
-    lstm1 = Bidirectional(LSTM(units=512, return_sequences=True, dropout=model_settings.layer_1_dropout))(churned_tokens)
+    lstm1 = Bidirectional(LSTM(units=512, return_sequences=True))(churned_tokens)
     logging.info("lstm1:\t%s", lstm1.shape)
 
-    lstm2 = Bidirectional(LSTM(units=512, return_sequences=True, dropout=model_settings.layer_2_dropout))(lstm1)
+    lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
     logging.info("lstm2:\t%s", lstm2.shape)
 
     crf = CRF(units=7)
@@ -1229,19 +1229,11 @@ def main():
     parser.add_argument(
         "--test-doc-count", default=10000, type=int, help="number of documents to test on"
     )
-    parser.add_argument(
-        "--layer-1-dropout", default=model_settings.layer_1_dropout, type=float, help="dropout of the first LSTM input"
-    )
-    parser.add_argument(
-        "--layer-2-dropout", default=model_settings.layer_2_dropout, type=float, help="dropout of the second LSTM input"
-    )
 
     args = parser.parse_args()
 
     model_settings = model_settings._replace(tokens_per_batch=args.tokens_per_batch)
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
-    model_settings = model_settings._replace(layer_1_dropout=args.layer_1_dropout)
-    model_settings = model_settings._replace(layer_2_dropout=args.layer_2_dropout)
     print(model_settings)
 
     model = train(
