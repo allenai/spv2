@@ -1506,7 +1506,6 @@ class Document(DocumentBase):
 
 def documents_for_featurized_tokens(
     featurized_tokens: h5py.File,
-    bucket_path: str,
     include_labels: bool = True,
     max_tokens_per_page: typing.Optional[int] = None
 ):
@@ -1556,13 +1555,6 @@ def documents_for_featurized_tokens(
             gold_bib_venues = None
             gold_bib_years = None
             gold_bib_authors = None
-        check_path = os.path.join(bucket_path, 'docs', doc_metadata["doc_sha"])
-        pdf_count = 0
-        for e in os.listdir(check_path):
-            if('.pdf' in e):
-                pdf_count += 1
-        if pdf_count > 1:
-            continue
 
         yield Document(
             doc_metadata["doc_id"],
@@ -1588,7 +1580,7 @@ def documents_for_bucket(
         model_settings)
         # The file has to stay open, because the document we return refers to it, and needs it
         # to be open. Python's GC will close the file (hopefully).
-    yield from documents_for_featurized_tokens(featurized, bucket_path)
+    yield from documents_for_featurized_tokens(featurized)
 
 class DocumentSet(Enum):
     TRAIN = 1
