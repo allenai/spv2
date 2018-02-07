@@ -938,8 +938,6 @@ def train(
         model_settings.minimum_token_frequency
     )
 
-    # K.set_session(K.tf.Session(config=K.tf.ConfigProto(device_count = {'GPU': 1}, inter_op_parallelism_threads=4, intra_op_parallelism_threads = 4)))
-
     model = model_with_labels(model_settings, embeddings)
     model.summary()
 
