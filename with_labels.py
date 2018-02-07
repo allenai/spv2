@@ -174,40 +174,20 @@ def model_with_labels(
     churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
     logging.info("churned_tokens:\t%s", churned_tokens.shape)
 
-    # lstm1 = Bidirectional(LSTM(units=512, return_sequences=True))(churned_tokens)
     lstm1 = Bidirectional(LSTM(units=512, return_sequences=True, dropout=model_settings.layer_1_dropout))(churned_tokens)
     logging.info("lstm1:\t%s", lstm1.shape)
 
-    # lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
     lstm2 = Bidirectional(LSTM(units=512, return_sequences=True, dropout=model_settings.layer_2_dropout))(lstm1)
-
     logging.info("lstm2:\t%s", lstm2.shape)
 
+    crf = CRF(units=7)
+    crf_layer = crf(lstm2)
+    logging.info("crf:\t%s", crf_layer.shape)
 
-    # removed CRF
-    one_hot_output = TimeDistributed(
-    Dense(len(dataprep2.POTENTIAL_LABELS)), name="one_hot_output")(lstm2)
-    logging.info("one_hot_output:\t%s", one_hot_output.shape)
-    softmax = TimeDistributed(Activation('softmax'), name="softmax")(one_hot_output)
-    model = Model(inputs=[
-        pageno_input,
-        pageno_from_back_input,
-        token_input,
-        font_input,
-        numeric_inputs
-    ], outputs=softmax)
-    model.compile(Adam(), "categorical_crossentropy", metrics=["accuracy"], sample_weight_mode="temporal")
-
-
-
-    # crf = CRF(units=7)
-    # crf_layer = crf(lstm2)
-    # logging.info("crf:\t%s", crf_layer.shape)
-
-    # model = Model(inputs=[pageno_input, token_input, font_input, numeric_inputs], outputs=crf_layer)
-    # # model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
-    # model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy], sample_weight_mode="temporal")
+    model = Model(inputs=[pageno_input, pageno_from_back_input, token_input, font_input, numeric_inputs], outputs=crf_layer)
+    model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
     return model
+
 
 #
 # Prepare the Data 🐙
@@ -1140,23 +1120,7 @@ def train(
 
                 batch_start_time = time.time()
                 x, y = batch
-                class_weight = {dataprep2.NONE_LABEL: 1.0,
-                                dataprep2.TITLE_LABEL: 100.0,
-                                dataprep2.AUTHOR_LABEL: 100.0,
-                                dataprep2.BIBTITLE_LABEL: 5.0,
-                                dataprep2.BIBAUTHOR_LABEL: 5.0,
-                                dataprep2.BIBVENUE_LABEL: 15.0,
-                                dataprep2.BIBYEAR_LABEL: 50.0}
-                sample_weight = np.zeros((y.shape[0], y.shape[1]))
-                for i in range(0, y.shape[0]):
-                    for j in range(0, y.shape[1]):
-                        index = np.argmax(y[i][j])
-                        if y[i][j][index] != 1.0:
-                            sample_weight[i][j] = 0.0
-                        else:
-                            sample_weight[i][j] = class_weight[index]
-
-                metrics = model.train_on_batch(x, y, sample_weight=sample_weight)
+                metrics = model.train_on_batch(x, y)
 
                 trained_batches += 1
 
@@ -1245,23 +1209,7 @@ def train(
 
                 batch_start_time = time.time()
                 x, y = batch
-                class_weight = {dataprep2.NONE_LABEL: 1.0,
-                                dataprep2.TITLE_LABEL: 100.0,
-                                dataprep2.AUTHOR_LABEL: 100.0,
-                                dataprep2.BIBTITLE_LABEL: 5.0,
-                                dataprep2.BIBAUTHOR_LABEL: 5.0,
-                                dataprep2.BIBVENUE_LABEL: 15.0,
-                                dataprep2.BIBYEAR_LABEL: 50.0}
-                sample_weight = np.zeros((y.shape[0], y.shape[1]))
-                for i in range(0, y.shape[0]):
-                    for j in range(0, y.shape[1]):
-                        index = np.argmax(y[i][j])
-                        if y[i][j][index] != 1.0:
-                            sample_weight[i][j] = 0.0
-                        else:
-                            sample_weight[i][j] = class_weight[index]
-
-                metrics = model.train_on_batch(x, y, sample_weight=sample_weight)
+                metrics = model.train_on_batch(x, y)
 
                 trained_batches += 1
 
