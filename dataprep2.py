@@ -15,6 +15,7 @@ import bz2
 import typing
 import sys
 import html
+import time
 from enum import Enum
 from queue import Queue
 from threading import Thread
@@ -1229,16 +1230,26 @@ def make_featurized_tokens_file(
         text_features = np.zeros(
             shape=lab_token_text_features.shape,
             dtype=np.int32)
+
         # do tokens
+        logging.info("Mapping tokens to embeddings ...")
+        start = time.time()
         fn = np.vectorize(embeddings.index_for_token, otypes=[np.uint32])
         text_features[:,0] = fn(lab_token_text_features[:,0])
           # The CombinedEmbeddings class already adds in the keras mask, so we don't have to do it
           # here.
+        logging.info("Mapped tokens to embeddings in %.0f seconds", time.time() - start)
+
         # do fonts
+        logging.info("Mapping fonts to embeddings ...")
+        start = time.time()
         fn = np.vectorize(lambda t: mmh3.hash(normalize(t)), otypes=[np.uint32])
         text_features[:,1] = fn(lab_token_text_features[:,1]) % model_settings.font_hash_size
         text_features[:,1] += 1  # plus one for keras' masking
+        logging.info("Mapped fonts to embeddings in %.0f seconds", time.time() - start)
 
+        logging.info("Saving tokens and fonts ...")
+        start = time.time()
         featurized_file.create_dataset(
             "token_hashed_text_features",
             lab_token_text_features.shape,
@@ -1246,6 +1257,7 @@ def make_featurized_tokens_file(
             data=text_features,
             compression="gzip",
             compression_opts=9)
+        logging.info("Saved tokens and fonts in %.2f seconds", time.time() - start)
 
         # numeric features
         scaled_numeric_features = featurized_file.create_dataset(
@@ -1259,6 +1271,8 @@ def make_featurized_tokens_file(
         # The -0.5 offset it applied at the end.
 
         # sizes and positions (these are also numeric features)
+        docs_completed = 0
+        start = time.time()
         for json_metadata in lab_doc_metadata:
             json_metadata = json.loads(json_metadata)
 
@@ -1267,6 +1281,14 @@ def make_featurized_tokens_file(
             doc_token_count = 0
             for json_page in json_metadata["pages"]:
                 doc_token_count += int(json_page["token_count"])
+
+            # report progress
+            if (docs_completed + 1) % 100 == 0:
+                percent_complete = 100 * doc_first_token_index / len(scaled_numeric_features)
+                logging.info(
+                    "Featurizing sizes and positions ... %.0f%% complete, %.2f dps",
+                    percent_complete,
+                    docs_completed / (time.time() - start))
 
             font_sizes_in_doc = \
                 lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 4]
@@ -1385,6 +1407,8 @@ def make_featurized_tokens_file(
                     if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
                         scaled_numeric_features[first_token_index+token_index, 18] = 1.0
 
+            docs_completed += 1
+
         # capitalization features (these are numeric features)
         # 10: First letter is upper (0.5) or not (-0.5)
         # 11: Second letter is upper (0.5) or not (-0.5)
@@ -1393,9 +1417,20 @@ def make_featurized_tokens_file(
         # 14: Second letter is lower (0.5) or not (-0.5)
         # 15: Fraction of lowers
         # 16: Fraction of numerics
+
+        # create space for the output
+        logging.info("Computing capitalization features ...")
+        # Writing to a numpy array first, and then writing to h5, is faster than writing to h5
+        # directly.
+        capitalization_features = np.zeros(
+            shape=(len(lab_token_text_features), 7),
+            dtype=np.float32)
+        start = time.time()
         for token_index, token in enumerate(lab_token_text_features[:,0]):
-            scaled_numeric_features[token_index, 10:10+7] = \
-                stringmatch.capitalization_features(token)
+            capitalization_features[token_index] = stringmatch.capitalization_features(token)
+            # The -0.5 offset is applied at the end.
+        scaled_numeric_features[:, 10:10+7] = capitalization_features
+        logging.info("Computed capitalization features in %.2f seconds", time.time() - start)
 
         # shift everything so we end up with a range of -0.5 - +0.5
         scaled_numeric_features[:,:] -= 0.5
