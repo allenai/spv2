@@ -26,7 +26,7 @@ import settings
 # Helpers 💁
 #
 
-def threaded_generator(g, maxsize=128):
+def threaded_generator(g, maxsize=16):
     q = Queue(maxsize=maxsize)
 
     sentinel = object()
