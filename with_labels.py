@@ -5,6 +5,8 @@ import typing
 import re
 import time
 import os
+import random
+import math
 
 from keras.layers import Embedding, Input, LSTM, Dense, Masking
 from keras.layers.merge import Concatenate
@@ -165,10 +167,11 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     unpadded_token_count = sum(page_lengths)
     waste = float(padded_token_count - unpadded_token_count) / padded_token_count
     logging.debug(
-       "Batching page group with %d pages, %d tokens, %.2f%% waste",
-       len(page_group),
-       max_length,
-       waste * 100)
+        "Batching page group with %d pages, %d tokens, %d batch size, %.2f%% waste",
+        len(page_group),
+        max_length,
+        padded_token_count,
+        waste * 100)
 
     batch_inputs = [[], [], [], [], []]
     batch_outputs = []
@@ -205,15 +208,11 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
 class PagePool:
     def __init__(self):
         self.pool = []
-        self.slice_start = 0
+        self.random = random.Random()
+        self.random.seed(1337)
 
     def add(self, doc: dataprep2.Document, page: dataprep2.Page):
         self.pool.append((doc, page))
-
-        if self.slice_start > 0:
-            slice_start_doc, slice_start_page = self.pool[self.slice_start]
-            if len(page.tokens) < len(slice_start_page.tokens):
-                self.slice_start += 1
 
     def __len__(self) -> int:
         return len(self.pool)
@@ -243,28 +242,35 @@ class PagePool:
             raise ValueError
 
         self.pool.sort(key=page_length_for_doc_page_pair)
+
+        # The minimum slice start is easy: It's always the shortest page we have.
+        min_slice_start_index = 0
+        # The maximum slice start is harder: There have to be enough pages between the max slice
+        # start and the end of the pool to fill up the slice with as many tokens as possible.
+        token_count_of_largest_page = len(self.pool[-1][1].tokens)
+        max_slice_start_index = \
+            math.ceil(len(self.pool) - desired_slice_size / token_count_of_largest_page)
+        # We always include the last page, even if it's too big.
+        max_slice_start_index = min(max_slice_start_index, len(self.pool) - 1)
+
+        slice_start_index = self.random.randint(min_slice_start_index, max_slice_start_index)
+
         slice = []
         slice_max_token_count = 0
-        while len(self.pool) > 0:
-            self.slice_start = min(self.slice_start, len(self.pool) - 1)
-            next_doc, next_page = self.pool[self.slice_start]
+        while len(self.pool) > slice_start_index:
+            next_doc, next_page = self.pool[slice_start_index]
             new_slice_token_count = \
                 (len(slice) + 1) * max(len(next_page.tokens), slice_max_token_count)
             if new_slice_token_count > desired_slice_size and len(slice) > 0:
                 slice = self._prepare_slice_for_release(slice, desired_slice_size)
-                self.slice_start += 1
-                if self.slice_start > len(self.pool):
-                    logging.info("Page pool wrapped around. Will now start serving small pages again.")
-                    self.slice_start %= len(self.pool)
                 return slice
 
-            slice.append(self.pool[self.slice_start])
+            slice.append(self.pool[slice_start_index])
             slice_max_token_count = max(slice_max_token_count, len(next_page.tokens))
-            del self.pool[self.slice_start]
+            del self.pool[slice_start_index]
 
         logging.info("Page pool empty, returning the remaining pages")
         slice = self._prepare_slice_for_release(slice, desired_slice_size)
-        self.slice_start = 0
         return slice
 
 def make_batches(
