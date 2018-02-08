@@ -252,6 +252,7 @@ class PagePool:
             math.ceil(len(self.pool) - desired_slice_size / token_count_of_largest_page)
         # We always include the last page, even if it's too big.
         max_slice_start_index = min(max_slice_start_index, len(self.pool) - 1)
+        max_slice_start_index = max(0, max_slice_start_index)
 
         slice_start_index = self.random.randint(min_slice_start_index, max_slice_start_index)
 
