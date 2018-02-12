@@ -992,19 +992,19 @@ def train(
 
     if training_buckets != 0:
         logging.info("Starting training")
-        def forever(g: typing.Generator) -> typing.Generator:
+        def documents_forever():
             while True:
-                yield from g
-        train_docs = forever(dataprep2.documents(
-            pmc_dir,
-            model_settings,
-            document_set=dataprep2.DocumentSet.TRAIN,
-            training_buckets=training_buckets,
-            validation_buckets=validation_buckets,
-            testing_buckets=testing_buckets,
-            training_bucket_start=training_bucket_start,
-            validation_bucket_start=validation_bucket_start,
-            testing_bucket_start=testing_bucket_start))
+                yield from dataprep2.documents(
+                    pmc_dir,
+                    model_settings,
+                    document_set=dataprep2.DocumentSet.TRAIN,
+                    training_buckets=training_buckets,
+                    validation_buckets=validation_buckets,
+                    testing_buckets=testing_buckets,
+                    training_bucket_start=training_bucket_start,
+                    validation_bucket_start=validation_bucket_start,
+                    testing_bucket_start=testing_bucket_start)
+        train_docs = documents_forever()
         training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
 
         for batch in dataprep2.threaded_generator(training_data):
