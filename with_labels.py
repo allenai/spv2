@@ -8,6 +8,9 @@ import os
 import random
 import math
 
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 from keras.layers import Embedding, Input, LSTM, Dense, Masking
 from keras.layers.merge import Concatenate
 from keras.layers.wrappers import TimeDistributed, Bidirectional
@@ -104,12 +107,19 @@ def model_with_labels(
     lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
     logging.info("lstm2:\t%s", lstm2.shape)
 
-    crf = CRF(units=7)
-    crf_layer = crf(lstm2)
-    logging.info("crf:\t%s", crf_layer.shape)
+    one_hot_output_1 = TimeDistributed(
+    Dense(3, name="one_hot_output_1"))(lstm2)
+    crf_1 = CRF(units=3, name="crf_1")
+    crf_layer_1 = crf_1(lstm2)
+    logging.info("one_hot_output_1:\t%s", one_hot_output_1.shape)
+    one_hot_output_2 = TimeDistributed(
+    Dense(5, name="one_hot_output_2"))(lstm2)
+    crf_2 = CRF(units=5, name="crf_2")
+    crf_layer_2 = crf_2(lstm2)
+    logging.info("one_hot_output_2:\t%s", one_hot_output_2.shape)
 
-    model = Model(inputs=[pageno_input, pageno_from_back_input, token_input, font_input, numeric_inputs], outputs=crf_layer)
-    model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
+    model = Model(inputs=[pageno_input, pageno_from_back_input, token_input, font_input, numeric_inputs], outputs=[crf_layer_1, crf_layer_2])
+    model.compile(Adam(), loss={'crf_1':crf_1.loss_function,'crf_2':crf_2.loss_function}, metrics={'crf_1':crf_1.accuracy,'crf_2':crf_2.accuracy},loss_weights={'crf_1': 1., 'crf_2': 0.1})
     return model
 
 
@@ -143,18 +153,48 @@ def featurize_page(doc: dataprep2.Document, page: dataprep2.Page):
             dtype=np.float32)
     numeric_inputs = np.concatenate((numeric_inputs, numeric_page_number_feature), axis=-1)
 
+    # labels_as_ints = page.labels
+    # labels_one_hot = np.zeros(
+    #     shape=(len(page.tokens), len(dataprep2.POTENTIAL_LABELS)),
+    #     dtype=np.float32)
+    # if page.labels is not None:
+    #     try:
+    #         labels_one_hot[np.arange(len(page.tokens)),labels_as_ints] = 1
+    #     except:
+    #         logging.error("Error in document %s", doc.doc_id)
+    #         raise
+
     labels_as_ints = page.labels
-    labels_one_hot = np.zeros(
-        shape=(len(page.tokens), len(dataprep2.POTENTIAL_LABELS)),
+    labels_one_hot_1 = np.zeros(
+        shape=(len(page.tokens), 3),
         dtype=np.float32)
+    labels_one_hot_2 = np.zeros(
+        shape=(len(page.tokens), 5),
+        dtype=np.float32)
+
+    labels_as_ints_1 = np.zeros(len(page.tokens), dtype=np.int32)
+    labels_as_ints_2 = np.zeros(len(page.tokens), dtype=np.int32)
+
+    for i in range(0, len(page.tokens)):
+        if labels_as_ints[i] == 0:
+            labels_as_ints_1[i] = 0
+            labels_as_ints_2[i] = 0
+        elif labels_as_ints[i] == 1 or labels_as_ints[i] == 2:
+            labels_as_ints_1[i] = labels_as_ints[i]
+            labels_as_ints_2[i] = 0
+        else:
+            labels_as_ints_1[i] = 0
+            labels_as_ints_2[i] = labels_as_ints[i] - 2
+
     if page.labels is not None:
         try:
-            labels_one_hot[np.arange(len(page.tokens)),labels_as_ints] = 1
+            labels_one_hot_1[np.arange(len(page.tokens)),labels_as_ints_1] = 1
+            labels_one_hot_2[np.arange(len(page.tokens)),labels_as_ints_2] = 1
         except:
             logging.error("Error in document %s", doc.doc_id)
             raise
 
-    return (page_inputs, page_from_back_inputs, token_inputs, font_inputs, numeric_inputs), labels_one_hot
+    return (page_inputs, page_from_back_inputs, token_inputs, font_inputs, numeric_inputs), (labels_one_hot_1, labels_one_hot_2)
 
 def page_length_for_doc_page_pair(doc_page_pair) -> int:
     return len(doc_page_pair[1].tokens)
@@ -176,10 +216,16 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
     batch_inputs = [[], [], [], [], []]
     batch_outputs = []
 
+    batch_outputs_1 = []
+    batch_outputs_2 = []
+
     for doc, page in page_group:
         page_length = len(page.tokens)
         required_padding = max_length - page_length
-        featurized_input, featurized_output = featurize_page(doc, page)
+        featurized_input, featurized_outputs = featurize_page(doc, page)
+
+        featurized_output_1 = featurized_outputs[0]
+        featurized_output_2 = featurized_outputs[1]
 
         def pad1D(a):
             return np.pad(a, (0, required_padding), mode='constant')
@@ -191,16 +237,20 @@ def batch_from_page_group(model_settings: settings.ModelSettings, page_group):
             pad1D(featurized_input[3]),
             np.pad(featurized_input[4], ((0, required_padding), (0, 0)), mode='constant')
         )
-        featurized_output = np.pad(
-            featurized_output, ((0, required_padding), (0, 0)), mode='constant'
+        featurized_output_1 = np.pad(
+            featurized_output_1, ((0, required_padding), (0, 0)), mode='constant'
+        )
+        featurized_output_2 = np.pad(
+            featurized_output_2, ((0, required_padding), (0, 0)), mode='constant'
         )
 
         for index, input in enumerate(featurized_input):
             batch_inputs[index].append(input)
-        batch_outputs.append(featurized_output)
+        batch_outputs_1.append(featurized_output_1)
+        batch_outputs_2.append(featurized_output_2)
 
     batch_inputs = list(map(np.stack, batch_inputs))
-    batch_outputs = np.stack(batch_outputs)
+    batch_outputs = [np.stack(batch_outputs_1), np.stack(batch_outputs_2)]
 
     return batch_inputs, batch_outputs
 
@@ -446,11 +496,68 @@ def evaluate_model(
             page_pool.add(doc, page)
 
     docpage_to_results = {}
+
+    conflict_count = 0
+    total_count = 0
+
     while len(page_pool) > 0:
         slice = page_pool.get_slice(64 * 1024)  # For evaluation, we always use the biggest batch size we can.
         x, y = batch_from_page_group(model_settings, slice)
-        raw_predictions_for_slice = model.predict_on_batch(x)
-        raw_labels_for_slice = y
+
+        raw_predictions_for_slices = model.predict_on_batch(x)
+        raw_predictions_for_slice_1 = raw_predictions_for_slices[0]
+        raw_predictions_for_slice_2 = raw_predictions_for_slices[1]
+        raw_labels_for_slices = y
+        raw_labels_for_slice_1 = raw_labels_for_slices[0]
+        raw_labels_for_slice_2 = raw_labels_for_slices[1]
+
+
+        raw_predictions_for_slice = np.zeros((raw_predictions_for_slice_1.shape[0], raw_predictions_for_slice_1.shape[1], 7))
+        raw_labels_for_slice = np.zeros((raw_predictions_for_slice_1.shape[0], raw_predictions_for_slice_1.shape[1], 7))
+
+        # raw_predictions_for_slice = model.predict_on_batch(x)
+        # raw_labels_for_slice = y
+
+        for i in range(0, raw_predictions_for_slice_1.shape[0]):
+            for j in range(0, raw_predictions_for_slice_1.shape[1]):
+                temp_dist = np.zeros(7, dtype=np.float32)
+                temp_raw = np.zeros(7, dtype=np.float32)
+
+                # select argmax! and solve the conflict here
+
+                for k in range(0, raw_predictions_for_slice_1.shape[2]):
+                    temp_dist[k] += raw_predictions_for_slice_1[i][j][k]
+
+                    if raw_labels_for_slice_1[i][j][k] == 1.0:
+                            temp_raw[k] = 1.0
+
+                temp_dist[0] += raw_predictions_for_slice_2[i][j][0]
+
+                for k in range(1, raw_predictions_for_slice_2.shape[2]):
+                    temp_dist[k+2] += raw_predictions_for_slice_2[i][j][k]
+                    if raw_labels_for_slice_2[i][j][k] == 1.0:
+                        temp_raw[k+2] = 1.0
+                        temp_raw[0] = 0.0
+
+
+                # both none
+                if temp_dist[0] == 2.0:
+                    temp_dist[0] = 1.0
+                # one none one other
+                elif temp_dist[0] == 1.0:
+                    temp_dist[0] = 0.0
+                    # two other
+                else:
+                    for k in range(0, len(temp_dist)):
+                        if temp_dist[k] == 1.0:
+                            temp_dist[k] = 0.0
+                            conflict_count += 1
+                            break
+                total_count += 1
+                raw_predictions_for_slice[i][j] = temp_dist
+
+                raw_labels_for_slice[i][j] = temp_raw
+
 
         for index, docpage in enumerate(slice):
             doc, page = docpage
@@ -464,6 +571,8 @@ def evaluate_model(
     #
     # Summarize and print results
     #
+
+    logging.info('conflict_count= {} total_count= {} conflict_ratio= {}'.format(conflict_count, total_count, conflict_count/total_count))
 
     # these are arrays of tuples (precision, recall) to produce an SPV1-style metric
     title_prs = []
@@ -1006,6 +1115,13 @@ def train(
             validation_bucket_start=validation_bucket_start,
             testing_bucket_start=testing_bucket_start))
         training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+
+        count = 0
+        for batch in train_docs:
+            count += 1
+            logging.info('gen batch {}\n'.format(count))
+
+        assert(True == False)
 
         for batch in dataprep2.threaded_generator(training_data):
             if trained_batches == 0:
