@@ -8,9 +8,6 @@ import os
 import random
 import math
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 from keras.layers import Embedding, Input, LSTM, Dense, Masking
 from keras.layers.merge import Concatenate
 from keras.layers.wrappers import TimeDistributed, Bidirectional
