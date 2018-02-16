@@ -949,6 +949,7 @@ def train(
     model.summary()
 
     if start_weights_filename is not None:
+        logging.info('start from model {}'.format(start_weights_filename))
         model.load_weights(start_weights_filename)
 
     best_model_filename = output_filename + ".best"
