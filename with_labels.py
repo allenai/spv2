@@ -949,6 +949,7 @@ def train(
     model.summary()
 
     if start_weights_filename is not None:
+        logging.info('start from model {}'.format(start_weights_filename))
         model.load_weights(start_weights_filename)
 
     best_model_filename = output_filename + ".best"
@@ -992,8 +993,11 @@ def train(
 
     if training_buckets != 0:
         logging.info("Starting training")
-        def documents_forever():
-            while True:
+
+        # default n is very large, should to be considered as infinit
+        def documents_epochs(n=1000000):
+            for i in range(0, n):
+                logging.info('Start new epoch {}/{}'.format(i,n))
                 yield from dataprep2.documents(
                     pmc_dir,
                     model_settings,
@@ -1004,7 +1008,7 @@ def train(
                     training_bucket_start=training_bucket_start,
                     validation_bucket_start=validation_bucket_start,
                     testing_bucket_start=testing_bucket_start)
-        train_docs = documents_forever()
+        train_docs = documents_epochs(n=8)
         training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
 
         for batch in dataprep2.threaded_generator(training_data):
