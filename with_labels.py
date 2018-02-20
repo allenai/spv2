@@ -8,6 +8,7 @@ import os
 import random
 import math
 import scipy.stats
+import multiset
 
 from keras.layers import Embedding, Input, LSTM, Dense, Masking
 from keras.layers.merge import Concatenate
@@ -22,7 +23,6 @@ import sklearn.metrics
 import settings
 import dataprep2
 import unicodedata
-from multiset import Multiset
 
 
 #
@@ -109,7 +109,13 @@ def model_with_labels(
     crf_layer = crf(lstm2)
     logging.info("crf:\t%s", crf_layer.shape)
 
-    model = Model(inputs=[pageno_input, pageno_from_back_input, token_input, font_input, numeric_inputs], outputs=crf_layer)
+    model = Model(inputs=[
+        pageno_input,
+        pageno_from_back_input,
+        token_input,
+        font_input,
+        numeric_inputs
+    ], outputs=crf_layer)
     model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
     return model
 
@@ -280,7 +286,7 @@ def make_batches(
     docs: typing.Generator[dataprep2.Document, None, None],
     keep_unlabeled_pages=True
 ):
-    max_page_pool_size = model_settings.tokens_per_batch // 4    # rule of thumb
+    max_page_pool_size = model_settings.tokens_per_batch // 8    # rule of thumb
     page_pool = PagePool()
 
     # fill up the page pool and yield from it as long as it's full
@@ -393,39 +399,20 @@ def run_model(
 def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
+    vocab,
     pmc_dir: str,
     log_filename: str,
     doc_set: dataprep2.DocumentSet = dataprep2.DocumentSet.TEST,
-    test_doc_count: int = None,
-    training_buckets: typing.Optional[int]=None,
-    validation_buckets: typing.Optional[int]=None,
-    testing_buckets: typing.Optional[int]=None,
-    training_bucket_start: typing.Optional[int]=None,
-    validation_bucket_start: typing.Optional[int]=None,
-    testing_bucket_start: typing.Optional[int]=None
+    test_doc_count: int = None
 ):
     #
     # Load and prepare documents
     #
 
-    word_set = get_word_set()
-
     def test_docs() -> typing.Generator[dataprep2.Document, None, None]:
-        # docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
-
-        docs = dataprep2.documents(
-            pmc_dir,
-            model_settings,
-            doc_set,
-            training_buckets=training_buckets,
-            validation_buckets=validation_buckets,
-            testing_buckets=testing_buckets,
-            training_bucket_start=training_bucket_start,
-            validation_bucket_start=validation_bucket_start,
-            testing_bucket_start=testing_bucket_start)
-
+        docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
         if test_doc_count is not None:
-            docs = list(itertools.islice(docs, 0, test_doc_count))
+            docs = itertools.islice(docs, 0, test_doc_count)
 
         yielded_doc_count = 0
         for doc in docs:
@@ -441,14 +428,22 @@ def evaluate_model(
         else:
             logging.info("Evaluating on %d documents", yielded_doc_count)
 
-    page_pool = PagePool()
-    for doc in test_docs():
-        for page in doc.pages:
-            page_pool.add(doc, page)
+    def slices_from_test_docs():
+        SLICE_SIZE = 64 * 1024  # for evaluation, we use the largest slice we can get away with
+
+        page_pool = PagePool()
+        for doc in test_docs():
+            for page in doc.pages:
+                page_pool.add(doc, page)
+
+            if len(page_pool) > SLICE_SIZE // 8:
+                yield page_pool.get_slice(SLICE_SIZE)
+
+        while len(page_pool) > 0:
+            yield page_pool.get_slice(SLICE_SIZE)
 
     docpage_to_results = {}
-    while len(page_pool) > 0:
-        slice = page_pool.get_slice(64 * 1024)  # For evaluation, we always use the biggest batch size we can.
+    for slice in dataprep2.threaded_generator(slices_from_test_docs()):
         x, y = batch_from_page_group(model_settings, slice)
         raw_predictions_for_slice = model.predict_on_batch(x)
         raw_labels_for_slice = y
@@ -474,6 +469,23 @@ def evaluate_model(
     bibvenue_prs = []
     bibyear_prs = []
 
+    def remove_hyphens(predicted_bibtitles):
+        for i in range(0, len(predicted_bibtitles)):
+            for j in range(1, len(predicted_bibtitles[i])-1):
+                if j >= len(predicted_bibtitles[i])-1:
+                    break
+                if predicted_bibtitles[i][j] == '-':
+                    possible_word = ''.join([predicted_bibtitles[i][j-1], '-',predicted_bibtitles[i][j+1]])
+                    if possible_word in vocab or possible_word.lower() in vocab:
+                        continue
+                    possible_word = ''.join([predicted_bibtitles[i][j-1], predicted_bibtitles[i][j+1]])
+                    if possible_word in vocab or possible_word.lower() in vocab:
+                        predicted_bibtitles[i][j-1] = possible_word
+                        predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
+                        predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
+
+        return predicted_bibtitles
+
     with open(log_filename, "w", encoding="UTF-8") as log_file:
         for doc in test_docs():
             log_file.write("\nDocument %s\n" % doc.doc_id)
@@ -496,7 +508,7 @@ def evaluate_model(
                 page_raw_predictions, page_raw_labels = \
                     docpage_to_results[(doc.doc_id, page.page_number)]
 
-                # find labeled titles and authors
+                # find labeled titles
                 page_labels = page_raw_labels.argmax(axis=1)
 
                 indices_labeled_title = np.where(page_labels == dataprep2.TITLE_LABEL)[0]
@@ -506,6 +518,7 @@ def evaluate_model(
                         labeled_title_on_page = np.take(page.tokens, labeled_title_on_page)
                         labeled_title = labeled_title_on_page
 
+                # find labeled authors
                 indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
                 # authors must all come from the same page
                 labeled_authors_on_page = [
@@ -515,6 +528,7 @@ def evaluate_model(
                 if len(labeled_authors_on_page) > len(labeled_authors):
                     labeled_authors = labeled_authors_on_page
 
+                # find labeled bibtitles
                 indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
                 labeled_bibtitles_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -522,6 +536,7 @@ def evaluate_model(
                 ]
                 labeled_bibtitles += labeled_bibtitles_on_page
 
+                # find labeled bibauthors
                 indices_labeled_bibauthor = np.where(page_labels == dataprep2.BIBAUTHOR_LABEL)[0]
                 labeled_bibauthors_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -529,6 +544,7 @@ def evaluate_model(
                 ]
                 labeled_bibauthors += labeled_bibauthors_on_page
 
+                # find labeled bibvenues
                 indices_labeled_bibvenue = np.where(page_labels == dataprep2.BIBVENUE_LABEL)[0]
                 labeled_bibvenues_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -536,6 +552,7 @@ def evaluate_model(
                 ]
                 labeled_bibvenues += labeled_bibvenues_on_page
 
+                # find labeled bibyear
                 indices_labeled_bibyear = np.where(page_labels == dataprep2.BIBYEAR_LABEL)[0]
                 labeled_bibyears_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -543,7 +560,7 @@ def evaluate_model(
                 ]
                 labeled_bibyears += labeled_bibyears_on_page
 
-                # find predicted titles and authors
+                # find predicted titles
                 page_predictions = page_raw_predictions.argmax(axis=1)
 
                 indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
@@ -553,8 +570,8 @@ def evaluate_model(
                         predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
                         predicted_title = predicted_title_on_page
 
+                # find predicted authors
                 indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-
                 # authors must all be in the same font
                 if len(indices_predicted_author) > 0:
                     author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
@@ -563,7 +580,6 @@ def evaluate_model(
                     author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
                     indices_predicted_author = \
                         [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
-
                 # authors must all come from the same page
                 predicted_authors_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -572,14 +588,15 @@ def evaluate_model(
                 if len(predicted_authors_on_page) > len(predicted_authors):
                     predicted_authors = predicted_authors_on_page
 
+                # find predicted bibtitles
                 indices_predicted_bibtitle = np.where(page_predictions == dataprep2.BIBTITLE_LABEL)[0]
-
                 predicted_bibtitles_on_page = [
                     np.take(page.tokens, index_sequence)
                     for index_sequence in _continuous_index_sequences(indices_predicted_bibtitle)
                 ]
                 predicted_bibtitles += predicted_bibtitles_on_page
 
+                # find predicted bibauthors
                 indices_predicted_bibauthor = np.where(page_predictions == dataprep2.BIBAUTHOR_LABEL)[0]
                 predicted_bibauthors_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -587,6 +604,7 @@ def evaluate_model(
                 ]
                 predicted_bibauthors += predicted_bibauthors_on_page
 
+                # find predicted bibvenues
                 indices_predicted_bibvenue = np.where(page_predictions == dataprep2.BIBVENUE_LABEL)[0]
                 predicted_bibvenues_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -594,6 +612,7 @@ def evaluate_model(
                 ]
                 predicted_bibvenues += predicted_bibvenues_on_page
 
+                # find predicted bibyears
                 indices_predicted_bibyear = np.where(page_predictions == dataprep2.BIBYEAR_LABEL)[0]
                 predicted_bibyears_on_page = [
                     np.take(page.tokens, index_sequence)
@@ -702,8 +721,7 @@ def evaluate_model(
                 for labeled_bibtitle in labeled_bibtitles:
                     log_file.write("Labeled bib title:   %s\n" % labeled_bibtitle)
 
-            if len(word_set) > 0:
-                predicted_bibtitles = remove_hyphens(predicted_bibtitles, word_set)
+            predicted_bibtitles = remove_hyphens(predicted_bibtitles)
             predicted_bibtitles = [" ".join(ats) for ats in predicted_bibtitles]
             if len(predicted_bibtitles) <= 0:
                 log_file.write("No bib title predicted\n")
@@ -761,7 +779,7 @@ def evaluate_model(
                     log_file.write("Predicted bib author: {}\n".format(" ".join(sorted_bib_author)))
 
             # calculate bibauthor P/R
-            gold_bibauthors_set = Multiset()
+            gold_bibauthors_set = multiset.Multiset()
 
             for gold_author_per_bib in gold_bibauthors:
                 for gold_bibauthor in gold_author_per_bib:
@@ -770,7 +788,7 @@ def evaluate_model(
                     sorted_bib_author = unsorted_bib_author
                     gold_bibauthors_set.add(normalize_author(' '.join(sorted_bib_author)))
 
-            predicted_bibauthors_set = Multiset()
+            predicted_bibauthors_set = multiset.Multiset()
             for e in predicted_bibauthors:
                 unsorted_bib_author = normalize_author(e).split()
                 unsorted_bib_author.sort()
@@ -818,11 +836,11 @@ def evaluate_model(
             gold_bibvenues = gold_bibvenues_set_array
 
             # calculate author P/R
-            gold_bibvenues_set = Multiset()
+            gold_bibvenues_set = multiset.Multiset()
             for e in gold_bibvenues:
                 gold_bibvenues_set.add(e)
 
-            predicted_bibvenues_set = Multiset()
+            predicted_bibvenues_set = multiset.Multiset()
             for e in predicted_bibvenues:
                 predicted_bibvenues_set.add(e)
 
@@ -867,19 +885,17 @@ def evaluate_model(
                     gold_bibyears_set_array.append(strip_e)
             gold_bibyears = gold_bibyears_set_array
 
-            gold_bibyears_set = Multiset()
+            gold_bibyears_set = multiset.Multiset()
             for e in gold_bibyears:
                 gold_bibyears_set.add(e)
 
-            predicted_bibyears_set = Multiset()
+            predicted_bibyears_set = multiset.Multiset()
             for e in predicted_bibyears:
                 predicted_bibyears_set.add(e)
 
             gold_bibyears = gold_bibyears_set
             predicted_bibyears = predicted_bibyears_set
 
-            # gold_bibyears = set(gold_bibyears)
-            # predicted_bibyears = set(predicted_bibyears)
             precision = 0
             if len(predicted_bibyears) > 0:
                 precision = len(gold_bibyears & predicted_bibyears) / len(predicted_bibyears)
@@ -920,22 +936,26 @@ def evaluate_model(
 
     print('')
 
-    return tuple(scores) + average_pr(title_prs) + average_pr(author_prs) + \
-                    average_pr(bibtitle_prs) + average_pr(bibauthor_prs) + \
-                    average_pr(bibvenue_prs) + average_pr(bibyear_prs)
-    # This is (auc_none, auc_titles, auc_authors, title_p, title_r, author_p, author_r)
-
+    return tuple(scores) + \
+           average_pr(title_prs) + \
+           average_pr(author_prs) + \
+           average_pr(bibtitle_prs) + \
+           average_pr(bibauthor_prs) + \
+           average_pr(bibvenue_prs) + \
+           average_pr(bibyear_prs)
+    # This is (
+    #   title_p, title_r,
+    #   author_p, author_r,
+    #   bibtitle_p, bibtitle_r,
+    #   bibauthor_p, bibauthor_r,
+    #   bibvenue_p, bibvenue_r,
+    #   bibyear_r, bibyear_r
+    # )
 
 def train(
     start_weights_filename,
     pmc_dir: str,
     output_filename: str,
-    training_buckets: typing.Optional[int]=None,
-    validation_buckets: typing.Optional[int]=None,
-    testing_buckets: typing.Optional[int]=None,
-    training_bucket_start: typing.Optional[int]=None,
-    validation_bucket_start: typing.Optional[int]=None,
-    testing_bucket_start: typing.Optional[int]=None,
     test_doc_count: int=10000,
     model_settings: settings.ModelSettings=settings.default_model_settings
 ):
@@ -943,7 +963,7 @@ def train(
     embeddings = dataprep2.CombinedEmbeddings(
         dataprep2.tokenstats_for_pmc_dir(pmc_dir),
         dataprep2.GloveVectors(model_settings.glove_vectors),
-        model_settings.minimum_token_frequency
+        model_settings.embedded_tokens_fraction
     )
 
     model = model_with_labels(model_settings, embeddings)
@@ -996,99 +1016,86 @@ def train(
     start_time = None
     trained_batches = 0
 
-    if training_buckets != 0:
-        logging.info("Starting training")
+    logging.info("Starting training")
 
-        # default n is very large, should to be considered as infinit
-        def documents_epochs(n=1000000):
-            for i in range(0, n):
-                logging.info('Start new epoch {}/{}'.format(i,n))
-                yield from dataprep2.documents(
-                    pmc_dir,
-                    model_settings,
-                    document_set=dataprep2.DocumentSet.TRAIN,
-                    training_buckets=training_buckets,
-                    validation_buckets=validation_buckets,
-                    testing_buckets=testing_buckets,
-                    training_bucket_start=training_bucket_start,
-                    validation_bucket_start=validation_bucket_start,
-                    testing_bucket_start=testing_bucket_start)
-        train_docs = documents_epochs(n=8)
-        training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
+    # default n is very large, should to be considered as infinite
+    def documents_epochs(n=1000000):
+        for i in range(0, n):
+            logging.info('Start new epoch {}/{}'.format(i, n))
+            yield from dataprep2.documents(
+                pmc_dir,
+                model_settings,
+                document_set=dataprep2.DocumentSet.TRAIN)
+    train_docs = documents_epochs(n=8)
+    training_data = make_batches(model_settings, train_docs, keep_unlabeled_pages=False)
 
-        for batch in dataprep2.threaded_generator(training_data):
-            if trained_batches == 0:
-                # It takes a while to get here the first time, since things have to be
-                # loaded from cache, the page pool has to be filled up, and so on, so we
-                # don't officially start until we get here for the first time.
-                start_time = time.time()
-                time_at_last_eval = start_time
+    for batch in dataprep2.threaded_generator(training_data):
+        if trained_batches == 0:
+            # It takes a while to get here the first time, since things have to be
+            # loaded from cache, the page pool has to be filled up, and so on, so we
+            # don't officially start until we get here for the first time.
+            start_time = time.time()
+            time_at_last_eval = start_time
 
-            batch_start_time = time.time()
-            x, y = batch
-            metrics = model.train_on_batch(x, y)
+        batch_start_time = time.time()
+        x, y = batch
+        metrics = model.train_on_batch(x, y)
 
-            trained_batches += 1
+        trained_batches += 1
 
-            now = time.time()
-            if trained_batches % 1 == 0:
-                metric_string = ", ".join(
-                    ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
-                )
+        now = time.time()
+        if trained_batches % 1 == 0:
+            metric_string = ", ".join(
+                ["%s: %.3f" % x for x in zip(model.metrics_names, metrics)]
+            )
+            logging.info(
+                "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
+                trained_batches,
+                now - start_time,
+                (now - start_time) / trained_batches,
+                now - batch_start_time,
+                metric_string)
+        time_since_last_eval = now - time_at_last_eval
+        if time_since_last_eval > 60 * 60:
+            logging.info(
+                "It's been %.0f seconds since the last eval. Triggering another one.",
+                time_since_last_eval)
+
+            eval_start_time = time.time()
+
+            logging.info("Writing temporary model to %s", output_filename)
+            model.save(output_filename, overwrite=True)
+            ev_result = evaluate_model(
+                model,
+                model_settings,
+                embeddings.glove_vocab(),
+                pmc_dir,
+                output_filename + ".log",
+                dataprep2.DocumentSet.TEST,
+                test_doc_count)
+            scored_results.append((now - start_time, trained_batches, ev_result))
+            print_scored_results(now - start_time)
+
+            # check if this one is better than the last one
+            combined_scores = get_combined_scores()
+            if combined_scores[-1] == max(combined_scores):
                 logging.info(
-                    "Trained on %d batches in %.0f s (%.2f spb). Last batch: %.2f s. %s",
-                    trained_batches,
-                    now - start_time,
-                    (now - start_time) / trained_batches,
-                    now - batch_start_time,
-                    metric_string)
-            time_since_last_eval = now - time_at_last_eval
-            if time_since_last_eval > 60 * 60:
-                logging.info(
-                    "It's been %.0f seconds since the last eval. Triggering another one.",
-                    time_since_last_eval)
+                   "High score (%.3f)! Saving model to %s",
+                   max(combined_scores),
+                   best_model_filename)
+                model.save(best_model_filename, overwrite=True)
 
-                eval_start_time = time.time()
+            eval_end_time = time.time()
+            # adjust start time to ignore the time we spent evaluating
+            start_time += eval_end_time - eval_start_time
 
-                logging.info("Writing temporary model to %s", output_filename)
-                model.save(output_filename, overwrite=True)
-                ev_result = evaluate_model(
-                    model,
-                    model_settings,
-                    pmc_dir,
-                    output_filename + ".log",
-                    dataprep2.DocumentSet.TEST,
-                    test_doc_count,
-                    training_buckets=training_buckets,
-                    validation_buckets=validation_buckets,
-                    testing_buckets=testing_buckets,
-                    training_bucket_start=training_bucket_start,
-                    validation_bucket_start=validation_bucket_start,
-                    testing_bucket_start=testing_bucket_start
-                )
-                scored_results.append((now - start_time, trained_batches, ev_result))
-                print_scored_results(now - start_time)
+            time_at_last_eval = eval_end_time
 
-                # check if this one is better than the last one
-                combined_scores = get_combined_scores()
-                if combined_scores[-1] == max(combined_scores):
-                    logging.info(
-                       "High score (%.3f)! Saving model to %s",
-                       max(combined_scores),
-                       best_model_filename)
-                    model.save(best_model_filename, overwrite=True)
-
-                eval_end_time = time.time()
-                # adjust start time to ignore the time we spent evaluating
-                start_time += eval_end_time - eval_start_time
-
-                time_at_last_eval = eval_end_time
-
-                # check if we've stopped improving
-                best_score = max(combined_scores)
-                if all([score < best_score for score in combined_scores[-5:]]):
-                    logging.info("No improvement for five hours. Stopping training.")
-                    break
+            # check if we've stopped improving
+            best_score = max(combined_scores)
+            if all([score < best_score for score in combined_scores[-5:]]):
+                logging.info("No improvement for five hours. Stopping training.")
+                break
 
     if len(scored_results) > 0:
         model.load_weights(best_model_filename)
@@ -1100,50 +1107,15 @@ def train(
     final_ev = evaluate_model(
         model,
         model_settings,
+        embeddings.glove_vocab(),
         pmc_dir,
         output_filename + ".log",
-        dataprep2.DocumentSet.VALIDATE,
-        training_buckets=training_buckets,
-        validation_buckets=validation_buckets,
-        testing_buckets=testing_buckets,
-        training_bucket_start=training_bucket_start,
-        validation_bucket_start=validation_bucket_start,
-        testing_bucket_start=testing_bucket_start
-    )
+        dataprep2.DocumentSet.VALIDATE)
     scored_results.append((float('inf'), trained_batches, final_ev))
 
     print_scored_results()
 
     return model
-
-
-def get_word_set():
-    word_set = set()
-    path = './glove.840B.300d.vocab'
-    if os.path.exists(path):
-        with open(path, encoding="UTF-8") as f:
-            for line in f:
-                word = line.strip()
-                word_set.add(word.lower())
-    return word_set
-
-
-def remove_hyphens(predicted_bibtitles, word_set):
-    for i in range(0, len(predicted_bibtitles)):
-        for j in range(1, len(predicted_bibtitles[i])-1):
-            if j >= len(predicted_bibtitles[i])-1:
-                break
-            if predicted_bibtitles[i][j] == '-':
-                possible_word = ''.join([predicted_bibtitles[i][j-1], '-',predicted_bibtitles[i][j+1]])
-                if possible_word in word_set or possible_word.lower() in word_set:
-                    continue
-                possible_word = ''.join([predicted_bibtitles[i][j-1], predicted_bibtitles[i][j+1]])
-                if possible_word in word_set or possible_word.lower() in word_set:
-                    predicted_bibtitles[i][j-1] = possible_word
-                    predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
-                    predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
-
-    return predicted_bibtitles
 
 
 #
@@ -1158,9 +1130,6 @@ def main():
     logging.getLogger().setLevel(logging.DEBUG)
 
     model_settings = settings.default_model_settings
-
-    def hex_int(x):
-        return int(x, 16)
 
     import argparse
     parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
@@ -1197,24 +1166,6 @@ def main():
         help="file containing the GloVe vectors"
     )
     parser.add_argument(
-        "--training-buckets", default=None, type=int, help="number of buckets to train on"
-    )
-    parser.add_argument(
-        "--validation-buckets", default=None, type=int, help="number of buckets to validate on"
-    )
-    parser.add_argument(
-        "--testing-buckets", default=None, type=int, help="number of buckets to test on"
-    )
-    parser.add_argument(
-        "--training-bucket-start", default=None, type=hex_int, help="the first bucket to train on"
-    )
-    parser.add_argument(
-        "--validation-bucket-start", default=None, type=hex_int, help="the first bucket to validate on"
-    )
-    parser.add_argument(
-        "--testing-bucket-start", default=None, type=hex_int, help="the first bucket to test on"
-    )
-    parser.add_argument(
         "--test-doc-count", default=10000, type=int, help="number of documents to test on"
     )
 
@@ -1228,15 +1179,8 @@ def main():
         args.start_weights,
         args.pmc_dir,
         args.output,
-        args.training_buckets,
-        args.validation_buckets,
-        args.testing_buckets,
-        args.training_bucket_start,
-        args.validation_bucket_start,
-        args.testing_bucket_start,
         args.test_doc_count,
-        model_settings
-    )
+        model_settings)
 
     model.save(args.output, overwrite=True)
 
