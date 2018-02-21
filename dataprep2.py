@@ -273,7 +273,7 @@ class GloveVectors(object):
 
     def get_vocab(self):
         self._ensure_vectors()
-        return self.word2index.keys
+        return self.word2index.keys()
 
     def get_vocab_size(self) -> int:
         self._ensure_vectors()
