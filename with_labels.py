@@ -9,6 +9,7 @@ import random
 import math
 import scipy.stats
 import multiset
+import collections
 
 from keras.layers import Embedding, Input, LSTM, Dense, Masking
 from keras.layers.merge import Concatenate
@@ -34,7 +35,7 @@ MAX_EMBEDDED_PAGES = 3
 def model_with_labels(
     model_settings: settings.ModelSettings,
     embeddings: dataprep2.CombinedEmbeddings
-):
+) -> Model:
     PAGENO_VECTOR_SIZE = 8
 
     pageno_input = Input(name='pageno_input', shape=(None,))
@@ -244,24 +245,37 @@ class PagePool:
 
         return slice
 
-    def get_slice(self, desired_slice_size: int) -> typing.List[typing.Tuple[dataprep2.Document, dataprep2.Page]]:
+    def get_slice(
+        self,
+        desired_slice_size: int,
+        smallest_pages: bool = False
+    ) -> typing.List[typing.Tuple[dataprep2.Document, dataprep2.Page]]:
+        """Returns a slice of pages that are of similar size.
+        - desired_slice_size is the number of tokens in the slice that should not be exceeded
+        - smallest_pages tells the pool to just return the smallest pages it has, instead of
+          selecting a random page size. At training time, selecting pages by size introduces
+          bias, so we select random page sizes. At test time, we don't care about bias, so we can
+          use the smallest pages and thus hope to get closer to the desired slice size.
+        """
         if len(self.pool) <= 0:
             raise ValueError
 
         self.pool.sort(key=page_length_for_doc_page_pair)
 
-        # The minimum slice start is easy: It's always the shortest page we have.
-        min_slice_start_index = 0
-        # The maximum slice start is harder: There have to be enough pages between the max slice
-        # start and the end of the pool to fill up the slice with as many tokens as possible.
-        token_count_of_largest_page = len(self.pool[-1][1].tokens)
-        max_slice_start_index = \
-            math.ceil(len(self.pool) - desired_slice_size / token_count_of_largest_page)
-        # We always include the last page, even if it's too big.
-        max_slice_start_index = min(max_slice_start_index, len(self.pool) - 1)
-        max_slice_start_index = max(0, max_slice_start_index)
-
-        slice_start_index = self.random.randint(min_slice_start_index, max_slice_start_index)
+        if smallest_pages:
+            slice_start_index = 0
+        else:
+            # The minimum slice start is easy: It's always the shortest page we have.
+            min_slice_start_index = 0
+            # The maximum slice start is harder: There have to be enough pages between the max slice
+            # start and the end of the pool to fill up the slice with as many tokens as possible.
+            token_count_of_largest_page = len(self.pool[-1][1].tokens)
+            max_slice_start_index = \
+                math.ceil(len(self.pool) - desired_slice_size / token_count_of_largest_page)
+            # We always include the last page, even if it's too big.
+            max_slice_start_index = min(max_slice_start_index, len(self.pool) - 1)
+            max_slice_start_index = max(0, max_slice_start_index)
+            slice_start_index = self.random.randint(min_slice_start_index, max_slice_start_index)
 
         slice = []
         slice_max_token_count = 0
@@ -395,6 +409,17 @@ def run_model(
         predicted_authors = [" ".join(ats) for ats in predicted_authors]
         yield (doc, predicted_title, predicted_authors)
 
+EvaluationResult = collections.namedtuple(
+    "EvaluationResult", [
+        "aucs",
+        "title_pr",
+        "author_pr",
+        "bibtitle_pr",
+        "bibauthor_pr",
+        "bibvenue_pr",
+        "bibyear_pr"
+    ]
+)
 
 def evaluate_model(
     model,
@@ -404,7 +429,7 @@ def evaluate_model(
     log_filename: str,
     doc_set: dataprep2.DocumentSet = dataprep2.DocumentSet.TEST,
     test_doc_count: int = None
-):
+) -> EvaluationResult:
     #
     # Load and prepare documents
     #
@@ -437,10 +462,10 @@ def evaluate_model(
                 page_pool.add(doc, page)
 
             if len(page_pool) > SLICE_SIZE // 8:
-                yield page_pool.get_slice(SLICE_SIZE)
+                yield page_pool.get_slice(SLICE_SIZE, smallest_pages=True)
 
         while len(page_pool) > 0:
-            yield page_pool.get_slice(SLICE_SIZE)
+            yield page_pool.get_slice(SLICE_SIZE, smallest_pages=True)
 
     docpage_to_results = {}
     for slice in dataprep2.threaded_generator(slices_from_test_docs()):
@@ -936,47 +961,45 @@ def evaluate_model(
 
     print('')
 
-    return tuple(scores) + \
-           average_pr(title_prs) + \
-           average_pr(author_prs) + \
-           average_pr(bibtitle_prs) + \
-           average_pr(bibauthor_prs) + \
-           average_pr(bibvenue_prs) + \
-           average_pr(bibyear_prs)
-    # This is (
-    #   title_p, title_r,
-    #   author_p, author_r,
-    #   bibtitle_p, bibtitle_r,
-    #   bibauthor_p, bibauthor_r,
-    #   bibvenue_p, bibvenue_r,
-    #   bibyear_r, bibyear_r
-    # )
+    return EvaluationResult(
+        tuple(scores),
+        average_pr(title_prs),
+        average_pr(author_prs),
+        average_pr(bibtitle_prs),
+        average_pr(bibauthor_prs),
+        average_pr(bibvenue_prs),
+        average_pr(bibyear_prs))
+
+def f1(p: float, r: float) -> float:
+    if p + r == 0.0:
+        return 0
+    return (2.0 * p * r) / (p + r)
+
+def combined_score_from_evaluation_result(ev_result) -> float:
+    stats = np.asarray([
+        f1(*ev_result.title_pr),
+        f1(*ev_result.author_pr),
+        f1(*ev_result.bibtitle_pr),
+        f1(*ev_result.bibauthor_pr),
+        f1(*ev_result.bibvenue_pr),
+        f1(*ev_result.bibyear_pr)
+    ], dtype=np.float64)
+    if np.all(stats > 0):
+        return scipy.stats.hmean(stats)
+    else:
+        return 0
 
 def train(
-    start_weights_filename,
+    model: Model,
+    embeddings: dataprep2.CombinedEmbeddings,
     pmc_dir: str,
     output_filename: str,
     test_doc_count: int=10000,
-    model_settings: settings.ModelSettings=settings.default_model_settings
-):
+    model_settings: settings.ModelSettings=settings.default_model_settings,
+    score_to_watch: typing.Callable[[EvaluationResult], float] = combined_score_from_evaluation_result
+) -> Model:
     """Returns a trained model using the data in dir as training data"""
-    embeddings = dataprep2.CombinedEmbeddings(
-        dataprep2.tokenstats_for_pmc_dir(pmc_dir),
-        dataprep2.GloveVectors(model_settings.glove_vectors),
-        model_settings.embedded_tokens_fraction
-    )
-
-    model = model_with_labels(model_settings, embeddings)
-    model.summary()
-
-    if start_weights_filename is not None:
-        logging.info('start from model {}'.format(start_weights_filename))
-        model.load_weights(start_weights_filename)
-
     best_model_filename = output_filename + ".best"
-
-    from keras.utils import plot_model
-    plot_model(model, output_filename + ".png", show_shapes=True)
 
     scored_results = []
     def print_scored_results(training_time = None):
@@ -989,34 +1012,13 @@ def train(
               "auc_bibyear\ttitle_p\ttitle_r\tauthor_p\tauthor_r\tbibtitle_p\tbibtitle_r\tbibauthor_p\tbibauthor_r" +
         "\tbibvenue_p\tbibvenue_r\tbibyear_p\tbibyear_r")
         for time_elapsed, batch_count, ev_result in scored_results:
-            print("\t".join(map(str, (time_elapsed, batch_count) + ev_result)))
+            flatten = lambda l: [item for sublist in l for item in sublist]
+            print("\t".join(map(str, (time_elapsed, batch_count) + tuple(flatten(ev_result)))))
     def get_combined_scores() -> typing.List[float]:
-        def f1(p: float, r: float) -> float:
-            if p + r == 0.0:
-                return 0
-            return (2.0 * p * r) / (p + r)
-        def combined_score(ev_result) -> float:
-            _, _, _, _, _, _, _, title_p, title_r, author_p, author_r, \
-                bib_title_p, bib_title_r, bib_author_p, bib_author_r, \
-                bib_venue_p, bib_venue_r, bib_year_p, bib_year_r = ev_result
-            stats = np.asarray([
-                f1(title_p, title_r),
-                f1(author_p, author_r),
-                f1(bib_title_p, bib_title_r),
-                f1(bib_author_p, bib_author_r),
-                f1(bib_venue_p, bib_venue_r),
-                f1(bib_year_p, bib_year_r)
-            ], dtype=np.float64)
-            if np.all(stats > 0):
-                return scipy.stats.hmean(stats)
-            else:
-                return 0
-        return [combined_score(ev_result) for _, _, ev_result in scored_results]
+        return [score_to_watch(ev_result) for _, _, ev_result in scored_results]
 
     start_time = None
     trained_batches = 0
-
-    logging.info("Starting training")
 
     # default n is very large, should to be considered as infinite
     def documents_epochs(n=1000000):
@@ -1175,8 +1177,46 @@ def main():
     model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     print(model_settings)
 
+    """Returns a trained model using the data in dir as training data"""
+    embeddings = dataprep2.CombinedEmbeddings(
+        dataprep2.tokenstats_for_pmc_dir(args.pmc_dir),
+        dataprep2.GloveVectors(model_settings.glove_vectors),
+        model_settings.embedded_tokens_fraction
+    )
+
+    model = model_with_labels(model_settings, embeddings)
+    model.summary()
+
+    if args.start_weights is not None:
+        logging.info('Starting from the model at {}'.format(args.start_weights))
+        model.load_weights(args.start_weights)
+
+    # first round, we train on three pages, and watch only title and author scores
+    def combined_ta_score_from_evaluation_result(ev_result) -> float:
+        stats = np.asarray([
+            f1(*ev_result.title_pr),
+            f1(*ev_result.author_pr)
+        ], dtype=np.float64)
+        if np.all(stats > 0):
+            return scipy.stats.hmean(stats)
+        else:
+            return 0
+    model_settings_for_round_one = model_settings._replace(max_page_number = 3)
+    logging.info("Starting training, round 1: Only titles and authors")
     model = train(
-        args.start_weights,
+        model,
+        embeddings,
+        args.pmc_dir,
+        args.output + ".round1",
+        args.test_doc_count,
+        model_settings_for_round_one,
+        combined_ta_score_from_evaluation_result)
+
+    # second round, we train normally
+    logging.info("Starting training, round 2: Train all the things")
+    model = train(
+        model,
+        embeddings,
         args.pmc_dir,
         args.output,
         args.test_doc_count,
