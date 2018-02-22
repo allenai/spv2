@@ -353,13 +353,13 @@ def main():
     embeddings = dataprep2.CombinedEmbeddings(
         token_stats,
         dataprep2.GloveVectors(model_settings.glove_vectors),
-        model_settings.minimum_token_frequency
+        model_settings.embedded_tokens_fraction
     )
 
     import with_labels  # Heavy import, so we do it here
     model = with_labels.model_with_labels(model_settings, embeddings)
-    model.load_weights("model/B40.h5")
-    model_version = 1
+    model.load_weights("model/C27.h5.round1.best")
+    model_version = 2
 
     # async http stuff
     async_event_loop = asyncio.get_event_loop()
