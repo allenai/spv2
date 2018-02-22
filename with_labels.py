@@ -353,7 +353,8 @@ def run_model(
     page_pool = PagePool()
     for doc in get_docs():
         for page in doc.pages:
-            page_pool.add(doc, page)
+            if len(page.tokens) > 0:
+                page_pool.add(doc, page)
 
     docpage_to_results = {}
     while len(page_pool) > 0:
@@ -375,9 +376,10 @@ def run_model(
         predicted_authors = []
 
         for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
-            page_raw_predictions = docpage_to_results[(doc.doc_id, page.page_number)]
+            if len(page.tokens) <= 0:
+                continue
 
-            # find predicted titles and authors
+            page_raw_predictions = docpage_to_results[(doc.doc_id, page.page_number)]
             page_predictions = page_raw_predictions.argmax(axis=1)
 
             indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
