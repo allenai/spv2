@@ -446,7 +446,7 @@ def main():
     last_time_with_paper_ids = start_time
     processing_timeout = 600
     while True:
-        paper_ids = todo_list.get_batch_to_process(model_version)
+        paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=20)
         logging.info("Received %d paper ids", len(paper_ids))
         if len(paper_ids) <= 0:
             if time.time() - last_time_with_paper_ids > processing_timeout:
