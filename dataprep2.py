@@ -222,7 +222,7 @@ class VisionOutput(object):
             return self.boxes[sha][page]
         except KeyError:
             # We don't have boxes for that document.
-            logging.warning("Missing vision output for %s", sha)
+            #logging.warning("Missing vision output for %s", sha)   # This is probably never coming back.
             return list()
         except IndexError:
             # We have boxes for that document, but not for that page.
