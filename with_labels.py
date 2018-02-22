@@ -220,6 +220,7 @@ class PagePool:
         self.random.seed(1337)
 
     def add(self, doc: dataprep2.Document, page: dataprep2.Page):
+        assert len(page.tokens) > 0
         self.pool.append((doc, page))
 
     def __len__(self) -> int:
