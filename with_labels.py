@@ -374,6 +374,7 @@ def run_model(
 
         predicted_title = np.empty(shape=(0,), dtype=np.unicode)
         predicted_authors = []
+        predicted_bibs = []
 
         for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
             if len(page.tokens) <= 0:
@@ -382,6 +383,7 @@ def run_model(
             page_raw_predictions = docpage_to_results[(doc.doc_id, page.page_number)]
             page_predictions = page_raw_predictions.argmax(axis=1)
 
+            # find predicted titles
             indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
             if len(indices_predicted_title) > 0:
                 predicted_title_on_page = _longest_continuous_index_sequence(indices_predicted_title)
@@ -389,8 +391,8 @@ def run_model(
                     predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
                     predicted_title = predicted_title_on_page
 
+            # find predicted authors
             indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-
             # authors must all be in the same font
             if len(indices_predicted_author) > 0:
                 author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
@@ -399,7 +401,6 @@ def run_model(
                 author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
                 indices_predicted_author = \
                     [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
-
             # authors must all come from the same page
             predicted_authors_on_page = [
                 np.take(page.tokens, index_sequence)
@@ -408,9 +409,54 @@ def run_model(
             if len(predicted_authors_on_page) > len(predicted_authors):
                 predicted_authors = predicted_authors_on_page
 
+            # find predicted bibs
+            BIB_LABELS = {
+                dataprep2.BIBTITLE_LABEL,
+                dataprep2.BIBAUTHOR_LABEL,
+                dataprep2.BIBVENUE_LABEL,
+                dataprep2.BIBYEAR_LABEL
+            }
+
+            # find all sections of text with bib labels, and put them into a single list
+            bib_index_sequences = []
+            for bib_label in BIB_LABELS:
+                indices_predicted_biblabel = np.where(page_predictions == bib_label)[0]
+                for index_sequence in _continuous_index_sequences(indices_predicted_biblabel):
+                    bib_index_sequences.append((index_sequence, bib_label))
+            # order the list by starting position
+            bib_index_sequences.sort(key=lambda x: x[0][0])
+
+            # go through the index sequences one by one. start a new bib entry when we see the same
+            # bib field again. concatenate if we see the same field twice.
+            bib_fields = {}
+            last_bib_field = None
+            for index_sequence, field in bib_index_sequences:
+                if field in bib_fields and field != last_bib_field:
+                    predicted_bibs.append((
+                        bib_fields.get(dataprep2.BIBTITLE_LABEL, None),
+                        bib_fields.get(dataprep2.BIBAUTHOR_LABEL, []),
+                        bib_fields.get(dataprep2.BIBVENUE_LABEL, None),
+                        bib_fields.get(dataprep2.BIBYEAR_LABEL, None),
+                    ))
+                    bib_fields = {}
+                bib_field_string = " ".join(np.take(page.tokens, index_sequence))
+                if field == dataprep2.BIBAUTHOR_LABEL:
+                    bib_fields[field] = bib_fields.get(field, [])
+                    bib_fields[field].append(bib_field_string)
+                else:
+                    bib_fields[field] = (bib_fields.get(field, "") + " " + bib_field_string).strip()
+                last_bib_field = field
+            if len(bib_fields) > 0:
+                predicted_bibs.append((
+                    bib_fields.get(dataprep2.BIBTITLE_LABEL, None),
+                    bib_fields.get(dataprep2.BIBAUTHOR_LABEL, []),
+                    bib_fields.get(dataprep2.BIBVENUE_LABEL, None),
+                    bib_fields.get(dataprep2.BIBYEAR_LABEL, None),
+                ))
+
         predicted_title = " ".join(predicted_title)
         predicted_authors = [" ".join(ats) for ats in predicted_authors]
-        yield (doc, predicted_title, predicted_authors)
+        yield (doc, predicted_title, predicted_authors, predicted_bibs)
 
 EvaluationResult = collections.namedtuple(
     "EvaluationResult", [

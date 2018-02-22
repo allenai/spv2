@@ -533,8 +533,16 @@ def main():
                         "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
                         "title": _sanitize_for_json(title),
-                        "authors": authors
-                    } for doc, title, authors in results
+                        "authors": authors,
+                        "bibs": [
+                            {
+                                "title": bibtitle,
+                                "authors": bibauthors,
+                                "venues": bibvenues,
+                                "years": bibyears
+                            } for bibtitle, bibauthors, bibvenues, bibyears in bibs
+                        ]
+                    } for doc, title, authors, bibs in results
                 }
 
                 todo_list.post_results(model_version, results)
