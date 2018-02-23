@@ -39,7 +39,7 @@ MAX_EMBEDDED_PAGES = 3
 def model_with_labels(
     model_settings: settings.ModelSettings,
     embeddings: dataprep2.CombinedEmbeddings
-) -> Tuple[Model, Model]:
+) -> typing.Tuple[Model, Model]:
     PAGENO_VECTOR_SIZE = 8
 
     with tf.device('/cpu:0'):
