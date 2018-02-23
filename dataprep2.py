@@ -1549,6 +1549,12 @@ def documents_for_featurized_tokens(
     include_labels: bool = True,
     max_tokens_per_page: typing.Optional[int] = None
 ):
+    # read features for the whole bucket at once
+    # We do this for all but token_text_features. Tokens are probably too big.
+    token_hashed_text_features = featurized_tokens["token_hashed_text_features"][()]
+    token_numeric_features = featurized_tokens["token_numeric_features"][()]
+    token_scaled_numeric_features = featurized_tokens["token_scaled_numeric_features"][()]
+
     for doc_metadata in featurized_tokens["doc_metadata"]:
         doc_metadata = json.loads(doc_metadata)
         pages = []
@@ -1571,13 +1577,13 @@ def documents_for_featurized_tokens(
                 tokens = \
                     featurized_tokens["token_text_features"][first_token_index:last_token_index_plus_one, 0],
                 token_hashes = \
-                    featurized_tokens["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
+                    token_hashed_text_features[first_token_index:last_token_index_plus_one, 0],
                 font_hashes = \
-                    featurized_tokens["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                    token_hashed_text_features[first_token_index:last_token_index_plus_one, 1],
                 numeric_features = \
-                    featurized_tokens["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                    token_numeric_features[first_token_index:last_token_index_plus_one, :],
                 scaled_numeric_features = \
-                    featurized_tokens["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                    token_scaled_numeric_features[first_token_index:last_token_index_plus_one, :],
                 labels = labels
             ))
 
