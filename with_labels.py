@@ -304,29 +304,36 @@ def make_batches(
     max_page_pool_size = model_settings.tokens_per_batch // 8    # rule of thumb
     page_pool = PagePool()
 
-    # fill up the page pool and yield from it as long as it's full
-    for doc in docs:
-        old_page_pool_length = len(page_pool)
+    def pages_generator():
+        for doc in docs:
+            for page in doc.pages[:model_settings.max_page_number]:
+                # filter out pages that have no labeled tokens
+                if not keep_unlabeled_pages:
+                    if not np.any(page.labels):
+                        continue
+                yield doc, page
+    pages = pages_generator()
 
-        for page in doc.pages[:model_settings.max_page_number]:
-            # filter out pages that have no labeled tokens
-            if not keep_unlabeled_pages:
-                if not np.any(page.labels):
-                    continue
-            page_pool.add(doc, page)
-
-        new_page_pool_length = len(page_pool)
-
-        if new_page_pool_length >= max_page_pool_size:
-            yield batch_from_page_group(
-                model_settings,
-                page_pool.get_slice(model_settings.tokens_per_batch))
-        elif old_page_pool_length // 100 != new_page_pool_length // 100:
+    # fill up the page pool first
+    for doc, page in pages:
+        page_pool.add(doc, page)
+        if len(page_pool) >= max_page_pool_size:
+            break
+        elif len(page_pool) % 100 == 0:
             logging.info(
                 "Loading up the page pool. %d / %d (%.2f%%)",
                 len(page_pool),
                 max_page_pool_size,
                 100.0 * len(page_pool) / max_page_pool_size)
+
+    # yield from the page pool
+    for doc, page in pages:
+        page_pool.add(doc, page)
+
+        if len(page_pool) >= max_page_pool_size:
+            yield batch_from_page_group(
+                model_settings,
+                page_pool.get_slice(model_settings.tokens_per_batch))
 
     # emit all leftover pages
     while len(page_pool) > 0:
