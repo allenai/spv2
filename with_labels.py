@@ -324,6 +324,12 @@ def make_batches(
             yield batch_from_page_group(
                 model_settings,
                 page_pool.get_slice(model_settings.tokens_per_batch))
+        else:
+            logging.info(
+                "Loading up the page pool. %d / %d (%.2f%%)",
+                len(page_pool),
+                max_page_pool_size,
+                100.0 * len(page_pool) / max_page_pool_size)
 
     # emit all leftover pages
     while len(page_pool) > 0:
