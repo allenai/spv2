@@ -1554,6 +1554,9 @@ def documents_for_featurized_tokens(
     token_hashed_text_features = featurized_tokens["token_hashed_text_features"][()]
     token_numeric_features = featurized_tokens["token_numeric_features"][()]
     token_scaled_numeric_features = featurized_tokens["token_scaled_numeric_features"][()]
+    token_labels = None
+    if include_labels:
+        token_labels = featurized_tokens["token_labels"][()]
 
     for doc_metadata in featurized_tokens["doc_metadata"]:
         doc_metadata = json.loads(doc_metadata)
@@ -1566,7 +1569,7 @@ def documents_for_featurized_tokens(
             last_token_index_plus_one = first_token_index + token_count
 
             if include_labels:
-                labels = featurized_tokens["token_labels"][first_token_index:last_token_index_plus_one]
+                labels = token_labels[first_token_index:last_token_index_plus_one]
             else:
                 labels = None
 
