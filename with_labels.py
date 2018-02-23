@@ -313,6 +313,8 @@ def make_batches(
 
     # fill up the page pool and yield from it as long as it's full
     for doc in docs:
+        old_page_pool_length = len(page_pool)
+
         for page in doc.pages[:model_settings.max_page_number]:
             # filter out pages that have no labeled tokens
             if not keep_unlabeled_pages:
@@ -320,11 +322,13 @@ def make_batches(
                     continue
             page_pool.add(doc, page)
 
-        if len(page_pool) >= max_page_pool_size:
+        new_page_pool_length = len(page_pool)
+
+        if new_page_pool_length >= max_page_pool_size:
             yield batch_from_page_group(
                 model_settings,
                 page_pool.get_slice(model_settings.tokens_per_batch))
-        else:
+        elif old_page_pool_length // 100 != new_page_pool_length // 100:
             logging.info(
                 "Loading up the page pool. %d / %d (%.2f%%)",
                 len(page_pool),
