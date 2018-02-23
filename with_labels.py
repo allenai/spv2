@@ -16,9 +16,7 @@ from keras.layers.merge import Concatenate
 from keras.layers.wrappers import TimeDistributed, Bidirectional
 from keras.models import Model
 from keras.optimizers import Adam
-from keras.utils import multi_gpu_model
 from keras_contrib.layers import CRF
-import tensorflow as tf
 
 import sklearn
 import sklearn.metrics
@@ -32,100 +30,95 @@ import unicodedata
 # Make Model 👯
 #
 
-GPU_COUNT = 4
-
 MAX_EMBEDDED_PAGES = 3
 
 def model_with_labels(
     model_settings: settings.ModelSettings,
     embeddings: dataprep2.CombinedEmbeddings
-) -> Tuple[Model, Model]:
+) -> Model:
     PAGENO_VECTOR_SIZE = 8
 
-    with tf.device('/cpu:0'):
-        pageno_input = Input(name='pageno_input', shape=(None,))
-        logging.info("pageno_input:\t%s", pageno_input.shape)
-        pageno_embedding = \
-            Embedding(
-                name='pageno_embedding',
-                mask_zero=True,
-                input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for "other", one for the mask
-                output_dim=PAGENO_VECTOR_SIZE)(pageno_input)
-        logging.info("pageno_embedding:\t%s", pageno_embedding.shape)
+    pageno_input = Input(name='pageno_input', shape=(None,))
+    logging.info("pageno_input:\t%s", pageno_input.shape)
+    pageno_embedding = \
+        Embedding(
+            name='pageno_embedding',
+            mask_zero=True,
+            input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for "other", one for the mask
+            output_dim=PAGENO_VECTOR_SIZE)(pageno_input)
+    logging.info("pageno_embedding:\t%s", pageno_embedding.shape)
 
-        pageno_from_back_input = Input(name='pageno_from_back_input', shape=(None,))
-        logging.info("pageno_from_back_input:\t%s", pageno_from_back_input.shape)
-        pageno_from_back_embedding = \
-            Embedding(
-                name='pageno_from_back_embedding',
-                mask_zero=True,
-                input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for "other", one for the mask
-                output_dim=PAGENO_VECTOR_SIZE)(pageno_from_back_input)
-        logging.info("pageno_from_back_embedding:\t%s", pageno_from_back_embedding.shape)
+    pageno_from_back_input = Input(name='pageno_from_back_input', shape=(None,))
+    logging.info("pageno_from_back_input:\t%s", pageno_from_back_input.shape)
+    pageno_from_back_embedding = \
+        Embedding(
+            name='pageno_from_back_embedding',
+            mask_zero=True,
+            input_dim=MAX_EMBEDDED_PAGES+1+1,    # one for "other", one for the mask
+            output_dim=PAGENO_VECTOR_SIZE)(pageno_from_back_input)
+    logging.info("pageno_from_back_embedding:\t%s", pageno_from_back_embedding.shape)
 
-        token_input = Input(name='token_input', shape=(None,))
-        logging.info("token_input:\t%s", token_input.shape)
-        token_embedding = \
-            Embedding(
-                name='token_embedding',
-                mask_zero=True,
-                input_dim=embeddings.vocab_size()+1,    # one for the mask
-                output_dim=embeddings.dimensions(),
-                weights=[embeddings.matrix_for_keras()])(token_input)
-        logging.info("token_embedding:\t%s", token_embedding.shape)
+    token_input = Input(name='token_input', shape=(None,))
+    logging.info("token_input:\t%s", token_input.shape)
+    token_embedding = \
+        Embedding(
+            name='token_embedding',
+            mask_zero=True,
+            input_dim=embeddings.vocab_size()+1,    # one for the mask
+            output_dim=embeddings.dimensions(),
+            weights=[embeddings.matrix_for_keras()])(token_input)
+    logging.info("token_embedding:\t%s", token_embedding.shape)
 
-        FONT_VECTOR_SIZE = 10
-        font_input = Input(name='font_input', shape=(None,))
-        logging.info("font_input:\t%s", font_input.shape)
-        font_embedding = \
-            Embedding(
-                name='font_embedding',
-                mask_zero=True,
-                input_dim=model_settings.font_hash_size+1,    # one for the mask
-                output_dim=FONT_VECTOR_SIZE)(font_input)
-        logging.info("font_embedding:\t%s", font_embedding.shape)
+    FONT_VECTOR_SIZE = 10
+    font_input = Input(name='font_input', shape=(None,))
+    logging.info("font_input:\t%s", font_input.shape)
+    font_embedding = \
+        Embedding(
+            name='font_embedding',
+            mask_zero=True,
+            input_dim=model_settings.font_hash_size+1,    # one for the mask
+            output_dim=FONT_VECTOR_SIZE)(font_input)
+    logging.info("font_embedding:\t%s", font_embedding.shape)
 
-        numeric_inputs = Input(name='numeric_inputs', shape=(None, 18)) # DEBUG: put back the vision features
-        logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
+    numeric_inputs = Input(name='numeric_inputs', shape=(None, 18)) # DEBUG: put back the vision features
+    logging.info("numeric_inputs:\t%s", numeric_inputs.shape)
 
-        numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
-        logging.info("numeric_masked:\t%s", numeric_masked.shape)
+    numeric_masked = Masking(name='numeric_masked')(numeric_inputs)
+    logging.info("numeric_masked:\t%s", numeric_masked.shape)
 
-        pdftokens_combined = Concatenate(
-            name='pdftoken_combined', axis=2
-        )([
-            pageno_embedding,
-            pageno_from_back_embedding,
-            token_embedding,
-            font_embedding,
-            numeric_masked
-        ])
-        logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
+    pdftokens_combined = Concatenate(
+        name='pdftoken_combined', axis=2
+    )([
+        pageno_embedding,
+        pageno_from_back_embedding,
+        token_embedding,
+        font_embedding,
+        numeric_masked
+    ])
+    logging.info("pdftokens_combined:\t%s", pdftokens_combined.shape)
 
-        churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
-        logging.info("churned_tokens:\t%s", churned_tokens.shape)
+    churned_tokens = TimeDistributed(Dense(1024), name="churned_tokens")(pdftokens_combined)
+    logging.info("churned_tokens:\t%s", churned_tokens.shape)
 
-        lstm1 = Bidirectional(LSTM(units=512, return_sequences=True))(churned_tokens)
-        logging.info("lstm1:\t%s", lstm1.shape)
+    lstm1 = Bidirectional(LSTM(units=512, return_sequences=True))(churned_tokens)
+    logging.info("lstm1:\t%s", lstm1.shape)
 
-        lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
-        logging.info("lstm2:\t%s", lstm2.shape)
+    lstm2 = Bidirectional(LSTM(units=512, return_sequences=True))(lstm1)
+    logging.info("lstm2:\t%s", lstm2.shape)
 
-        crf = CRF(units=7)
-        crf_layer = crf(lstm2)
-        logging.info("crf:\t%s", crf_layer.shape)
+    crf = CRF(units=7)
+    crf_layer = crf(lstm2)
+    logging.info("crf:\t%s", crf_layer.shape)
 
-        model = Model(inputs=[
-            pageno_input,
-            pageno_from_back_input,
-            token_input,
-            font_input,
-            numeric_inputs
-        ], outputs=crf_layer)
-
-    parallel_model = multi_gpu_model(model, gpus=GPU_COUNT)
-    parallel_model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
-    return model, parallel_model
+    model = Model(inputs=[
+        pageno_input,
+        pageno_from_back_input,
+        token_input,
+        font_input,
+        numeric_inputs
+    ], outputs=crf_layer)
+    model.compile(Adam(), crf.loss_function, metrics=[crf.accuracy])
+    return model
 
 
 #
@@ -1250,7 +1243,7 @@ def main():
         model_settings.embedded_tokens_fraction
     )
 
-    model, parallel_model = model_with_labels(model_settings, embeddings)
+    model = model_with_labels(model_settings, embeddings)
     model.summary()
 
     if args.start_weights is not None:
@@ -1269,8 +1262,8 @@ def main():
             return 0
     model_settings_for_round_one = model_settings._replace(max_page_number = 3)
     logging.info("Starting training, round 1: Only titles and authors")
-    parallel_model = train(
-        parallel_model,
+    model = train(
+        model,
         embeddings,
         args.pmc_dir,
         args.output + ".round1",
@@ -1280,8 +1273,8 @@ def main():
 
     # second round, we train normally
     logging.info("Starting training, round 2: Train all the things")
-    parallel_model = train(
-        parallel_model,
+    model = train(
+        model,
         embeddings,
         args.pmc_dir,
         args.output,
