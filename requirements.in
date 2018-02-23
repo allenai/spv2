@@ -6,7 +6,7 @@ sklearn
 cffi
 pydot_ng
 manhole
-git+https://www.github.com/farizrahman4u/keras-contrib.git
+git+https://github.com/keras-team/keras-contrib.git
 psycopg2
 aiohttp
 multiset
