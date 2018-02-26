@@ -358,7 +358,7 @@ def main():
 
     import with_labels  # Heavy import, so we do it here
     model = with_labels.model_with_labels(model_settings, embeddings)
-    model.load_weights("model/C27.h5.round1.best")
+    model.load_weights("model/C27.h5")
     model_version = 2
 
     # async http stuff
