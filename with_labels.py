@@ -528,7 +528,7 @@ def evaluate_model(
                 page_pool.add(doc, page)
 
             if len(page_pool) > SLICE_SIZE // 8:
-                yield page_pool.get_slice(SLICE_SIZE, smallest_pages=True)
+                yield page_pool.get_slice(SLICE_SIZE)
 
         while len(page_pool) > 0:
             yield page_pool.get_slice(SLICE_SIZE, smallest_pages=True)
