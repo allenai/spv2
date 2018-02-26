@@ -308,6 +308,8 @@ def make_batches(
         for doc in docs:
             for page in doc.pages[:model_settings.max_page_number]:
                 # filter out pages that have no labeled tokens
+                if len(page.tokens) <= 0:
+                    continue
                 if not keep_unlabeled_pages:
                     if not np.any(page.labels):
                         continue
@@ -525,7 +527,8 @@ def evaluate_model(
         page_pool = PagePool()
         for doc in test_docs():
             for page in doc.pages:
-                page_pool.add(doc, page)
+                if len(page.tokens) > 0:
+                    page_pool.add(doc, page)
 
             if len(page_pool) > SLICE_SIZE // 8:
                 yield page_pool.get_slice(SLICE_SIZE)
