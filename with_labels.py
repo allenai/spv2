@@ -599,6 +599,9 @@ def evaluate_model(
             predicted_bibyears = []
 
             for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
+                if len(page.tokens) <= 0:
+                    continue
+
                 page_raw_predictions, page_raw_labels = \
                     docpage_to_results[(doc.doc_id, page.page_number)]
 
