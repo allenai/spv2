@@ -1,4 +1,4 @@
-keras
+Keras==2.1.2
 tensorflow
 mmh3
 h5py
