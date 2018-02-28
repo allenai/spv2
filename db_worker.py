@@ -264,8 +264,8 @@ def main():
 
     default_password = os.environ.get("SPV2_PASSWORD")
     default_root_password = os.environ.get("SPV2_ROOT_PASSWORD")
-    default_dataprep_host = os.environ.get("SPV2_DATAPREP_SERVICE_V2_HOST", "localhost")
-    default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_SERVICE_V2_PORT", "8080"))
+    default_dataprep_host = os.environ.get("SPV2_DATAPREP_V2_SERVICE_HOST", "localhost")
+    default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_V2_SERVICE_PORT", "8080"))
 
     parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
     parser.add_argument(
