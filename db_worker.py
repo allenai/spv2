@@ -538,9 +538,9 @@ def main():
                             {
                                 "title": bibtitle,
                                 "authors": bibauthors,
-                                "venues": bibvenues,
-                                "years": bibyears
-                            } for bibtitle, bibauthors, bibvenues, bibyears in bibs
+                                "venue": bibvenue,
+                                "year": bibyear
+                            } for bibtitle, bibauthors, bibvenue, bibyear in bibs
                         ]
                     } for doc, title, authors, bibs in results
                 }
