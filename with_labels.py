@@ -367,8 +367,27 @@ def _longest_continuous_index_sequence(indices):
 def run_model(
     model,
     model_settings: settings.ModelSettings,
+    vocab,
     get_docs
 ):
+    def dehyphenate(tokens: typing.List[str]) -> typing.List[str]:
+        for index, s in reversed(list(enumerate(tokens))):
+            if s != "-":
+                continue
+            index_before = index - 1
+            if index_before <= 0:
+                continue
+            index_after = index + 1
+            if index_after >= len(tokens):
+                continue
+            # if the hyphenated word is in the vocab, keep it
+            hyphenated_word = tokens[index_before] + "-" + tokens[index_after]
+            if hyphenated_word in vocab or hyphenated_word.lower() in vocab:
+                continue
+            # if the dehyphenated word is in the vocab, remove the hyphen
+            tokens[index_before:index_before + 3] = [tokens[index_before] + tokens[index_after]]
+        return tokens
+
     page_pool = PagePool()
     for doc in get_docs():
         for page in doc.pages:
@@ -458,7 +477,12 @@ def run_model(
                         bib_fields.get(dataprep2.BIBYEAR_LABEL, None),
                     ))
                     bib_fields = {}
-                bib_field_string = " ".join(np.take(page.tokens, index_sequence))
+
+                bib_field_string = list(np.take(page.tokens, index_sequence))
+                if field in {dataprep2.BIBTITLE_LABEL, dataprep2.BIBVENUE_LABEL}:
+                    bib_field_string = dehyphenate(bib_field_string)
+                bib_field_string = " ".join(bib_field_string)
+
                 if field == dataprep2.BIBAUTHOR_LABEL:
                     bib_fields[field] = bib_fields.get(field, [])
                     bib_fields[field].append(bib_field_string)
@@ -473,7 +497,7 @@ def run_model(
                     bib_fields.get(dataprep2.BIBYEAR_LABEL, None),
                 ))
 
-        predicted_title = " ".join(predicted_title)
+        predicted_title = " ".join(dehyphenate(predicted_title))
         predicted_authors = [" ".join(ats) for ats in predicted_authors]
         yield (doc, predicted_title, predicted_authors, predicted_bibs)
 
@@ -569,10 +593,15 @@ def evaluate_model(
                 if j >= len(predicted_bibtitles[i])-1:
                     break
                 if predicted_bibtitles[i][j] == '-':
-                    possible_word = ''.join([predicted_bibtitles[i][j-1], '-',predicted_bibtitles[i][j+1]])
+                    possible_word = ''.join([
+                        predicted_bibtitles[i][j-1],
+                        '-',
+                        predicted_bibtitles[i][j+1]])
                     if possible_word in vocab or possible_word.lower() in vocab:
                         continue
-                    possible_word = ''.join([predicted_bibtitles[i][j-1], predicted_bibtitles[i][j+1]])
+                    possible_word = ''.join([
+                        predicted_bibtitles[i][j-1],
+                        predicted_bibtitles[i][j+1]])
                     if possible_word in vocab or possible_word.lower() in vocab:
                         predicted_bibtitles[i][j-1] = possible_word
                         predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)

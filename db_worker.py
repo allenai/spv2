@@ -527,7 +527,11 @@ def main():
                         featurized_tokens_file,
                         include_labels=False,
                         max_tokens_per_page=model_settings.tokens_per_batch)
-                results = with_labels.run_model(model, model_settings, get_docs)
+                results = with_labels.run_model(
+                    model,
+                    model_settings,
+                    embeddings.glove_vocab(),
+                    get_docs)
                 results = {
                     doc.doc_sha: {
                         "docName": doc.doc_id,
