@@ -368,7 +368,8 @@ def run_model(
     model,
     model_settings: settings.ModelSettings,
     vocab,
-    get_docs
+    get_docs,
+    page_indices: typing.Optional[typing.Set[int]] = None
 ):
     def dehyphenate(tokens: typing.List[str]) -> typing.List[str]:
         for index, s in reversed(list(enumerate(tokens))):
@@ -390,7 +391,11 @@ def run_model(
 
     page_pool = PagePool()
     for doc in get_docs():
-        for page in doc.pages:
+        pages = doc.pages
+        if page_indices is not None:
+            page_indices_for_this_doc = {i % len(pages) for i in page_indices}
+            pages = [pages[i] for i in page_indices_for_this_doc]
+        for page in pages:
             if len(page.tokens) > 0:
                 page_pool.add(doc, page)
 
@@ -415,10 +420,9 @@ def run_model(
         predicted_bibs = []
 
         for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
-            if len(page.tokens) <= 0:
+            page_raw_predictions = docpage_to_results.get((doc.doc_id, page.page_number), None)
+            if page_raw_predictions is None:
                 continue
-
-            page_raw_predictions = docpage_to_results[(doc.doc_id, page.page_number)]
             page_predictions = page_raw_predictions.argmax(axis=1)
 
             # find predicted titles

@@ -532,7 +532,8 @@ def main():
                     model,
                     model_settings,
                     embeddings.glove_vocab(),
-                    get_docs)
+                    get_docs,
+                    {0, 1, 2, -1, -2, -3})  # page indices
                 results = {
                     doc.doc_sha: {
                         "docName": doc.doc_id,
