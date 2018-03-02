@@ -124,9 +124,9 @@ class DBTodoList:
                     """)
 
                     root_cur.execute("""
-                        CREATE INDEX ON tasks(paperid) WHERE
-                            status = 'Scheduled'::processing_status OR
-                            status = 'Processing'::processing_status;
+                        CREATE INDEX ON tasks(modelversion, attempts) WHERE
+                          status = 'Scheduled'::processing_status OR
+                          status = 'Processing'::processing_status;
                     """)
 
                     root_cur.execute("GRANT SELECT, INSERT, UPDATE ON tasks_with_status TO %s;" % user)
@@ -165,6 +165,7 @@ class DBTodoList:
                           status = 'Processing'::PROCESSING_STATUS
                         ) AND
                         effectivestatus = 'Scheduled'::processing_status AND
+                        attempts < 5 AND
                         modelversion = %s
                       LIMIT %s
                       FOR UPDATE SKIP LOCKED
