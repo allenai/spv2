@@ -450,7 +450,7 @@ def main():
     def featurized_tokens_filenames() -> typing.Generator[typing.Tuple[tempfile.TemporaryDirectory, str], None, None]:
         processing_timeout = 600
         while True:
-            paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=20)
+            paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=50)
             logging.info("Received %d paper ids", len(paper_ids))
             if len(paper_ids) <= 0:
                 if time.time() - last_time_with_paper_ids > processing_timeout:
