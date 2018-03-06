@@ -262,6 +262,7 @@ def main():
         manhole.install()
 
     logging.getLogger().setLevel(logging.INFO)
+    logging.basicConfig(format='%(asctime)s %(thread)d %(levelname)s %(message)s', level=logging.INFO)
 
     default_password = os.environ.get("SPV2_PASSWORD")
     default_root_password = os.environ.get("SPV2_ROOT_PASSWORD")
@@ -445,29 +446,37 @@ def main():
     total_paper_ids_processed = 0
     start_time = time.time()
     last_time_with_paper_ids = start_time
-    processing_timeout = 600
-    while True:
-        paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=20)
-        logging.info("Received %d paper ids", len(paper_ids))
-        if len(paper_ids) <= 0:
-            if time.time() - last_time_with_paper_ids > processing_timeout:
-                logging.info("Saw no paper ids for more than %.0f seconds. Shutting down.", processing_timeout)
-                return
-            time.sleep(20)
-            continue
-        stats.increment(datadog_prefix + "attempts", len(paper_ids))
 
-        with tempfile.TemporaryDirectory(prefix="SPv2DBWorker-") as temp_dir:
-            # make JSON out of the papers
+    def paper_ids_for_processing() -> typing.Generator[typing.List[str], None, None]:
+        processing_timeout = 600
+        while True:
+            paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=20)
+            logging.info("Received %d paper ids", len(paper_ids))
+            if len(paper_ids) <= 0:
+                if time.time() - last_time_with_paper_ids > processing_timeout:
+                    logging.info("Saw no paper ids for more than %.0f seconds. Shutting down.", processing_timeout)
+                    return
+                time.sleep(20)
+                continue
+            stats.increment(datadog_prefix + "attempts", len(paper_ids))
+            yield paper_ids
+
+    def paper_ids_with_json_for_processing() -> typing.Generator[typing.Tuple[typing.List[str], tempfile.NamedTemporaryFile], None, None]:
+        for paper_ids in paper_ids_for_processing():
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
-            json_file_name = os.path.join(temp_dir, "tokens.json")
-            with open(json_file_name, "wb") as json_file:
-                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_ids]
-                async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
+            json_file = tempfile.NamedTemporaryFile(delete=False)
+            write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_ids]
+            async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
             stats.timing(datadog_prefix + "get_json", getting_json_time)
+            yield paper_ids, json_file
+
+    for paper_ids, json_file in dataprep2.threaded_generator(paper_ids_with_json_for_processing(), 1):
+        with tempfile.TemporaryDirectory(prefix="SPv2DBWorker-") as temp_dir:
+            json_file_name = os.path.join(temp_dir, "tokens.json")
+            os.rename(json_file.name, json_file_name)
 
             # pick out errors and write them to the DB
             paper_id_to_error = {}
