@@ -447,7 +447,7 @@ def main():
     start_time = time.time()
     last_time_with_paper_ids = start_time
 
-    def paper_ids_for_processing() -> typing.Generator[typing.List[str], None, None]:
+    def featurized_tokens_filenames() -> typing.Generator[typing.Tuple[tempfile.TemporaryDirectory, str], None, None]:
         processing_timeout = 600
         while True:
             paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=20)
@@ -459,24 +459,18 @@ def main():
                 time.sleep(20)
                 continue
             stats.increment(datadog_prefix + "attempts", len(paper_ids))
-            yield paper_ids
 
-    def paper_ids_with_json_for_processing() -> typing.Generator[typing.Tuple[typing.List[str], tempfile.NamedTemporaryFile], None, None]:
-        for paper_ids in paper_ids_for_processing():
+            temp_dir = tempfile.TemporaryDirectory(prefix="SPv2DBWorker-")
+
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
-            json_file = tempfile.NamedTemporaryFile(delete=False)
-            write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_ids]
-            async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
+            json_file_name = os.path.join(temp_dir.name, "tokens.json")
+            with open(json_file_name, "wb") as json_file:
+                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_ids]
+                async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
             stats.timing(datadog_prefix + "get_json", getting_json_time)
-            yield paper_ids, json_file
-
-    for paper_ids, json_file in dataprep2.threaded_generator(paper_ids_with_json_for_processing(), 1):
-        with tempfile.TemporaryDirectory(prefix="SPv2DBWorker-") as temp_dir:
-            json_file_name = os.path.join(temp_dir, "tokens.json")
-            os.rename(json_file.name, json_file_name)
 
             # pick out errors and write them to the DB
             paper_id_to_error = {}
@@ -500,7 +494,7 @@ def main():
             # make unlabeled tokens file
             logging.info("Making unlabeled tokens ...")
             making_unlabeled_tokens_time = time.time()
-            unlabeled_tokens_file_name = os.path.join(temp_dir, "unlabeled-tokens.h5")
+            unlabeled_tokens_file_name = os.path.join(temp_dir.name, "unlabeled-tokens.h5")
             dataprep2.make_unlabeled_tokens_file(
                 json_file_name,
                 unlabeled_tokens_file_name,
@@ -514,7 +508,7 @@ def main():
             logging.info("Making featurized tokens ...")
             making_featurized_tokens_time = time.time()
             with h5py.File(unlabeled_tokens_file_name, "r") as unlabeled_tokens_file:
-                featurized_tokens_file_name = os.path.join(temp_dir, "featurized-tokens.h5")
+                featurized_tokens_file_name = os.path.join(temp_dir.name, "featurized-tokens.h5")
                 dataprep2.make_featurized_tokens_file(
                     featurized_tokens_file_name,
                     unlabeled_tokens_file,
@@ -529,6 +523,10 @@ def main():
             logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
             stats.timing(datadog_prefix + "make_featurized", making_featurized_tokens_time)
 
+            yield temp_dir, featurized_tokens_file_name
+
+    for temp_dir, featurized_tokens_file_name in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
+        try:
             logging.info("Making and sending results ...")
             make_and_send_results_time = time.time()
             with h5py.File(featurized_tokens_file_name) as featurized_tokens_file:
@@ -563,10 +561,12 @@ def main():
                 todo_list.post_results(model_version, results)
                 stats.increment(datadog_prefix + "successes", len(results))
                 total_paper_ids_processed += len(results)
+        finally:
+            temp_dir.cleanup()
 
-            make_and_send_results_time = time.time() - make_and_send_results_time
-            logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
-            stats.timing(datadog_prefix + "make_results", make_and_send_results_time)
+        make_and_send_results_time = time.time() - make_and_send_results_time
+        logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
+        stats.timing(datadog_prefix + "make_results", make_and_send_results_time)
 
         # report progress
         paper_ids_per_hour = 3600 * total_paper_ids_processed / (time.time() - start_time)
