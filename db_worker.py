@@ -363,91 +363,92 @@ def main():
     model.load_weights("model/C27.h5")
     model_version = 2
 
-    # async http stuff
-    async_event_loop = asyncio.get_event_loop()
-    connector = aiohttp.TCPConnector(loop=async_event_loop, force_close=True)
-    session = aiohttp.ClientSession(connector=connector, read_timeout=120, conn_timeout=120)
-    write_lock = asyncio.Lock()
-    async def write_json_tokens_to_file(paper_id: str, json_file):
-        url = "http://%s:%d/v1/json/paperid/%s" % (args.dataprep_host, args.dataprep_port, paper_id)
-        attempts_left = 5
-        with tempfile.NamedTemporaryFile(prefix="SPv2DBWorker-%s-" % paper_id, suffix=".json") as f:
-            f.seek(0)
-            f.truncate()
-            while True:
-                attempts_left -= 1
-                try:
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            # We write to a tempfile first, because we don't want to end up with
-                            # half-written json if something goes wrong while reading from the
-                            # socket.
-                            while True:
-                                chunk = await response.content.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                f.write(chunk)
-                            stats.increment(datadog_prefix + "dataprep.success")
-                            break
-                        else:
-                            stats.increment(datadog_prefix + "dataprep.failure")
-                            if attempts_left > 0:
-                                logging.error(
-                                    "Error %d from dataprep server for paper id %s. %d attempts left.",
-                                    response.status,
-                                    paper_id,
-                                    attempts_left)
-                            else:
-                                stats.increment(datadog_prefix + "dataprep.gave_up")
-                                logging.error(
-                                    "Error %d from dataprep server for paper id %s. Giving up.",
-                                    response.status,
-                                    paper_id)
-                                error = {
-                                    "error": {
-                                        "message": "Status %s from dataprep server" % response.status,
-                                        "stackTrace": None,
-                                        "docName": "%s.pdf" % paper_id
-                                    }
-                                }
-                                json.dump(error, f)
-                                break
-                except Exception as e:
-                    stats.increment(datadog_prefix + "dataprep.failure")
-                    if attempts_left > 0:
-                        logging.error(
-                            "Error %r from dataprep server for paper id %s. %d attempts left.",
-                            e,
-                            paper_id,
-                            attempts_left)
-                    else:
-                        stats.increment(datadog_prefix + "dataprep.gave_up")
-                        logging.error(
-                            "Error %r from dataprep server for paper id %s. Giving up.",
-                            e,
-                            paper_id)
-                        error = {
-                            "error": {
-                                "message": "Error %r while contacting dataprep server" % e,
-                                "stackTrace": None,
-                                "docName": "%s.pdf" % paper_id
-                            }
-                        }
-                        json.dump(error, f)
-                        break
-
-            # append the tempfile to the json file
-            f.flush()
-            f.seek(0)
-            with await write_lock:
-                _send_all(f, json_file)
-
     logging.info("Starting to process tasks")
     total_paper_ids_processed = 0
     start_time = time.time()
     last_time_with_paper_ids = start_time
 
     def featurized_tokens_filenames() -> typing.Generator[typing.Tuple[tempfile.TemporaryDirectory, str], None, None]:
+        # async http stuff
+        async_event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(async_event_loop)
+        connector = aiohttp.TCPConnector(loop=async_event_loop, force_close=True)
+        session = aiohttp.ClientSession(connector=connector, read_timeout=120, conn_timeout=120)
+        write_lock = asyncio.Lock()
+        async def write_json_tokens_to_file(paper_id: str, json_file):
+            url = "http://%s:%d/v1/json/paperid/%s" % (args.dataprep_host, args.dataprep_port, paper_id)
+            attempts_left = 5
+            with tempfile.NamedTemporaryFile(prefix="SPv2DBWorker-%s-" % paper_id, suffix=".json") as f:
+                f.seek(0)
+                f.truncate()
+                while True:
+                    attempts_left -= 1
+                    try:
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                # We write to a tempfile first, because we don't want to end up with
+                                # half-written json if something goes wrong while reading from the
+                                # socket.
+                                while True:
+                                    chunk = await response.content.read(1024 * 1024)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                                stats.increment(datadog_prefix + "dataprep.success")
+                                break
+                            else:
+                                stats.increment(datadog_prefix + "dataprep.failure")
+                                if attempts_left > 0:
+                                    logging.error(
+                                        "Error %d from dataprep server for paper id %s. %d attempts left.",
+                                        response.status,
+                                        paper_id,
+                                        attempts_left)
+                                else:
+                                    stats.increment(datadog_prefix + "dataprep.gave_up")
+                                    logging.error(
+                                        "Error %d from dataprep server for paper id %s. Giving up.",
+                                        response.status,
+                                        paper_id)
+                                    error = {
+                                        "error": {
+                                            "message": "Status %s from dataprep server" % response.status,
+                                            "stackTrace": None,
+                                            "docName": "%s.pdf" % paper_id
+                                        }
+                                    }
+                                    json.dump(error, f)
+                                    break
+                    except Exception as e:
+                        stats.increment(datadog_prefix + "dataprep.failure")
+                        if attempts_left > 0:
+                            logging.error(
+                                "Error %r from dataprep server for paper id %s. %d attempts left.",
+                                e,
+                                paper_id,
+                                attempts_left)
+                        else:
+                            stats.increment(datadog_prefix + "dataprep.gave_up")
+                            logging.error(
+                                "Error %r from dataprep server for paper id %s. Giving up.",
+                                e,
+                                paper_id)
+                            error = {
+                                "error": {
+                                    "message": "Error %r while contacting dataprep server" % e,
+                                    "stackTrace": None,
+                                    "docName": "%s.pdf" % paper_id
+                                }
+                            }
+                            json.dump(error, f)
+                            break
+
+                # append the tempfile to the json file
+                f.flush()
+                f.seek(0)
+                with await write_lock:
+                    _send_all(f, json_file)
+
         processing_timeout = 600
         while True:
             paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=50)
