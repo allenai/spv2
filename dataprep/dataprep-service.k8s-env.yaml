@@ -39,6 +39,11 @@ spec:
               secretKeyRef:
                 name: spv2-secrets
                 key: aws-default-region
+          - name: AWS_REGION
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-default-region
         readinessProbe:
           httpGet:
             path: /v1/k8sReadyCheck
