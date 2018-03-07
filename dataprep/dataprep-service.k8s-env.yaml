@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: spv2-dataprep-service-v2
-        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.5
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.6
         ports:
         - containerPort: 8080
           name: backend-http
