@@ -99,17 +99,23 @@ object DataprepCli {
     // suppress the Dock icon on OS X
     System.setProperty("apple.awt.UIElement", "true")
 
-    parser.parse(args, PDFRendererConfig()) match {
-      case Some(config) => {
+    val substitutedArgs = args.map {
+      case "-" => "\uD83D\uDD24"
+      case x => x
+    }
+    parser.parse(substitutedArgs, PDFRendererConfig()) match {
+      case Some(config) =>
         config.commandConfig match {
           // only use scopt for option validation, but
           // allow PDFToImage to conduct it's own option
           // parsing
           case c: PDFToImageConfig =>
             PDFToImage.main(args.drop(1).map(_.replaceAll("--", "-")))
-          case c: PreprocessPdfConfig => PreprocessPdf.extractText(
-            outputFileName = config.commandConfig.asInstanceOf[PreprocessPdfConfig].outputFileName,
-            inputNames = config.commandConfig.asInstanceOf[PreprocessPdfConfig].inputNames)
+          case c: PreprocessPdfConfig =>
+            val substitutedOutputName = if(c.outputFileName == "\uD83D\uDD24") "-" else c.outputFileName
+            PreprocessPdf.extractText(
+            outputFileName = substitutedOutputName,
+            inputNames = c.inputNames)
           case c: SubmitPdfsConfig =>
             val errors = ProcessingQueue.dev.submitPdfs(c.inputs.iterator).toSeq
             errors.foreach { case (paperId, errorMessage) =>
@@ -117,7 +123,6 @@ object DataprepCli {
             }
             println(s"${errors.length} errors")
         }
-      }
       case None => System.exit(1)
     }
   }
