@@ -445,11 +445,11 @@ def main():
                             write_json_to_output(error)
                             break
 
-                    # append the tempfile to the json file
-                    f.flush()
-                    f.seek(0)
-                    with await write_lock:
-                        _send_all(f, json_file)
+                # append the tempfile to the json file
+                f.flush()
+                f.seek(0)
+                with await write_lock:
+                    _send_all(f, json_file)
 
         processing_timeout = 600
         while True:
