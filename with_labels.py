@@ -517,6 +517,70 @@ EvaluationResult = collections.namedtuple(
     ]
 )
 
+def _make_re(characters: typing.Set[str]):
+    return re.compile("[%s]" % re.escape("".join(characters)))
+
+_unicode_dashes = {
+    '\u002D',
+    '\u058A',
+    '\u05BE',
+    '\u1400',
+    '\u1806',
+    '\u2010',
+    '\u2011',
+    '\u2012',
+    '\u2013',
+    '\u2014',
+    '\u2015',
+    '\u2E17',
+    '\u2E1A',
+    '\u2E3A',
+    '\u2E3B',
+    '\u2E40',
+    '\u301C',
+    '\u3030',
+    '\u30A0',
+    '\uFE31',
+    '\uFE32',
+    '\uFE58',
+    '\uFE63',
+    '\uFF0D'
+}
+_unicode_dashes_re = _make_re(_unicode_dashes)
+
+_unicode_quotes = {
+    '\u0022'  # quotation mark (")
+    '\u0027'  # apostrophe (')
+    '\u00ab'  # left-pointing double-angle quotation mark
+    '\u00bb'  # right-pointing double-angle quotation mark
+    '\u2018'  # left single quotation mark
+    '\u2019'  # right single quotation mark
+    '\u201a'  # single low-9 quotation mark
+    '\u201b'  # single high-reversed-9 quotation mark
+    '\u201c'  # left double quotation mark
+    '\u201d'  # right double quotation mark
+    '\u201e'  # double low-9 quotation mark
+    '\u201f'  # double high-reversed-9 quotation mark
+    '\u2039'  # single left-pointing angle quotation mark
+    '\u203a'  # single right-pointing angle quotation mark
+    '\u300c'  # left corner bracket
+    '\u300d'  # right corner bracket
+    '\u300e'  # left white corner bracket
+    '\u300f'  # right white corner bracket
+    '\u301d'  # reversed double prime quotation mark
+    '\u301e'  # double prime quotation mark
+    '\u301f'  # low double prime quotation mark
+    '\ufe41'  # presentation form for vertical left corner bracket
+    '\ufe42'  # presentation form for vertical right corner bracket
+    '\ufe43'  # presentation form for vertical left corner white bracket
+    '\ufe44'  # presentation form for vertical right corner white bracket
+    '\uff02'  # fullwidth quotation mark
+    '\uff07'  # fullwidth apostrophe
+    '\uff62'  # halfwidth left corner bracket
+    '\uff63'  # halfwidth right corner bracket
+}
+_unicode_quotes_re = _make_re(_unicode_quotes)
+
 def evaluate_model(
     model,
     model_settings: settings.ModelSettings,
@@ -751,7 +815,12 @@ def evaluate_model(
                 predicted_bibyears += predicted_bibyears_on_page
 
             def normalize(s: str) -> str:
-                return unicodedata.normalize("NFKC", s).lower()
+                s = unicodedata.normalize("NFKC", s)
+                s = _multiple_spaces_re.sub(" ", s)
+                s = _unicode_dashes_re.sub("-", s)
+                s = _unicode_quotes_re.sub("'", s)
+                s = s.lower()
+                return s.strip()
 
             def normalize_author(a: str) -> str:
                 a = a.split(",", 2)
@@ -852,7 +921,9 @@ def evaluate_model(
                     log_file.write("Labeled bib title:   %s\n" % labeled_bibtitle)
 
             predicted_bibtitles = remove_hyphens(predicted_bibtitles)
-            predicted_bibtitles = [" ".join(ats) for ats in predicted_bibtitles]
+            predicted_bibtitles = {" ".join(ats) for ats in predicted_bibtitles}
+            predicted_bibtitles = {normalize(t) for t in predicted_bibtitles}
+            predicted_bibtitles = {t for t in predicted_bibtitles if len(t) > 0}
             if len(predicted_bibtitles) <= 0:
                 log_file.write("No bib title predicted\n")
             else:
@@ -860,17 +931,9 @@ def evaluate_model(
                     log_file.write("Predicted bib title: %s\n" % predicted_bibtitle)
 
             # calculate bibtitle P/R
-            gold_bibtitles_set_array = []
-            for e in gold_bibtitles:
-                if e is None:
-                    continue
-                strip_e = e.strip()
-                if len(strip_e) > 0:
-                    gold_bibtitles_set_array.append(strip_e)
-            gold_bibtitles = gold_bibtitles_set_array
+            gold_bibtitles = {normalize(t) for t in gold_bibtitles if t is not None}
+            gold_bibtitles = {t for t in gold_bibtitles if len(t) > 0}
 
-            gold_bibtitles = set(gold_bibtitles)
-            predicted_bibtitles = set(predicted_bibtitles)
             precision = 0
             if len(predicted_bibtitles) > 0:
                 precision = len(gold_bibtitles & predicted_bibtitles) / len(predicted_bibtitles)
@@ -1080,7 +1143,7 @@ def f1(p: float, r: float) -> float:
         return 0
     return (2.0 * p * r) / (p + r)
 
-def combined_score_from_evaluation_result(ev_result) -> float:
+def _combined_score_from_evaluation_result(ev_result) -> float:
     stats = np.asarray([
         f1(*ev_result.title_pr),
         f1(*ev_result.author_pr),
@@ -1100,8 +1163,7 @@ def train(
     pmc_dir: str,
     output_filename: str,
     test_doc_count: int=10000,
-    model_settings: settings.ModelSettings=settings.default_model_settings,
-    score_to_watch: typing.Callable[[EvaluationResult], float] = combined_score_from_evaluation_result
+    model_settings: settings.ModelSettings=settings.default_model_settings
 ) -> Model:
     """Returns a trained model using the data in dir as training data"""
     best_model_filename = output_filename + ".best"
@@ -1115,12 +1177,12 @@ def train(
             print("All scores after %.0f seconds:" % training_time)
         print("time\tbatch_count\tauc_none\tauc_titles\tauc_authors\tauc_bibtitle\tauc_bibauthor\tauc_bibvenue\t" +
               "auc_bibyear\ttitle_p\ttitle_r\tauthor_p\tauthor_r\tbibtitle_p\tbibtitle_r\tbibauthor_p\tbibauthor_r" +
-        "\tbibvenue_p\tbibvenue_r\tbibyear_p\tbibyear_r")
+              "\tbibvenue_p\tbibvenue_r\tbibyear_p\tbibyear_r")
         for time_elapsed, batch_count, ev_result in scored_results:
             flatten = lambda l: [item for sublist in l for item in sublist]
             print("\t".join(map(str, (time_elapsed, batch_count) + tuple(flatten(ev_result)))))
     def get_combined_scores() -> typing.List[float]:
-        return [score_to_watch(ev_result) for _, _, ev_result in scored_results]
+        return [_combined_score_from_evaluation_result(ev_result) for _, _, ev_result in scored_results]
 
     start_time = None
     trained_batches = 0
