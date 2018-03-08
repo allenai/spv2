@@ -1275,6 +1275,10 @@ def main():
     parser.add_argument(
         "--test-doc-count", default=10000, type=int, help="number of documents to test on"
     )
+    parser.add_argument(
+        "--evaluate-only",
+        action='store_true'
+    )
 
     args = parser.parse_args()
 
@@ -1296,38 +1300,27 @@ def main():
         logging.info('Starting from the model at {}'.format(args.start_weights))
         model.load_weights(args.start_weights)
 
-    # first round, we train on three pages, and watch only title and author scores
-    def combined_ta_score_from_evaluation_result(ev_result) -> float:
-        stats = np.asarray([
-            f1(*ev_result.title_pr),
-            f1(*ev_result.author_pr)
-        ], dtype=np.float64)
-        if np.all(stats > 0):
-            return scipy.stats.hmean(stats)
-        else:
-            return 0
-    model_settings_for_round_one = model_settings._replace(max_page_number = 3)
-    logging.info("Starting training, round 1: Only titles and authors")
-    model = train(
-        model,
-        embeddings,
-        args.pmc_dir,
-        args.output + ".round1",
-        args.test_doc_count,
-        model_settings_for_round_one,
-        combined_ta_score_from_evaluation_result)
+    if args.evaluate_only:
+        evaluate_model(
+            model,
+            model_settings,
+            embeddings.glove_vocab(),
+            args.pmc_dir,
+            args.output + ".log",
+            dataprep2.DocumentSet.VALIDATE,
+            args.test_doc_count
+        )
+    else:
+        logging.info("Starting training")
+        model = train(
+            model,
+            embeddings,
+            args.pmc_dir,
+            args.output,
+            args.test_doc_count,
+            model_settings)
 
-    # second round, we train normally
-    logging.info("Starting training, round 2: Train all the things")
-    model = train(
-        model,
-        embeddings,
-        args.pmc_dir,
-        args.output,
-        args.test_doc_count,
-        model_settings)
-
-    model.save(args.output, overwrite=True)
+        model.save(args.output, overwrite=True)
 
 if __name__ == "__main__":
     main()
