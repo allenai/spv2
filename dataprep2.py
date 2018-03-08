@@ -695,10 +695,8 @@ def labeled_tokens_file(bucket_path: str):
 
                 # read bibtitles from nxml
                 gold_bib_nodes = nxml.findall("./back/ref-list/ref/mixed-citation")
-                if len(gold_bib_nodes) == 0:
-                    gold_bib_nodes = nxml.findall("./back/ref-list/ref/element-citation")
-                if len(gold_bib_nodes) == 0:
-                    gold_bib_nodes = nxml.findall("./back/ref-list/ref/citation")
+                gold_bib_nodes += nxml.findall("./back/ref-list/ref/element-citation")
+                gold_bib_nodes += nxml.findall("./back/ref-list/ref/citation")
                 if len(gold_bib_nodes) == 0:
                     logging.warning("Found no gold bib nodes for %s", doc_id)
 
@@ -1076,18 +1074,12 @@ def labeled_tokens_file(bucket_path: str):
                     continue
 
                 # find out if we have enough bib matches to keep bibs for this document
-                wipe_bibs = False
                 if num_bib_author_matches < 0.9*paper_bib_authors:
                     logging.warning("found fewer than 90 percent of bib authors in %s; ignoring all bibs in doc", doc_id)
-                    wipe_bibs = True
+                    continue
                 if found_matches[0] < 0.9*nonempty_titles:
                     logging.warning("found fewer than 90 percent of bib titles in %s; ignoring all bibs in doc", doc_id)
-                    wipe_bibs = True
-                if wipe_bibs:
-                    bib_title_matches = []
-                    bib_author_matches = []
-                    bib_year_matches = []
-                    bib_venue_matches = []
+                    continue
 
                 # create the document in the new file
                 # This is the point of no return.
