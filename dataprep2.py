@@ -563,7 +563,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "20bibs"
+LABELED_TOKENS_VERSION = "21bibs"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -1196,7 +1196,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "20bibs"
+FEATURIZED_TOKENS_VERSION = "21bibs"
 
 def make_featurized_tokens_file(
     output_file_name: str,
