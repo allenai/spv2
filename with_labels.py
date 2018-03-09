@@ -306,10 +306,8 @@ def make_batches(
 
     def pages_generator():
         for doc in docs:
-            for page in doc.pages[:model_settings.max_page_number]:
+            for page in doc.get_relevant_pages():
                 # filter out pages that have no labeled tokens
-                if len(page.tokens) <= 0:
-                    continue
                 if not keep_unlabeled_pages:
                     if not np.any(page.labels):
                         continue
@@ -369,7 +367,6 @@ def run_model(
     model_settings: settings.ModelSettings,
     vocab,
     get_docs,
-    page_indices: typing.Optional[typing.Set[int]] = None
 ):
     def dehyphenate(tokens: typing.List[str]) -> typing.List[str]:
         for index, s in reversed(list(enumerate(tokens))):
@@ -391,13 +388,8 @@ def run_model(
 
     page_pool = PagePool()
     for doc in get_docs():
-        pages = doc.pages
-        if page_indices is not None:
-            page_indices_for_this_doc = {i % len(pages) for i in page_indices}
-            pages = [pages[i] for i in page_indices_for_this_doc]
-        for page in pages:
-            if len(page.tokens) > 0:
-                page_pool.add(doc, page)
+        for page in doc.get_relevant_pages():
+            page_pool.add(doc, page)
 
     docpage_to_results = {}
     while len(page_pool) > 0:
@@ -419,7 +411,7 @@ def run_model(
         predicted_authors = []
         predicted_bibs = []
 
-        for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
+        for page in doc.get_relevant_pages():
             page_raw_predictions = docpage_to_results.get((doc.doc_id, page.page_number), None)
             if page_raw_predictions is None:
                 continue
@@ -618,9 +610,8 @@ def evaluate_model(
 
         page_pool = PagePool()
         for doc in test_docs():
-            for page in doc.pages:
-                if len(page.tokens) > 0:
-                    page_pool.add(doc, page)
+            for page in doc.get_relevant_pages():
+                page_pool.add(doc, page)
 
             if len(page_pool) > SLICE_SIZE // 8:
                 yield page_pool.get_slice(SLICE_SIZE)
@@ -695,7 +686,7 @@ def evaluate_model(
             predicted_bibvenues = []
             predicted_bibyears = []
 
-            for page_number, page in enumerate(doc.pages[:model_settings.max_page_number]):
+            for page in doc.get_relevant_pages():
                 if len(page.tokens) <= 0:
                     continue
 

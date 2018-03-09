@@ -1544,6 +1544,16 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
+    def get_relevant_pages(self) -> typing.Generator[Page, None, None]:
+        """Returns first three and last three pages, but not pages that have no tokens."""
+        page_indices = {0, 1, 2, -1, -2, -3}
+        pages = self.pages
+        page_indices_for_this_doc = {i % len(pages) for i in page_indices}
+        pages = [pages[i] for i in page_indices_for_this_doc]
+        for page in pages:
+            if len(page.tokens) > 0:
+                yield page
+
 def documents_for_featurized_tokens(
     featurized_tokens: h5py.File,
     include_labels: bool = True,
