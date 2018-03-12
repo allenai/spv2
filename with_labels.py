@@ -1019,14 +1019,14 @@ def evaluate_model(
                     gold_bibvenues_set_array.append(strip_e)
             gold_bibvenues = gold_bibvenues_set_array
 
-            # calculate author P/R
+            # calculate venue P/R
             gold_bibvenues_set = multiset.Multiset()
             for e in gold_bibvenues:
-                gold_bibvenues_set.add(e)
+                gold_bibvenues_set.add(normalize(e))
 
             predicted_bibvenues_set = multiset.Multiset()
             for e in predicted_bibvenues:
-                predicted_bibvenues_set.add(e)
+                predicted_bibvenues_set.add(normalize(e))
 
             gold_bibvenues = gold_bibvenues_set
             predicted_bibvenues = predicted_bibvenues_set
@@ -1041,7 +1041,7 @@ def evaluate_model(
             if len(gold_bibvenues) > 0 and len(labeled_bibvenues) > 0:
                 bibvenue_prs.append((precision, recall))
 
-
+            # print bibyears
             gold_bibyears = doc.gold_bib_years[:]
             for gold_bibyear in gold_bibyears:
                 log_file.write("Gold bib year:      %s\n" % gold_bibyear)
@@ -1069,6 +1069,7 @@ def evaluate_model(
                     gold_bibyears_set_array.append(strip_e)
             gold_bibyears = gold_bibyears_set_array
 
+            # calculate year P/R
             gold_bibyears_set = multiset.Multiset()
             for e in gold_bibyears:
                 gold_bibyears_set.add(e)
