@@ -1153,7 +1153,7 @@ def train(
     embeddings: dataprep2.CombinedEmbeddings,
     pmc_dir: str,
     output_filename: str,
-    test_doc_count: int=10000,
+    test_doc_count: int=2000,
     model_settings: settings.ModelSettings=settings.default_model_settings
 ) -> Model:
     """Returns a trained model using the data in dir as training data"""
@@ -1331,7 +1331,7 @@ def main():
         help="file containing the GloVe vectors"
     )
     parser.add_argument(
-        "--test-doc-count", default=10000, type=int, help="number of documents to test on"
+        "--test-doc-count", default=2000, type=int, help="number of documents to test on"
     )
     parser.add_argument(
         "--evaluate-only",
