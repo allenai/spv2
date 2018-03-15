@@ -1073,6 +1073,9 @@ def labeled_tokens_file(bucket_path: str):
                     logging.warning("Could not find all authors in %s; skipping doc", doc_id)
                     continue
 
+                if paper_bib_authors == 0 and nonempty_titles == 0:
+                    continue
+
                 # find out if we have enough bib matches to keep bibs for this document
                 if num_bib_author_matches < 0.9*paper_bib_authors:
                     logging.warning("found fewer than 90 percent of bib authors in %s; ignoring all bibs in doc", doc_id)
