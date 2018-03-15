@@ -563,7 +563,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "21bibs"
+LABELED_TOKENS_VERSION = "22bibs"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
