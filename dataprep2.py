@@ -68,6 +68,11 @@ def normalize(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
     return s
 
+def sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
+    if s is not None:
+        return s.replace("\0", "\ufffd")
+    else:
+        return None
 
 #
 # Classes 🏫

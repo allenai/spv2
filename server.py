@@ -10,10 +10,12 @@ import logging
 import json
 import codecs
 import time
+import re
 
 import dataprep2
 import settings
 import with_labels
+
 
 def _send_all(source, dest, nbytes: int = None):
     nsent = 0
@@ -29,65 +31,29 @@ def _send_all(source, dest, nbytes: int = None):
     dest.flush()
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
-    allowed_paths = {
-        "/v1/json/tar",
-        "/v1/json/targz",
-        "/v1/json/zip",
-        "/v1/json/pdf",
-        "/v1/json/urls",
-        "/v1/json/json"
-    }
+    _url_re = re.compile("/v1/json/paperid/([a-z0-9]{40})")
 
     def do_GET(self):
-        if self.path in self.allowed_paths:
-            self.send_error(405)
-        else:
-            self.send_error(404)
-
-    def do_PUT(self):
-        self.send_error(405)
-
-    def do_DELETE(self):
-        self.send_error(405)
-
-    def do_PATCH(self):
-        self.send_error(405)
-
-    def do_POST(self):
-        if self.path not in self.allowed_paths:
+        m = self._url_re.match(self.path)
+        if m is None:
             self.send_error(404)
             return
 
+        paper_id = m.groups(1)
         with tempfile.TemporaryDirectory(prefix="SPV2Server-") as temp_dir:
-            # read input
-            logging.info("Reading input ...")
-            reading_input_time = time.time()
-            input_size = int(self.headers["Content-Length"])
-            input_file_name = os.path.join(temp_dir, "input")
-            with open(input_file_name, "wb") as input_file:
-                _send_all(self.rfile, input_file, input_size)
-            reading_input_time = time.time() - reading_input_time
-            logging.info("Read input in %.2f seconds", reading_input_time)
-
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
-            if not self.path.endswith("/json"):
-                # get json from the dataprep server
-                json_file_name = os.path.join(temp_dir, "tokens.json")
-                with open(json_file_name, "wb") as json_file, open(input_file_name, "rb") as input_file:
-                    dataprep_conn = http.client.HTTPConnection("localhost", 8080, timeout=60)
-                    dataprep_conn.request("POST", self.path, body=input_file)
-                    with dataprep_conn.getresponse() as dataprep_response:
-                        if dataprep_response.status < 200 or dataprep_response.status >= 300:
-                            raise ValueError("Error %d from dataprep server at %s" % (
-                                dataprep_response.status,
-                                dataprep_conn.host))
-                        _send_all(dataprep_response, json_file)
-                os.remove(input_file_name)
-            else:
-                # read json straight from the input
-                json_file_name = os.path.join(temp_dir, "tokens.json")
-                os.rename(input_file_name, json_file_name)
+            # get json from the dataprep server
+            json_file_name = os.path.join(temp_dir, "tokens.json")
+            with open(json_file_name, "wb") as json_file:
+                dataprep_conn = http.client.HTTPConnection("localhost", 8080, timeout=60)
+                dataprep_conn.request("GET", "/v1/json/paperid/%s" % paper_id)
+                with dataprep_conn.getresponse() as dataprep_response:
+                    if dataprep_response.status < 200 or dataprep_response.status >= 300:
+                        raise ValueError("Error %d from dataprep server at %s" % (
+                            dataprep_response.status,
+                            dataprep_conn.host))
+                    _send_all(dataprep_response, json_file)
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
 
@@ -114,7 +80,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     unlabeled_tokens_file,
                     self.server.token_stats,
                     self.server.embeddings,
-                    dataprep2.VisionOutput(None),   # TODO: put in real vision output
+                    dataprep2.VisionOutput(None),
                     self.server.model_settings
                 )
                 # We don't delete the unlabeled file here because the featurized one contains references
@@ -133,16 +99,25 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 results = with_labels.run_model(
                     self.server.model,
                     self.server.model_settings,
+                    self.server.embeddings.glove_vocab(),
                     get_docs)
 
                 started_sending = False
                 response_body = codecs.getwriter("UTF-8")(self.wfile, "UTF-8")
-                for doc, title, authors in results:
+                for doc, title, authors, bibs in results:
                     result_json = {
                         "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
-                        "title": title,
-                        "authors": authors
+                        "title": dataprep2.sanitize_for_json(title),
+                        "authors": authors,
+                        "bibs": [
+                            {
+                                "title": bibtitle,
+                                "authors": bibauthors,
+                                "venue": bibvenue,
+                                "year": bibyear
+                            } for bibtitle, bibauthors, bibvenue, bibyear in bibs
+                        ]
                     }
                     result_json = {"doc": result_json}
 
@@ -163,12 +138,23 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
 
             logging.info("Done processing")
-            logging.info("Reading input:         %.0f s", reading_input_time)
             logging.info("Getting JSON:          %.0f s", getting_json_time)
             logging.info("Unlabeled tokens:      %.0f s", making_unlabeled_tokens_time)
             logging.info("Featurized tokens:     %.0f s", making_featurized_tokens_time)
             logging.info("Make and send results: %.0f s", make_and_send_results_time)
 
+
+    def do_PUT(self):
+        self.send_error(405)
+
+    def do_DELETE(self):
+        self.send_error(405)
+
+    def do_PATCH(self):
+        self.send_error(405)
+
+    def do_POST(self):
+        self.send_error(405)
 
 class Server(http.server.HTTPServer):
     def __init__(self, model, token_stats: dataprep2.TokenStatistics, embeddings: dataprep2.CombinedEmbeddings, model_settings):
@@ -204,29 +190,16 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="model/B40.h5",
+        default="model/C42.h5",
         help="filename of existing model"
-    )
-    parser.add_argument(
-        "--tokenstats",
-        type=str,
-        default="model/all.tokenstats3.gz",
-        help="filename of the tokenstats file"
-    )
-    parser.add_argument(
-        "--glove-vectors",
-        type=str,
-        default=model_settings.glove_vectors,
-        help="file containing the GloVe vectors"
     )
     args = parser.parse_args()
 
     model_settings = model_settings._replace(tokens_per_batch=args.tokens_per_batch)
-    model_settings = model_settings._replace(glove_vectors=args.glove_vectors)
     logging.debug(model_settings)
 
     logging.info("Loading token statistics")
-    token_stats = dataprep2.TokenStatistics(args.tokenstats)
+    token_stats = dataprep2.TokenStatistics("model/all.tokenstats3.gz")
 
     logging.info("Loading embeddings")
     embeddings = dataprep2.CombinedEmbeddings(
@@ -237,7 +210,6 @@ def main():
 
     logging.info("Loading model")
     model = with_labels.model_with_labels(model_settings, embeddings)
-    model.summary()
     model.load_weights(args.model)
 
     logging.info("Starting server")

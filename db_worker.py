@@ -242,12 +242,6 @@ def _send_all(source, dest, nbytes: int = None):
         nsent += len(buf)
     dest.flush()
 
-def _sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
-    if s is not None:
-        return s.replace("\0", "\ufffd")
-    else:
-        return None
-
 def main():
     import tempfile
     import argparse
@@ -481,8 +475,8 @@ def main():
                 if not "error" in line:
                     continue
                 error = line["error"]
-                error["message"] = _sanitize_for_json(error["message"])
-                error["stackTrace"] = _sanitize_for_json(error["stackTrace"])
+                error["message"] = dataprep2.sanitize_for_json(error["message"])
+                error["stackTrace"] = dataprep2.sanitize_for_json(error["stackTrace"])
                 paper_id = error["docName"]
                 if paper_id.endswith(".pdf"):
                     paper_id = paper_id[:-4]
@@ -517,7 +511,7 @@ def main():
                     unlabeled_tokens_file,
                     token_stats,
                     embeddings,
-                    dataprep2.VisionOutput(None),   # TODO: put in real vision output
+                    dataprep2.VisionOutput(None),
                     model_settings
                 )
                 # We don't delete the unlabeled file here because the featurized one contains references
@@ -547,7 +541,7 @@ def main():
                     doc.doc_sha: {
                         "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
-                        "title": _sanitize_for_json(title),
+                        "title": dataprep2.sanitize_for_json(title),
                         "authors": authors,
                         "bibs": [
                             {
