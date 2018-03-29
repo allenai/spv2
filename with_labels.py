@@ -439,9 +439,37 @@ def run_model(
                 indices_predicted_author = \
                     [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
             # authors must all come from the same page
+            def continuous_index_sequences_taking_gap_size_into_account(indices: np.array):
+                """
+                Our labeling scheme does not have a label for beginning and end, so if we have two
+                author names right next to each other, we can't tell from the labels that they are
+                two authors. We can tell if there is a big gap between the tokens though.
+                """
+                for index_sequence in _continuous_index_sequences(indices):
+                    yield_from = 0
+                    for ii in range(0, len(index_sequence) - 1):
+                        before_token_index = index_sequence[ii]
+                        after_token_index = index_sequence[ii + 1]
+
+                        before_left, before_right, before_top, before_bottom, _, before_space_width = \
+                            page.numeric_features[before_token_index]
+                        after_left, after_right, after_top, after_bottom, _, after_space_width = \
+                            page.numeric_features[after_token_index]
+                        space_width = max(before_space_width, after_space_width)
+
+                        # if the tokens are not on the same line, we keep them as they are
+                        if before_top != after_top or before_bottom != after_bottom:
+                            continue
+                        elif before_right + 3 * space_width > after_left:
+                            continue
+                        else:
+                            yield index_sequence[yield_from:ii + 1]
+                            yield_from = ii + 1
+                    yield index_sequence[yield_from:]
+
             predicted_authors_on_page = [
                 np.take(page.tokens, index_sequence)
-                for index_sequence in _continuous_index_sequences(indices_predicted_author)
+                for index_sequence in continuous_index_sequences_taking_gap_size_into_account(indices_predicted_author)
             ]
             if len(predicted_authors_on_page) > len(predicted_authors):
                 predicted_authors = predicted_authors_on_page
