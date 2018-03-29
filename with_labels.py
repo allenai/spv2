@@ -369,6 +369,7 @@ def run_model(
     get_docs,
 ):
     def dehyphenate(tokens: typing.List[str]) -> typing.List[str]:
+        tokens = list(tokens)   # If tokens is a numpy list, this fixes it.
         for index, s in reversed(list(enumerate(tokens))):
             if s != "-":
                 continue
@@ -382,8 +383,10 @@ def run_model(
             hyphenated_word = tokens[index_before] + "-" + tokens[index_after]
             if hyphenated_word in vocab or hyphenated_word.lower() in vocab:
                 continue
+            dehyphenated_word = tokens[index_before] + tokens[index_after]
             # if the dehyphenated word is in the vocab, remove the hyphen
-            tokens[index_before:index_before + 3] = [tokens[index_before] + tokens[index_after]]
+            if dehyphenated_word in vocab or dehyphenated_word.lower() in vocab:
+                tokens[index_before:index_before + 3] = [dehyphenated_word] # this does not work right with numpy arrays
         return tokens
 
     page_pool = PagePool()
