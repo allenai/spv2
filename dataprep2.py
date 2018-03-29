@@ -68,6 +68,11 @@ def normalize(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
     return s
 
+def sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
+    if s is not None:
+        return s.replace("\0", "\ufffd")
+    else:
+        return None
 
 #
 # Classes 🏫
@@ -1073,7 +1078,7 @@ def labeled_tokens_file(bucket_path: str):
                     logging.warning("Could not find all authors in %s; skipping doc", doc_id)
                     continue
 
-                if paper_bib_authors == 0 and nonempty_titles == 0:
+                if paper_bib_authors == 0 or nonempty_titles == 0:
                     continue
 
                 # find out if we have enough bib matches to keep bibs for this document
