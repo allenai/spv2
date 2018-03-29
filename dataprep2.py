@@ -568,7 +568,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "22bibs"
+LABELED_TOKENS_VERSION = "23bibs"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -1078,7 +1078,7 @@ def labeled_tokens_file(bucket_path: str):
                     logging.warning("Could not find all authors in %s; skipping doc", doc_id)
                     continue
 
-                if paper_bib_authors == 0 and nonempty_titles == 0:
+                if paper_bib_authors == 0 or nonempty_titles == 0:
                     continue
 
                 # find out if we have enough bib matches to keep bibs for this document
@@ -1204,7 +1204,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "22bibs"
+FEATURIZED_TOKENS_VERSION = "23bibs"
 
 def make_featurized_tokens_file(
     output_file_name: str,
