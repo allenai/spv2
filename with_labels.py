@@ -769,7 +769,7 @@ def evaluate_model(
             gold_bibtitles = [normalize(t) for t in gold_bibtitles if t is not None]
             gold_bibtitles = {t for t in gold_bibtitles if len(t) > 0}
 
-            labeled_bibtitles = [bib[0] for bib in mode_to_results["labels"][2]]
+            labeled_bibtitles = [bib[0] for bib in mode_to_results["labels"][2] if bib[0] is not None]
             if len(labeled_bibtitles) <= 0:
                 log_file.write("No bib title labeled\n")
             else:
@@ -778,7 +778,7 @@ def evaluate_model(
             labeled_bibtitles = [normalize(t) for t in labeled_bibtitles]
             labeled_bibtitles = {t for t in labeled_bibtitles if len(t) > 0}
 
-            predicted_bibtitles = [bib[0] for bib in mode_to_results["predictions"][2]]
+            predicted_bibtitles = [bib[0] for bib in mode_to_results["predictions"][2] if bib[0] is not None]
             if len(predicted_bibtitles) <= 0:
                 log_file.write("No bib title predicted\n")
             else:
@@ -862,14 +862,14 @@ def evaluate_model(
             for gold_bibvenue in gold_bibvenues:
                 log_file.write("Gold bib venue:      %s\n" % gold_bibvenue)
 
-            labeled_bibvenues = [bib[2] for bib in mode_to_results["labels"][2]]
+            labeled_bibvenues = [bib[2] for bib in mode_to_results["labels"][2] if bib[2] is not None]
             if len(labeled_bibvenues) <= 0:
                 log_file.write("No bib venue labeled\n")
             else:
                 for labeled_bibvenue in labeled_bibvenues:
                     log_file.write("Labeled bib venue:   %s\n" % labeled_bibvenue)
 
-            predicted_bibvenues = [bib[2] for bib in mode_to_results["predictions"][2]]
+            predicted_bibvenues = [bib[2] for bib in mode_to_results["predictions"][2] if bib[2] is not None]
             if len(predicted_bibvenues) <= 0:
                 log_file.write("No bib venue predicted\n")
             else:
@@ -912,14 +912,14 @@ def evaluate_model(
             for gold_bibyear in gold_bibyears:
                 log_file.write("Gold bib year:      %s\n" % gold_bibyear)
 
-            labeled_bibyears = [bib[3] for bib in mode_to_results["labels"][2]]
+            labeled_bibyears = [bib[3] for bib in mode_to_results["labels"][2] if bib[3] is not None]
             if len(labeled_bibyears) <= 0:
                 log_file.write("No bib year labeled\n")
             else:
                 for labeled_bibyear in labeled_bibyears:
                     log_file.write("Labeled bib year:   %s\n" % labeled_bibyear)
 
-            predicted_bibyears = [bib[3] for bib in mode_to_results["predictions"][2]]
+            predicted_bibyears = [bib[3] for bib in mode_to_results["predictions"][2] if bib[3] is not None]
             if len(predicted_bibyears) <= 0:
                 log_file.write("No bib year predicted\n")
             else:
