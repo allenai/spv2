@@ -536,22 +536,23 @@ def main():
                     model,
                     model_settings,
                     embeddings.glove_vocab(),
-                    get_docs)
+                    get_docs,
+                    enabled_modes={"predictions"})
                 results = {
                     doc.doc_sha: {
                         "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
-                        "title": dataprep2.sanitize_for_json(title),
-                        "authors": authors,
+                        "title": dataprep2.sanitize_for_json(docresults["predictions"][0]),
+                        "authors": docresults["predictions"][1],
                         "bibs": [
                             {
                                 "title": bibtitle,
                                 "authors": bibauthors,
                                 "venue": bibvenue,
                                 "year": bibyear
-                            } for bibtitle, bibauthors, bibvenue, bibyear in bibs
+                            } for bibtitle, bibauthors, bibvenue, bibyear in docresults["predictions"][2]
                         ]
-                    } for doc, title, authors, bibs in results
+                    } for doc, docresults in results
                 }
 
                 todo_list.post_results(model_version, results)
