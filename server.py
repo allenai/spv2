@@ -191,7 +191,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="model/C42.h5",
+        default="model/C49.h5",
         help="filename of existing model"
     )
     args = parser.parse_args()
