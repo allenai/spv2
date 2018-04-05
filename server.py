@@ -100,23 +100,24 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     self.server.model,
                     self.server.model_settings,
                     self.server.embeddings.glove_vocab(),
-                    get_docs)
+                    get_docs,
+                    enabled_modes={"predictions"})
 
                 started_sending = False
                 response_body = codecs.getwriter("UTF-8")(self.wfile, "UTF-8")
-                for doc, title, authors, bibs in results:
+                for doc, docresults in results:
                     result_json = {
                         "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
-                        "title": dataprep2.sanitize_for_json(title),
-                        "authors": authors,
+                        "title": dataprep2.sanitize_for_json(docresults["predictions"][0]),
+                        "authors": docresults["predictions"][1],
                         "bibs": [
                             {
                                 "title": bibtitle,
                                 "authors": bibauthors,
                                 "venue": bibvenue,
                                 "year": bibyear
-                            } for bibtitle, bibauthors, bibvenue, bibyear in bibs
+                            } for bibtitle, bibauthors, bibvenue, bibyear in docresults["predictions"][2]
                         ]
                     }
                     result_json = {"doc": result_json}

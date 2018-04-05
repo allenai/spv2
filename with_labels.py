@@ -357,6 +357,34 @@ def _continuous_index_sequences(indices: np.array):
     else:
         return np.split(indices, np.where(np.diff(indices) != 1)[0]+1)
 
+def _continuous_index_sequences_taking_gap_size_into_account(indices: np.array, page: dataprep2.Page):
+    """
+    Our labeling scheme does not have a label for beginning and end, so if we have two
+    author names right next to each other, we can't tell from the labels that they are
+    two authors. We can tell if there is a big gap between the tokens though.
+    """
+    for index_sequence in _continuous_index_sequences(indices):
+        yield_from = 0
+        for ii in range(0, len(index_sequence) - 1):
+            before_token_index = index_sequence[ii]
+            after_token_index = index_sequence[ii + 1]
+
+            before_left, before_right, before_top, before_bottom, _, before_space_width = \
+                page.numeric_features[before_token_index]
+            after_left, after_right, after_top, after_bottom, _, after_space_width = \
+                page.numeric_features[after_token_index]
+            space_width = max(before_space_width, after_space_width)
+
+            # if the tokens are not on the same line, we keep them as they are
+            if before_top != after_top or before_bottom != after_bottom:
+                continue
+            elif before_right + 3 * space_width > after_left:
+                continue
+            else:
+                yield index_sequence[yield_from:ii + 1]
+                yield_from = ii + 1
+        yield index_sequence[yield_from:]
+
 def _longest_continuous_index_sequence(indices):
     """Given an array of indices, this returns the longest continuously increasing
     subsequence in the array."""
@@ -367,8 +395,10 @@ def run_model(
     model_settings: settings.ModelSettings,
     vocab,
     get_docs,
+    enabled_modes: typing.Set[str] = {"predictions", "labels"}
 ):
     def dehyphenate(tokens: typing.List[str]) -> typing.List[str]:
+        tokens = list(tokens)   # If tokens is a numpy list, this fixes it.
         for index, s in reversed(list(enumerate(tokens))):
             if s != "-":
                 continue
@@ -382,124 +412,149 @@ def run_model(
             hyphenated_word = tokens[index_before] + "-" + tokens[index_after]
             if hyphenated_word in vocab or hyphenated_word.lower() in vocab:
                 continue
+            dehyphenated_word = tokens[index_before] + tokens[index_after]
             # if the dehyphenated word is in the vocab, remove the hyphen
-            tokens[index_before:index_before + 3] = [tokens[index_before] + tokens[index_after]]
+            if dehyphenated_word in vocab or dehyphenated_word.lower() in vocab:
+                tokens[index_before:index_before + 3] = [dehyphenated_word] # this does not work right with numpy arrays
         return tokens
 
-    page_pool = PagePool()
-    for doc in get_docs():
-        for page in doc.get_relevant_pages():
-            page_pool.add(doc, page)
+    def slices_from_test_docs():
+        SLICE_SIZE = 64 * 1024  # for evaluation, we use the largest slice we can get away with
+
+        page_pool = PagePool()
+        for doc in get_docs():
+            for page in doc.get_relevant_pages():
+                page_pool.add(doc, page)
+
+            if len(page_pool) > SLICE_SIZE // 8:
+                yield page_pool.get_slice(SLICE_SIZE)
+
+        while len(page_pool) > 0:
+            yield page_pool.get_slice(SLICE_SIZE, smallest_pages=True)
 
     docpage_to_results = {}
-    while len(page_pool) > 0:
-        slice = page_pool.get_slice(model_settings.tokens_per_batch)
+    for slice in dataprep2.threaded_generator(slices_from_test_docs()):
         x, y = batch_from_page_group(model_settings, slice)
-        raw_predictions_for_slice = model.predict_on_batch(x)
+
+        mode_to_raw_predictions = {}
+        if "predictions" in enabled_modes:
+            mode_to_raw_predictions["predictions"] = model.predict_on_batch(x)
+        if "labels" in enabled_modes:
+            mode_to_raw_predictions["labels"] = y
 
         for index, docpage in enumerate(slice):
             doc, page = docpage
 
             key = (doc.doc_id, page.page_number)
             assert key not in docpage_to_results
-            docpage_to_results[key] = raw_predictions_for_slice[index,:len(page.tokens)]
+            docpage_to_results[key] = {}
+            for mode in enabled_modes:
+                docpage_to_results[key][mode] = \
+                    mode_to_raw_predictions[mode][index,:len(page.tokens)]
 
     for doc in get_docs():
         logging.info("Processing %s", doc.doc_id)
 
-        predicted_title = np.empty(shape=(0,), dtype=np.unicode)
-        predicted_authors = []
-        predicted_bibs = []
+        mode_to_results = {}
 
-        for page in doc.get_relevant_pages():
-            page_raw_predictions = docpage_to_results.get((doc.doc_id, page.page_number), None)
-            if page_raw_predictions is None:
-                continue
-            page_predictions = page_raw_predictions.argmax(axis=1)
+        for mode in enabled_modes:
+            predicted_title = np.empty(shape=(0,), dtype=np.unicode)
+            predicted_authors = []
+            predicted_bibs = []
 
-            # find predicted titles
-            indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
-            if len(indices_predicted_title) > 0:
-                predicted_title_on_page = _longest_continuous_index_sequence(indices_predicted_title)
-                if len(predicted_title_on_page) > len(predicted_title):
-                    predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
-                    predicted_title = predicted_title_on_page
+            for page in doc.get_relevant_pages():
+                mode_to_page_raw_predictions = \
+                    docpage_to_results.get((doc.doc_id, page.page_number), None)
+                if mode_to_page_raw_predictions is None:
+                    continue
+                page_raw_predictions = mode_to_page_raw_predictions[mode]
+                page_predictions = page_raw_predictions.argmax(axis=1)
 
-            # find predicted authors
-            indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-            # authors must all be in the same font
-            if len(indices_predicted_author) > 0:
-                author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
-                author_fonts_on_page, author_font_counts_on_page = \
-                    np.unique(author_fonts_on_page, return_counts=True)
-                author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
-                indices_predicted_author = \
-                    [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
-            # authors must all come from the same page
-            predicted_authors_on_page = [
-                np.take(page.tokens, index_sequence)
-                for index_sequence in _continuous_index_sequences(indices_predicted_author)
-            ]
-            if len(predicted_authors_on_page) > len(predicted_authors):
-                predicted_authors = predicted_authors_on_page
+                # find predicted titles
+                indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
+                if len(indices_predicted_title) > 0:
+                    predicted_title_on_page = _longest_continuous_index_sequence(indices_predicted_title)
+                    if len(predicted_title_on_page) > len(predicted_title):
+                        predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
+                        predicted_title = predicted_title_on_page
 
-            # find predicted bibs
-            BIB_LABELS = {
-                dataprep2.BIBTITLE_LABEL,
-                dataprep2.BIBAUTHOR_LABEL,
-                dataprep2.BIBVENUE_LABEL,
-                dataprep2.BIBYEAR_LABEL
-            }
+                # find predicted authors
+                indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
+                # authors must all be in the same font
+                if len(indices_predicted_author) > 0:
+                    author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
+                    author_fonts_on_page, author_font_counts_on_page = \
+                        np.unique(author_fonts_on_page, return_counts=True)
+                    author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
+                    indices_predicted_author = \
+                        [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
+                # authors must all come from the same page
+                predicted_authors_on_page = [
+                    np.take(page.tokens, index_sequence)
+                    for index_sequence in _continuous_index_sequences_taking_gap_size_into_account(indices_predicted_author, page)
+                ]
+                if len(predicted_authors_on_page) > len(predicted_authors):
+                    predicted_authors = predicted_authors_on_page
 
-            # find all sections of text with bib labels, and put them into a single list
-            bib_index_sequences = []
-            for bib_label in BIB_LABELS:
-                indices_predicted_biblabel = np.where(page_predictions == bib_label)[0]
-                for index_sequence in _continuous_index_sequences(indices_predicted_biblabel):
-                    bib_index_sequences.append((index_sequence, bib_label))
-            # order the list by starting position
-            bib_index_sequences.sort(key=lambda x: x[0][0])
+                # find predicted bibs
+                BIB_LABELS = {
+                    dataprep2.BIBTITLE_LABEL,
+                    dataprep2.BIBAUTHOR_LABEL,
+                    dataprep2.BIBVENUE_LABEL,
+                    dataprep2.BIBYEAR_LABEL
+                }
 
-            # go through the index sequences one by one. start a new bib entry when we see the same
-            # bib field again. concatenate if we see the same field twice.
-            bib_fields = {}
-            last_bib_field = None
-            for index_sequence, field in bib_index_sequences:
-                if field in bib_fields and field != last_bib_field:
+                # find all sections of text with bib labels, and put them into a single list
+                bib_index_sequences = []
+                for bib_label in BIB_LABELS:
+                    indices_predicted_biblabel = np.where(page_predictions == bib_label)[0]
+                    for index_sequence in _continuous_index_sequences(indices_predicted_biblabel):
+                        bib_index_sequences.append((index_sequence, bib_label))
+                # order the list by starting position
+                bib_index_sequences.sort(key=lambda x: x[0][0])
+
+                # go through the index sequences one by one. start a new bib entry when we see the same
+                # bib field again. concatenate if we see the same field twice.
+                bib_fields = {}
+                last_bib_field = None
+                for index_sequence, field in bib_index_sequences:
+                    if field in bib_fields and field != last_bib_field:
+                        predicted_bibs.append((
+                            bib_fields.get(dataprep2.BIBTITLE_LABEL, None),
+                            bib_fields.get(dataprep2.BIBAUTHOR_LABEL, []),
+                            bib_fields.get(dataprep2.BIBVENUE_LABEL, None),
+                            bib_fields.get(dataprep2.BIBYEAR_LABEL, None),
+                        ))
+                        bib_fields = {}
+
+                    bib_field_string = list(np.take(page.tokens, index_sequence))
+                    if field in {dataprep2.BIBTITLE_LABEL, dataprep2.BIBVENUE_LABEL}:
+                        bib_field_string = dehyphenate(bib_field_string)
+                    bib_field_string = " ".join(bib_field_string)
+
+                    if field == dataprep2.BIBAUTHOR_LABEL:
+                        bib_fields[field] = bib_fields.get(field, [])
+                        bib_fields[field].append(bib_field_string)
+                    else:
+                        bib_fields[field] = (bib_fields.get(field, "") + " " + bib_field_string).strip()
+                    last_bib_field = field
+                if len(bib_fields) > 0:
                     predicted_bibs.append((
                         bib_fields.get(dataprep2.BIBTITLE_LABEL, None),
                         bib_fields.get(dataprep2.BIBAUTHOR_LABEL, []),
                         bib_fields.get(dataprep2.BIBVENUE_LABEL, None),
                         bib_fields.get(dataprep2.BIBYEAR_LABEL, None),
                     ))
-                    bib_fields = {}
 
-                bib_field_string = list(np.take(page.tokens, index_sequence))
-                if field in {dataprep2.BIBTITLE_LABEL, dataprep2.BIBVENUE_LABEL}:
-                    bib_field_string = dehyphenate(bib_field_string)
-                bib_field_string = " ".join(bib_field_string)
+            predicted_title = " ".join(dehyphenate(predicted_title))
+            predicted_authors = [" ".join(ats) for ats in predicted_authors]
 
-                if field == dataprep2.BIBAUTHOR_LABEL:
-                    bib_fields[field] = bib_fields.get(field, [])
-                    bib_fields[field].append(bib_field_string)
-                else:
-                    bib_fields[field] = (bib_fields.get(field, "") + " " + bib_field_string).strip()
-                last_bib_field = field
-            if len(bib_fields) > 0:
-                predicted_bibs.append((
-                    bib_fields.get(dataprep2.BIBTITLE_LABEL, None),
-                    bib_fields.get(dataprep2.BIBAUTHOR_LABEL, []),
-                    bib_fields.get(dataprep2.BIBVENUE_LABEL, None),
-                    bib_fields.get(dataprep2.BIBYEAR_LABEL, None),
-                ))
+            mode_to_results[mode] = (predicted_title, predicted_authors, predicted_bibs)
 
-        predicted_title = " ".join(dehyphenate(predicted_title))
-        predicted_authors = [" ".join(ats) for ats in predicted_authors]
-        yield (doc, predicted_title, predicted_authors, predicted_bibs)
+        yield (doc, mode_to_results)
 
 EvaluationResult = collections.namedtuple(
     "EvaluationResult", [
-        "aucs",
         "title_pr",
         "author_pr",
         "bibtitle_pr",
@@ -582,10 +637,6 @@ def evaluate_model(
     doc_set: dataprep2.DocumentSet = dataprep2.DocumentSet.TEST,
     test_doc_count: int = None
 ) -> EvaluationResult:
-    #
-    # Load and prepare documents
-    #
-
     def test_docs() -> typing.Generator[dataprep2.Document, None, None]:
         docs = dataprep2.documents(pmc_dir, model_settings, doc_set)
         if test_doc_count is not None:
@@ -605,39 +656,6 @@ def evaluate_model(
         else:
             logging.info("Evaluating on %d documents", yielded_doc_count)
 
-    def slices_from_test_docs():
-        SLICE_SIZE = 64 * 1024  # for evaluation, we use the largest slice we can get away with
-
-        page_pool = PagePool()
-        for doc in test_docs():
-            for page in doc.get_relevant_pages():
-                page_pool.add(doc, page)
-
-            if len(page_pool) > SLICE_SIZE // 8:
-                yield page_pool.get_slice(SLICE_SIZE)
-
-        while len(page_pool) > 0:
-            yield page_pool.get_slice(SLICE_SIZE, smallest_pages=True)
-
-    docpage_to_results = {}
-    for slice in dataprep2.threaded_generator(slices_from_test_docs()):
-        x, y = batch_from_page_group(model_settings, slice)
-        raw_predictions_for_slice = model.predict_on_batch(x)
-        raw_labels_for_slice = y
-
-        for index, docpage in enumerate(slice):
-            doc, page = docpage
-
-            key = (doc.doc_id, page.page_number)
-            assert key not in docpage_to_results
-            docpage_to_results[key] = (
-                raw_predictions_for_slice[index,:len(page.tokens)],
-                raw_labels_for_slice[index,:len(page.tokens)])
-
-    #
-    # Summarize and print results
-    #
-
     # these are arrays of tuples (precision, recall) to produce an SPV1-style metric
     title_prs = []
     author_prs = []
@@ -646,164 +664,9 @@ def evaluate_model(
     bibvenue_prs = []
     bibyear_prs = []
 
-    def remove_hyphens(predicted_bibtitles):
-        for i in range(0, len(predicted_bibtitles)):
-            for j in range(1, len(predicted_bibtitles[i])-1):
-                if j >= len(predicted_bibtitles[i])-1:
-                    break
-                if predicted_bibtitles[i][j] == '-':
-                    possible_word = ''.join([
-                        predicted_bibtitles[i][j-1],
-                        '-',
-                        predicted_bibtitles[i][j+1]])
-                    if possible_word in vocab or possible_word.lower() in vocab:
-                        continue
-                    possible_word = ''.join([
-                        predicted_bibtitles[i][j-1],
-                        predicted_bibtitles[i][j+1]])
-                    if possible_word in vocab or possible_word.lower() in vocab:
-                        predicted_bibtitles[i][j-1] = possible_word
-                        predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
-                        predicted_bibtitles[i] = np.delete(predicted_bibtitles[i], j)
-
-        return predicted_bibtitles
-
     with open(log_filename, "w", encoding="UTF-8") as log_file:
-        for doc in test_docs():
+        for doc, mode_to_results in run_model(model, model_settings, vocab, test_docs):
             log_file.write("\nDocument %s\n" % doc.doc_id)
-
-            labeled_title = np.empty(shape=(0,), dtype=np.unicode)
-            labeled_authors = []
-            labeled_bibtitles = []
-            labeled_bibauthors = []
-            labeled_bibvenues = []
-            labeled_bibyears = []
-
-            predicted_title = np.empty(shape=(0,), dtype=np.unicode)
-            predicted_authors = []
-            predicted_bibtitles = []
-            predicted_bibauthors = []
-            predicted_bibvenues = []
-            predicted_bibyears = []
-
-            for page in doc.get_relevant_pages():
-                if len(page.tokens) <= 0:
-                    continue
-
-                page_raw_predictions, page_raw_labels = \
-                    docpage_to_results[(doc.doc_id, page.page_number)]
-
-                # find labeled titles
-                page_labels = page_raw_labels.argmax(axis=1)
-
-                indices_labeled_title = np.where(page_labels == dataprep2.TITLE_LABEL)[0]
-                if len(indices_labeled_title) > 0:
-                    labeled_title_on_page = _longest_continuous_index_sequence(indices_labeled_title)
-                    if len(labeled_title_on_page) > len(labeled_title):
-                        labeled_title_on_page = np.take(page.tokens, labeled_title_on_page)
-                        labeled_title = labeled_title_on_page
-
-                # find labeled authors
-                indices_labeled_author = np.where(page_labels == dataprep2.AUTHOR_LABEL)[0]
-                # authors must all come from the same page
-                labeled_authors_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_labeled_author)
-                ]
-                if len(labeled_authors_on_page) > len(labeled_authors):
-                    labeled_authors = labeled_authors_on_page
-
-                # find labeled bibtitles
-                indices_labeled_bibtitle = np.where(page_labels == dataprep2.BIBTITLE_LABEL)[0]
-                labeled_bibtitles_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_labeled_bibtitle)
-                ]
-                labeled_bibtitles += labeled_bibtitles_on_page
-
-                # find labeled bibauthors
-                indices_labeled_bibauthor = np.where(page_labels == dataprep2.BIBAUTHOR_LABEL)[0]
-                labeled_bibauthors_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_labeled_bibauthor)
-                ]
-                labeled_bibauthors += labeled_bibauthors_on_page
-
-                # find labeled bibvenues
-                indices_labeled_bibvenue = np.where(page_labels == dataprep2.BIBVENUE_LABEL)[0]
-                labeled_bibvenues_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_labeled_bibvenue)
-                ]
-                labeled_bibvenues += labeled_bibvenues_on_page
-
-                # find labeled bibyear
-                indices_labeled_bibyear = np.where(page_labels == dataprep2.BIBYEAR_LABEL)[0]
-                labeled_bibyears_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_labeled_bibyear)
-                ]
-                labeled_bibyears += labeled_bibyears_on_page
-
-                # find predicted titles
-                page_predictions = page_raw_predictions.argmax(axis=1)
-
-                indices_predicted_title = np.where(page_predictions == dataprep2.TITLE_LABEL)[0]
-                if len(indices_predicted_title) > 0:
-                    predicted_title_on_page = _longest_continuous_index_sequence(indices_predicted_title)
-                    if len(predicted_title_on_page) > len(predicted_title):
-                        predicted_title_on_page = np.take(page.tokens, predicted_title_on_page)
-                        predicted_title = predicted_title_on_page
-
-                # find predicted authors
-                indices_predicted_author = np.where(page_predictions == dataprep2.AUTHOR_LABEL)[0]
-                # authors must all be in the same font
-                if len(indices_predicted_author) > 0:
-                    author_fonts_on_page = np.take(page.font_hashes, indices_predicted_author)
-                    author_fonts_on_page, author_font_counts_on_page = \
-                        np.unique(author_fonts_on_page, return_counts=True)
-                    author_font_on_page = author_fonts_on_page[np.argmax(author_font_counts_on_page)]
-                    indices_predicted_author = \
-                        [i for i in indices_predicted_author if page.font_hashes[i] == author_font_on_page]
-                # authors must all come from the same page
-                predicted_authors_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_predicted_author)
-                ]
-                if len(predicted_authors_on_page) > len(predicted_authors):
-                    predicted_authors = predicted_authors_on_page
-
-                # find predicted bibtitles
-                indices_predicted_bibtitle = np.where(page_predictions == dataprep2.BIBTITLE_LABEL)[0]
-                predicted_bibtitles_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_predicted_bibtitle)
-                ]
-                predicted_bibtitles += predicted_bibtitles_on_page
-
-                # find predicted bibauthors
-                indices_predicted_bibauthor = np.where(page_predictions == dataprep2.BIBAUTHOR_LABEL)[0]
-                predicted_bibauthors_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_predicted_bibauthor)
-                ]
-                predicted_bibauthors += predicted_bibauthors_on_page
-
-                # find predicted bibvenues
-                indices_predicted_bibvenue = np.where(page_predictions == dataprep2.BIBVENUE_LABEL)[0]
-                predicted_bibvenues_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_predicted_bibvenue)
-                ]
-                predicted_bibvenues += predicted_bibvenues_on_page
-
-                # find predicted bibyears
-                indices_predicted_bibyear = np.where(page_predictions == dataprep2.BIBYEAR_LABEL)[0]
-                predicted_bibyears_on_page = [
-                    np.take(page.tokens, index_sequence)
-                    for index_sequence in _continuous_index_sequences(indices_predicted_bibyear)
-                ]
-                predicted_bibyears += predicted_bibyears_on_page
 
             def normalize(s: str) -> str:
                 s = unicodedata.normalize("NFKC", s)
@@ -854,10 +717,10 @@ def evaluate_model(
             # print titles
             log_file.write("Gold title:      %s\n" % doc.gold_title)
 
-            labeled_title = " ".join(labeled_title)
+            labeled_title = mode_to_results["labels"][0]
             log_file.write("Labeled title:   %s\n" % labeled_title)
 
-            predicted_title = " ".join(predicted_title)
+            predicted_title = mode_to_results["predictions"][0]
             log_file.write("Predicted title: %s\n" % predicted_title)
 
             # calculate title P/R
@@ -871,24 +734,24 @@ def evaluate_model(
             gold_authors = ["%s %s" % tuple(gold_author) for gold_author in doc.gold_authors]
             for gold_author in gold_authors:
                 log_file.write("Gold author:     %s\n" % gold_author)
+            gold_authors = set(map(normalize_author, gold_authors))
 
-            labeled_authors = [" ".join(ats) for ats in labeled_authors]
+            labeled_authors = mode_to_results["labels"][1]
             if len(labeled_authors) <= 0:
                 log_file.write("No authors labeled\n")
             else:
                 for labeled_author in labeled_authors:
                     log_file.write("Labeled author:  %s\n" % labeled_author)
 
-            predicted_authors = [" ".join(ats) for ats in predicted_authors]
+            predicted_authors = mode_to_results["predictions"][1]
             if len(predicted_authors) <= 0:
                 log_file.write("No authors predicted\n")
             else:
                 for predicted_author in predicted_authors:
                     log_file.write("Predicted author: %s\n" % predicted_author)
+            predicted_authors = set(map(normalize_author, predicted_authors))
 
             # calculate author P/R
-            gold_authors = set(map(normalize_author, gold_authors))
-            predicted_authors = set(map(normalize_author, predicted_authors))
             precision = 0
             if len(predicted_authors) > 0:
                 precision = len(gold_authors & predicted_authors) / len(predicted_authors)
@@ -903,28 +766,28 @@ def evaluate_model(
             gold_bibtitles = doc.gold_bib_titles[:]
             for gold_bibtitle in gold_bibtitles:
                 log_file.write("Gold bib title:      %s\n" % gold_bibtitle)
+            gold_bibtitles = [normalize(t) for t in gold_bibtitles if t is not None]
+            gold_bibtitles = {t for t in gold_bibtitles if len(t) > 0}
 
-            labeled_bibtitles = [" ".join(ats) for ats in labeled_bibtitles]
+            labeled_bibtitles = [bib[0] for bib in mode_to_results["labels"][2] if bib[0] is not None]
             if len(labeled_bibtitles) <= 0:
                 log_file.write("No bib title labeled\n")
             else:
                 for labeled_bibtitle in labeled_bibtitles:
                     log_file.write("Labeled bib title:   %s\n" % labeled_bibtitle)
+            labeled_bibtitles = [normalize(t) for t in labeled_bibtitles]
+            labeled_bibtitles = {t for t in labeled_bibtitles if len(t) > 0}
 
-            predicted_bibtitles = remove_hyphens(predicted_bibtitles)
-            predicted_bibtitles = {" ".join(ats) for ats in predicted_bibtitles}
-            predicted_bibtitles = {normalize(t) for t in predicted_bibtitles}
-            predicted_bibtitles = {t for t in predicted_bibtitles if len(t) > 0}
+            predicted_bibtitles = [bib[0] for bib in mode_to_results["predictions"][2] if bib[0] is not None]
             if len(predicted_bibtitles) <= 0:
                 log_file.write("No bib title predicted\n")
             else:
                 for predicted_bibtitle in predicted_bibtitles:
-                    log_file.write("Predicted bib title: %s\n" % predicted_bibtitle)
+                    log_file.write("Predicted bib title:   %s\n" % predicted_bibtitle)
+            predicted_bibtitles = [normalize(t) for t in predicted_bibtitles]
+            predicted_bibtitles = {t for t in predicted_bibtitles if len(t) > 0}
 
             # calculate bibtitle P/R
-            gold_bibtitles = {normalize(t) for t in gold_bibtitles if t is not None}
-            gold_bibtitles = {t for t in gold_bibtitles if len(t) > 0}
-
             precision = 0
             if len(predicted_bibtitles) > 0:
                 precision = len(gold_bibtitles & predicted_bibtitles) / len(predicted_bibtitles)
@@ -940,23 +803,27 @@ def evaluate_model(
             gold_bibauthors = doc.gold_bib_authors[:]
             for gold_bibauthor_per_bib in gold_bibauthors:
                 for gold_bibauthor in gold_bibauthor_per_bib:
+                    # What is this sorting business?
                     unsorted_bib_author = normalize_author(" ".join(gold_bibauthor[::-1])).split()
                     unsorted_bib_author.sort()
                     sorted_bib_author = unsorted_bib_author
                     log_file.write("Gold bib author:      {}\n".format(" ".join(sorted_bib_author)))
 
-            labeled_bibauthors = [" ".join(ats) for ats in labeled_bibauthors]
+            labeled_bibauthors = [bib[1] for bib in mode_to_results["labels"][2]]
+            labeled_bibauthors = [author for authors in labeled_bibauthors for author in authors]
             if len(labeled_bibauthors) <= 0:
                 log_file.write("No bib authors labeled\n")
             else:
                 for labeled_bibauthor in labeled_bibauthors:
                     log_file.write("Labeled bib author:   %s\n" % labeled_bibauthor)
 
-            predicted_bibauthors = [" ".join(ats) for ats in predicted_bibauthors]
+            predicted_bibauthors = [bib[1] for bib in mode_to_results["predictions"][2]]
+            predicted_bibauthors = [author for authors in predicted_bibauthors for author in authors]
             if len(predicted_bibauthors) <= 0:
                 log_file.write("No bib authors predicted\n")
             else:
                 for predicted_bibauthor in predicted_bibauthors:
+                    # What is this sorting business?
                     unsorted_bib_author = normalize_author(predicted_bibauthor).split()
                     unsorted_bib_author.sort()
                     sorted_bib_author = unsorted_bib_author
@@ -964,7 +831,6 @@ def evaluate_model(
 
             # calculate bibauthor P/R
             gold_bibauthors_set = multiset.Multiset()
-
             for gold_author_per_bib in gold_bibauthors:
                 for gold_bibauthor in gold_author_per_bib:
                     unsorted_bib_author = normalize_author(" ".join(gold_bibauthor[::-1])).split()
@@ -996,14 +862,14 @@ def evaluate_model(
             for gold_bibvenue in gold_bibvenues:
                 log_file.write("Gold bib venue:      %s\n" % gold_bibvenue)
 
-            labeled_bibvenues = [" ".join(ats) for ats in labeled_bibvenues]
+            labeled_bibvenues = [bib[2] for bib in mode_to_results["labels"][2] if bib[2] is not None]
             if len(labeled_bibvenues) <= 0:
                 log_file.write("No bib venue labeled\n")
             else:
                 for labeled_bibvenue in labeled_bibvenues:
                     log_file.write("Labeled bib venue:   %s\n" % labeled_bibvenue)
 
-            predicted_bibvenues = [" ".join(ats) for ats in predicted_bibvenues]
+            predicted_bibvenues = [bib[2] for bib in mode_to_results["predictions"][2] if bib[2] is not None]
             if len(predicted_bibvenues) <= 0:
                 log_file.write("No bib venue predicted\n")
             else:
@@ -1011,12 +877,12 @@ def evaluate_model(
                     log_file.write("Predicted bib venue: %s\n" % predicted_bibvenue)
 
             gold_bibvenues_set_array = []
-            for e in gold_bibvenues:
-                if e is None:
+            for v in gold_bibvenues:
+                if v is None:
                     continue
-                strip_e = e.strip()
-                if len(strip_e) > 0:
-                    gold_bibvenues_set_array.append(strip_e)
+                v = v.strip()
+                if len(v) > 0:
+                    gold_bibvenues_set_array.append(v)
             gold_bibvenues = gold_bibvenues_set_array
 
             # calculate venue P/R
@@ -1046,14 +912,14 @@ def evaluate_model(
             for gold_bibyear in gold_bibyears:
                 log_file.write("Gold bib year:      %s\n" % gold_bibyear)
 
-            labeled_bibyears = [" ".join(ats) for ats in labeled_bibyears]
+            labeled_bibyears = [bib[3] for bib in mode_to_results["labels"][2] if bib[3] is not None]
             if len(labeled_bibyears) <= 0:
                 log_file.write("No bib year labeled\n")
             else:
                 for labeled_bibyear in labeled_bibyears:
                     log_file.write("Labeled bib year:   %s\n" % labeled_bibyear)
 
-            predicted_bibyears = [" ".join(ats) for ats in predicted_bibyears]
+            predicted_bibyears = [bib[3] for bib in mode_to_results["predictions"][2] if bib[3] is not None]
             if len(predicted_bibyears) <= 0:
                 log_file.write("No bib year predicted\n")
             else:
@@ -1061,12 +927,12 @@ def evaluate_model(
                     log_file.write("Predicted bib year: %s\n" % predicted_bibyear)
 
             gold_bibyears_set_array = []
-            for e in gold_bibyears:
-                if e is None:
+            for y in gold_bibyears:
+                if y is None:
                     continue
-                strip_e = e.strip()
-                if len(strip_e) > 0:
-                    gold_bibyears_set_array.append(strip_e)
+                y = y.strip()
+                if len(y) > 0:
+                    gold_bibyears_set_array.append(y)
             gold_bibyears = gold_bibyears_set_array
 
             # calculate year P/R
@@ -1092,18 +958,9 @@ def evaluate_model(
             if len(gold_bibyears) > 0:
                 bibyear_prs.append((precision, recall))
 
-    # Calculate P/R and AUC
-    y_score = np.concatenate([raw_prediction for raw_prediction, _ in docpage_to_results.values()])
-    y_true = np.concatenate([raw_labels for _, raw_labels in docpage_to_results.values()])
-    y_true = y_true.astype(np.bool)
-
+    # Calculate P/R
     # produce some numbers for a spreadsheet
     print()
-    scores = sklearn.metrics.average_precision_score(y_true, y_score, average=None)
-    print("Areas under the P/R curve:")
-    print("\t".join(map(str, dataprep2.POTENTIAL_LABELS)))
-    print("\t".join(["%.3f" % score for score in scores]))
-
     def average_pr(prs):
         p = sum((pr[0] for pr in prs)) / len(prs)
         r = sum((pr[1] for pr in prs)) / len(prs)
@@ -1115,14 +972,12 @@ def evaluate_model(
     print("bib_titleP\tbib_titleR\tbib_authorP\tbib_authorR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(bibtitle_prs) + average_pr(bibauthor_prs)))
 
-
     print("bib_venueP\tbib_venueR\tbib_yearP\tbib_yearR")
     print("%.3f\t%.3f\t%.3f\t%.3f" % (average_pr(bibvenue_prs) + average_pr(bibyear_prs)))
 
     print('')
 
     return EvaluationResult(
-        tuple(scores),
         average_pr(title_prs),
         average_pr(author_prs),
         average_pr(bibtitle_prs),
@@ -1167,9 +1022,7 @@ def train(
             print("All scores from this run:")
         else:
             print("All scores after %.0f seconds:" % training_time)
-        print("time\tbatch_count\tauc_none\tauc_titles\tauc_authors\tauc_bibtitle\tauc_bibauthor\tauc_bibvenue\t" +
-              "auc_bibyear\ttitle_p\ttitle_r\tauthor_p\tauthor_r\tbibtitle_p\tbibtitle_r\tbibauthor_p\tbibauthor_r" +
-              "\tbibvenue_p\tbibvenue_r\tbibyear_p\tbibyear_r")
+        print("time\tbatch_count\ttitle_p\ttitle_r\tauthor_p\tauthor_r\tbibtitle_p\tbibtitle_r\tbibauthor_p\tbibauthor_r\tbibvenue_p\tbibvenue_r\tbibyear_p\tbibyear_r")
         for time_elapsed, batch_count, ev_result in scored_results:
             flatten = lambda l: [item for sublist in l for item in sublist]
             print("\t".join(map(str, (time_elapsed, batch_count) + tuple(flatten(ev_result)))))
