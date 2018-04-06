@@ -1647,7 +1647,7 @@ class DocumentSet(Enum):
     VALIDATE = 3
 
 def tokenstats_for_pmc_dir(pmc_dir: str) -> TokenStatistics:
-    return TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
+    return TokenStatistics(os.path.join(pmc_dir, "tokens6.tokenstats.pickle.gz"))
 
 def documents(
     pmc_dir: str,
