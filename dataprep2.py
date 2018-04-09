@@ -1546,7 +1546,7 @@ class Document(DocumentBase):
 
     def get_relevant_pages(self) -> typing.Generator[Page, None, None]:
         """Returns first three and last three pages, but not pages that have no tokens."""
-        page_indices = {0, 1, 2, -1, -2, -3}
+        page_indices = {0, 1, 2, -1, -2, -3, -4, -5}
         pages = self.pages
         page_indices_for_this_doc = {i % len(pages) for i in page_indices}
         pages = [pages[i] for i in page_indices_for_this_doc]
