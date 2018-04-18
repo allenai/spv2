@@ -6,13 +6,13 @@ metadata:
   labels:
     contact: dirkg
 spec:
-  parallelism: 8
+  parallelism: 12
   template:
     spec:
       restartPolicy: OnFailure
       containers:
         - name: spv2-dbworker-v2
-          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:2.8
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:2.9
           resources:
             requests:
               cpu: 12
