@@ -15,6 +15,7 @@ import bz2
 import typing
 import sys
 import html
+import time
 from enum import Enum
 from queue import Queue
 from threading import Thread
@@ -26,7 +27,7 @@ import settings
 # Helpers 💁
 #
 
-def threaded_generator(g, maxsize=128):
+def threaded_generator(g, maxsize=16):
     q = Queue(maxsize=maxsize)
 
     sentinel = object()
@@ -67,6 +68,11 @@ def normalize(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
     return s
 
+def sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
+    if s is not None:
+        return s.replace("\0", "\ufffd")
+    else:
+        return None
 
 #
 # Classes 🏫
@@ -221,7 +227,7 @@ class VisionOutput(object):
             return self.boxes[sha][page]
         except KeyError:
             # We don't have boxes for that document.
-            logging.warning("Missing vision output for %s", sha)
+            #logging.warning("Missing vision output for %s", sha)   # This is probably never coming back.
             return list()
         except IndexError:
             # We have boxes for that document, but not for that page.
@@ -269,6 +275,10 @@ class GloveVectors(object):
 
     def get_dimensions(self) -> int:
         return self.dimensions
+
+    def get_vocab(self):
+        self._ensure_vectors()
+        return self.word2index.keys()
 
     def get_vocab_size(self) -> int:
         self._ensure_vectors()
@@ -373,6 +383,9 @@ class CombinedEmbeddings(object):
         self._ensure_loaded()
         return self.matrix.shape[1]
 
+    def glove_vocab(self):
+        return self.glove.get_vocab()
+
     def vocab_size(self):
         self._ensure_loaded()
         return self.matrix.shape[0] - 1 # -1 for the keras mask
@@ -386,17 +399,21 @@ class CombinedEmbeddings(object):
 # Unlabeled Tokens 🗄
 #
 
-UNLABELED_TOKENS_VERSION = "tokens5master"
+UNLABELED_TOKENS_VERSION = "tok6"
 
 h5_unicode_type = h5py.special_dtype(vlen=np.unicode)
 
-POTENTIAL_LABELS = [None, "title", "author"]
+POTENTIAL_LABELS = [None, "title", "author", "bibtitle", "bibauthor", "bibvenue", "bibyear"]
 NONE_LABEL = 0
 TITLE_LABEL = POTENTIAL_LABELS.index("title")
 AUTHOR_LABEL = POTENTIAL_LABELS.index("author")
+BIBTITLE_LABEL = POTENTIAL_LABELS.index("bibtitle")
+BIBAUTHOR_LABEL = POTENTIAL_LABELS.index("bibauthor")
+BIBVENUE_LABEL = POTENTIAL_LABELS.index("bibvenue")
+BIBYEAR_LABEL = POTENTIAL_LABELS.index("bibyear")
 
 MAX_DOCS_PER_BUCKET = 6100
-MAX_PAGE_COUNT = 3
+MAX_PAGE_COUNT = 40
 # The effective page count used in training will be the minimum of this and the same setting in
 # the model settings.
 MAX_PAGES_PER_BUCKET = MAX_DOCS_PER_BUCKET * MAX_PAGE_COUNT
@@ -487,7 +504,7 @@ def make_unlabeled_tokens_file(
                 # Filter out tokens that have NaN in them
                 numeric_fields = ["left", "right", "top", "bottom", "fontSize", "fontSpaceWidth"]
                 json_tokens = [token for token in json_tokens if
-                   "NaN" not in [token[field_name] for field_name in numeric_fields]]
+                               "NaN" not in [token[field_name] for field_name in numeric_fields]]
 
                 first_token_index = len(h5_token_text_features)
                 page_in_h5["first_token_index"] = first_token_index
@@ -541,7 +558,7 @@ def unlabeled_tokens_file(bucket_path: str):
 
     temp_unlabeled_tokens_path = unlabeled_tokens_path + ".%d.temp" % os.getpid()
     make_unlabeled_tokens_file(
-        os.path.join(bucket_path, "tokens5.json.bz2"),
+        os.path.join(bucket_path, "tokens6.json.bz2"),
         temp_unlabeled_tokens_path)
     os.rename(temp_unlabeled_tokens_path, unlabeled_tokens_path)
     return h5py.File(unlabeled_tokens_path, "r")
@@ -551,7 +568,7 @@ def unlabeled_tokens_file(bucket_path: str):
 # Labeling 🏷
 #
 
-LABELED_TOKENS_VERSION = "tokens5master"
+LABELED_TOKENS_VERSION = "tok6"
 
 _split_words_re = re.compile(r'(\W|\d+)')
 _not_spaces_re = re.compile(r'\S+')
@@ -572,6 +589,8 @@ def labeled_tokens_file(bucket_path: str):
             "labeled-tokens-%s.h5" % LABELED_TOKENS_VERSION)
     if os.path.exists(labeled_tokens_path):
         return h5py.File(labeled_tokens_path, "r")
+
+    total_matches = [0, 0, 0, 0]
 
     logging.info("%s does not exist, will recreate", labeled_tokens_path)
     with unlabeled_tokens_file(bucket_path) as unlabeled_tokens:
@@ -679,15 +698,102 @@ def labeled_tokens_file(bucket_path: str):
                         doc_id)
                     continue
 
+                # read bibtitles from nxml
+                gold_bib_nodes = nxml.findall("./back/ref-list/ref/mixed-citation")
+                gold_bib_nodes += nxml.findall("./back/ref-list/ref/element-citation")
+                gold_bib_nodes += nxml.findall("./back/ref-list/ref/citation")
+                if len(gold_bib_nodes) == 0:
+                    logging.warning("Found no gold bib nodes for %s", doc_id)
+
+                gold_bib_titles = [None for x in gold_bib_nodes]
+                gold_bib_author_nodes = [None for x in gold_bib_nodes]
+                gold_bib_venues = [None for x in gold_bib_nodes]
+                gold_bib_years = [None for x in gold_bib_nodes]
+                gold_bib_pubids = [None for x in gold_bib_nodes]
+                for idx, gold_bib_node in enumerate(gold_bib_nodes):
+                    title = gold_bib_node.findall("./article-title")
+                    if len(title) == 0:
+                        logging.warning("Found no gold bib title for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_titles[idx] = title[0]
+
+                    authors = gold_bib_node.findall("./person-group/name")
+                    if len(authors) == 0:
+                        authors = gold_bib_node.findall("./name")
+                    if len(authors) == 0:
+                        authors = gold_bib_node.findall("./collab")
+                    if len(authors) == 0:
+                        logging.warning("Found no gold bib authors for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_author_nodes[idx] = authors
+
+                    venue = gold_bib_node.findall("./source")
+                    if len(venue) == 0:
+                        logging.warning("Found no venue for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_venues[idx] = venue[0]
+
+                    year = gold_bib_node.findall("./year")
+                    if len(year) == 0:
+                        logging.warning("Found no year for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_years[idx] = year[0]
+
+                    pubid = gold_bib_node.findall("./pub-id")
+                    if len(pubid) == 0:
+                        logging.warning("Found no pubid for %s entry %s", doc_id, idx)
+                    else:
+                        gold_bib_pubids[idx] = pubid
+
+                def stringify_elements(e, punct=True):
+                    out = [" ".join(tokenize(" ".join(x.itertext()))) if x is not None else "" for x in e]
+                    if punct:
+                        out = [trim_punctuation(x) for x in out]
+                    out = [x.replace("\u2026", ". . .") for x in out]
+                    return out
+                def stringify_lists_of_elements(le, delim=" "):
+                    out = [stringify_elements(e, False) if e is not None else [] for e in le]
+                    out = [delim.join(x) for x in out]
+                    return out
+
+                gold_bib_alls = stringify_elements(gold_bib_nodes)
+                gold_bib_titles = stringify_elements(gold_bib_titles)
+                gold_bib_venues = stringify_elements(gold_bib_venues, False)
+                gold_bib_pubids = stringify_lists_of_elements(gold_bib_pubids)
+                #strip pubids, which don't occur in doc
+                for i, a in enumerate(gold_bib_alls):
+                    if not gold_bib_pubids[i] is None:
+                        gold_bib_alls[i] = gold_bib_alls[i].replace(gold_bib_pubids[i], "")
+
+                gold_bib_authors = [[] for x in gold_bib_alls]
+                for bib_idx, authors_node in enumerate(gold_bib_author_nodes):
+                    if not authors_node is None:
+                        for author_node in authors_node:
+                            given_names = \
+                                " ".join(tokenize(textify_string_nodes(author_node.findall("./given-names"))))
+                            surnames = \
+                                " ".join(tokenize(textify_string_nodes(author_node.findall("./surname"))))
+                            if len(surnames) <= 0:
+                                logging.warning("No surnames for one of the bib authors; skipping author")
+                                continue
+                            gold_bib_authors[bib_idx].append((given_names, surnames))
+
+                gold_bib_years = stringify_elements(gold_bib_years)
+
                 effective_page_count = min(
                     MAX_PAGE_COUNT,
                     len(json_metadata["pages"]))
 
-                # find titles and authors in the document
+                # find titles, authors, bibs in the document
                 title_match = None
                 author_matches = []
                 for author_index in range(len(gold_authors)):
                     author_matches.append([])
+                bib_all_matches = [[] for x in gold_bib_titles]
+                bib_title_matches = [[] for x in gold_bib_titles]
+                bib_venue_matches = [[] for x in gold_bib_titles]
+                bib_author_matches = [[] for x in gold_bib_titles]
+                bib_year_matches = [[] for x in gold_bib_titles]
 
                 FuzzyMatch = collections.namedtuple("FuzzyMatch", [
                     "page_number",
@@ -711,12 +817,14 @@ def labeled_tokens_file(bucket_path: str):
                     page_text = []
                     page_text_length = 0
                     start_pos_to_token_index = {}
+                    token_index_to_start_pos = {}
                     for token_index, token in enumerate(tokens):
                         if len(page_text) > 0:
                             page_text.append(" ")
                             page_text_length += 1
 
                         start_pos_to_token_index[page_text_length] = token_index
+                        token_index_to_start_pos[token_index] = page_text_length
 
                         normalized_token_text = normalize(token)
                         page_text.append(normalized_token_text)
@@ -725,11 +833,20 @@ def labeled_tokens_file(bucket_path: str):
                     page_text = "".join(page_text)
                     assert page_text_length == len(page_text)
 
-                    def find_string_in_page(string: str) -> typing.Generator[FuzzyMatch, None, None]:
+                    def find_string_in_page(string: str, begin = None, end = None) -> typing.Generator[FuzzyMatch, None, None]:
                         string = normalize(string)
+                        if len(string) == 0:
+                            return
 
-                        offset = 0
-                        while offset < len(page_text):
+                        if begin is None:
+                            offset = 0
+                        else:
+                            offset = token_index_to_start_pos.get(begin, 0)
+                        if end is None:
+                            end = len(page_text)
+                        else:
+                            end = token_index_to_start_pos.get(end, len(page_text))
+                        while offset < end:
                             fuzzy_match = stringmatch.match(string, page_text[offset:])
                             if fuzzy_match.cost > ((len(string) - string.count(" ")) // 5):
                                 # stringmatch.match() returns results in increasing order of cost.
@@ -811,6 +928,121 @@ def labeled_tokens_file(bucket_path: str):
                         for author_variant in author_variants:
                             author_matches[author_index].extend(find_string_in_page(author_variant))
 
+                    #
+                    # find bibs
+                    #
+
+                    def bib_match_sort_key(match: FuzzyMatch):
+                        return match.cost, match.first_token_index
+
+                    # find all bib text first.  Other fields will be found within these matches
+
+                    bib_entries_this_page = [1E10, -1] # holds index range of bib entries appearing on this page
+                    bib_all_match = None
+                    for bib_all_index, gold_bib_all in enumerate(gold_bib_alls):
+                        if len(gold_bib_all) == 0:
+                            continue
+                        bib_all_matches_on_this_page = list(find_string_in_page(gold_bib_all))
+                        if len(bib_all_matches_on_this_page) > 0:
+                            bib_all_match_on_this_page = \
+                                min(bib_all_matches_on_this_page, key=bib_match_sort_key)
+                            if bib_all_match is None or bib_all_match_on_this_page.cost < bib_all_match.cost:
+                                bib_all_match = bib_all_match_on_this_page
+                        if not bib_all_match:
+                            continue
+                        bib_all_matches[bib_all_index] = bib_all_match
+                        bib_entries_this_page = [
+                            min(bib_all_index, bib_entries_this_page[0]),
+                            max(bib_all_index, bib_entries_this_page[1])
+                        ]
+                        bib_all_match = None
+
+                    #
+                    # find bibtitles
+                    #
+
+                    for bib_title_index, gold_bib_title in enumerate(gold_bib_titles):
+                        if len(gold_bib_title) == 0:
+                            continue
+                        bib_title_matches_on_this_page = list(find_string_in_page(gold_bib_title))
+                        if len(bib_title_matches_on_this_page) > 0:
+                            bib_title_matches[bib_title_index] = \
+                                min(bib_title_matches_on_this_page, key=bib_match_sort_key)
+
+                    def find_authors_in_bounds(out_matches, to_find):
+                        for idx, ses in enumerate(to_find):
+                            if ses is None or len(ses) == 0 or idx < bib_entries_this_page[0] or idx > bib_entries_this_page[1]:
+                                continue
+                            def check(author):
+                                author_matches = []
+                                given_names, surnames = author
+                                if len(given_names) == 0:
+                                    author_variants = {surnames}
+                                else:
+                                    author_variants = {
+                                        "%s %s" % (surnames, given_names),
+                                        "%s %s" % (given_names, surnames),
+                                        "%s , %s" % (surnames, given_names)
+                                    }
+                                if len(bib_all_matches[idx]) == 0: # just find it anywhere:
+                                    for author_variant in author_variants:
+                                        author_matches.extend(find_string_in_page(author_variant))
+                                else:
+                                    for author_variant in author_variants:
+                                        author_matches.extend(
+                                            find_string_in_page(
+                                                author_variant,
+                                                bib_all_matches[idx].first_token_index,
+                                                bib_all_matches[idx].one_past_last_token_index))
+                                if len(author_matches) > 0:
+                                    return min(author_matches, key=bib_match_sort_key)
+                                else:
+                                    return None
+
+                            out_matches[idx] = [check(x) for x in ses]
+
+                    def find_x_in_bounds(out_matches, to_find):
+                        for idx, s in enumerate(to_find):
+                            if s is None or len(s) == 0 or idx < bib_entries_this_page[0] or idx > bib_entries_this_page[1]:
+                                continue
+                            # TODO: use title, author matches as back-up for biball
+                            if len(bib_all_matches[idx]) == 0: # just find it anywhere:
+                                x_matches = list(find_string_in_page(s))
+                            else:
+                                x_matches = list(
+                                    find_string_in_page(
+                                        s,
+                                        bib_all_matches[idx].first_token_index,
+                                        bib_all_matches[idx].one_past_last_token_index))
+                            if len(x_matches) > 0:
+                                out_matches[idx] = min(x_matches, key=bib_match_sort_key)
+
+                    find_x_in_bounds(bib_venue_matches, gold_bib_venues)
+                    find_x_in_bounds(bib_year_matches, gold_bib_years)
+                    find_authors_in_bounds(bib_author_matches, gold_bib_authors)
+
+                found_matches = [
+                    sum(1 if x is not None and len(x) > 0 else 0 for x in y)
+                    for y in [bib_title_matches, bib_author_matches, bib_year_matches, bib_venue_matches]
+                ]
+
+                total_matches = [x+y for x, y in zip(found_matches, total_matches)]
+                num_bib_author_matches = \
+                    sum(sum(1 if x is not None else 0 for x in y) for y in bib_author_matches)
+
+                nonempty_titles = sum(1 for x in gold_bib_titles if len(x) > 0)
+                paper_bib_authors = sum(len(y) for y in gold_bib_authors)
+                logging.info(
+                    "found %s of %s titles (%s nonempty) for %s",
+                    found_matches,
+                    len(bib_title_matches),
+                    nonempty_titles,
+                    doc_id)
+                logging.info(
+                    "found %s of %s bib authors",
+                    num_bib_author_matches,
+                    paper_bib_authors)
+
                 # find the definitive author labels from the lists of potential matches we have now
                 # all author matches have to be on the same page
                 page_numbers_with_author_matches = \
@@ -846,13 +1078,28 @@ def labeled_tokens_file(bucket_path: str):
                     logging.warning("Could not find all authors in %s; skipping doc", doc_id)
                     continue
 
+                if paper_bib_authors == 0 or nonempty_titles == 0:
+                    continue
+
+                # find out if we have enough bib matches to keep bibs for this document
+                if num_bib_author_matches < 0.9*paper_bib_authors:
+                    logging.warning("found fewer than 90 percent of bib authors in %s; ignoring all bibs in doc", doc_id)
+                    continue
+                if found_matches[0] < 0.9*nonempty_titles:
+                    logging.warning("found fewer than 90 percent of bib titles in %s; ignoring all bibs in doc", doc_id)
+                    continue
+
                 # create the document in the new file
                 # This is the point of no return.
                 lab_doc_json = {
                     "doc_id": doc_id,
                     "doc_sha": doc_sha,
                     "gold_title": gold_title,
-                    "gold_authors": gold_authors
+                    "gold_authors": gold_authors,
+                    "gold_bib_titles": gold_bib_titles,
+                    "gold_bib_venues": gold_bib_venues,
+                    "gold_bib_authors": gold_bib_authors,
+                    "gold_bib_years": gold_bib_years
                 }
                 lab_doc_json_pages = []
                 for page_number in range(effective_page_count):
@@ -888,14 +1135,45 @@ def labeled_tokens_file(bucket_path: str):
 
                     # create labels
                     labels = np.zeros(token_count, dtype=np.int8)
+
                     # for title
                     if title_match.page_number == page_number:
                         labels[title_match.first_token_index:title_match.one_past_last_token_index] = TITLE_LABEL
+
                     # for authors
                     for author_match in author_matches:
                         if author_match.page_number == page_number:
                             labels[author_match.first_token_index:author_match.one_past_last_token_index] = AUTHOR_LABEL
                             # TODO: warn if we're overwriting existing labels
+
+                    # for bibtitle
+                    for bib_title_match in bib_title_matches:
+                        if len(bib_title_match)==0:
+                            continue
+                        if bib_title_match.page_number == page_number:
+                            labels[bib_title_match.first_token_index:bib_title_match.one_past_last_token_index] = BIBTITLE_LABEL
+
+                    # for bibvenue
+                    for bib_venue_match in bib_venue_matches:
+                        if len(bib_venue_match)==0:
+                            continue
+                        if bib_venue_match.page_number == page_number:
+                            labels[bib_venue_match.first_token_index:bib_venue_match.one_past_last_token_index] = BIBVENUE_LABEL
+
+                    # for bibyear
+                    for bib_year_match in bib_year_matches:
+                        if len(bib_year_match)==0:
+                            continue
+                        if bib_year_match.page_number == page_number:
+                            labels[bib_year_match.first_token_index:bib_year_match.one_past_last_token_index] = BIBYEAR_LABEL
+
+                    # for bibauthor
+                    for bib_author_match in bib_author_matches:
+                        for amatch in bib_author_match:
+                            if amatch is None or len(amatch)==0:
+                                continue
+                            if amatch.page_number == page_number:
+                                labels[amatch.first_token_index:amatch.one_past_last_token_index] = BIBAUTHOR_LABEL
 
                     lab_first_token_index = len(lab_token_labels)
                     lab_token_labels.resize(
@@ -926,7 +1204,7 @@ def labeled_tokens_file(bucket_path: str):
 # Featurized Tokens 👣
 #
 
-FEATURIZED_TOKENS_VERSION = "tokens5master"
+FEATURIZED_TOKENS_VERSION = "tok6"
 
 def make_featurized_tokens_file(
     output_file_name: str,
@@ -965,16 +1243,26 @@ def make_featurized_tokens_file(
         text_features = np.zeros(
             shape=lab_token_text_features.shape,
             dtype=np.int32)
+
         # do tokens
+        logging.info("Mapping tokens to embeddings ...")
+        start = time.time()
         fn = np.vectorize(embeddings.index_for_token, otypes=[np.uint32])
         text_features[:,0] = fn(lab_token_text_features[:,0])
-          # The CombinedEmbeddings class already adds in the keras mask, so we don't have to do it
-          # here.
+        # The CombinedEmbeddings class already adds in the keras mask, so we don't have to do it
+        # here.
+        logging.info("Mapped tokens to embeddings in %.0f seconds", time.time() - start)
+
         # do fonts
+        logging.info("Mapping fonts to embeddings ...")
+        start = time.time()
         fn = np.vectorize(lambda t: mmh3.hash(normalize(t)), otypes=[np.uint32])
         text_features[:,1] = fn(lab_token_text_features[:,1]) % model_settings.font_hash_size
         text_features[:,1] += 1  # plus one for keras' masking
+        logging.info("Mapped fonts to embeddings in %.0f seconds", time.time() - start)
 
+        logging.info("Saving tokens and fonts ...")
+        start = time.time()
         featurized_file.create_dataset(
             "token_hashed_text_features",
             lab_token_text_features.shape,
@@ -982,31 +1270,22 @@ def make_featurized_tokens_file(
             data=text_features,
             compression="gzip",
             compression_opts=9)
+        logging.info("Saved tokens and fonts in %.2f seconds", time.time() - start)
 
         # numeric features
         scaled_numeric_features = featurized_file.create_dataset(
             "token_scaled_numeric_features",
-            shape=(len(lab_token_text_features), 17),
+            shape=(len(lab_token_text_features), 19),
             dtype=np.float32,
             fillvalue=0.0,
             compression="gzip",
             compression_opts=9)
 
-        # capitalization features (these are numeric features)
-        #  8: First letter is upper (0.5) or not (-0.5)
-        #  9: Second letter is upper (0.5) or not (-0.5)
-        # 10: Fraction of uppers
-        # 11: First letter is lower (0.5) or not (-0.5)
-        # 12: Second letter is lower (0.5) or not (-0.5)
-        # 13: Fraction of lowers
-        # 14: Fraction of numerics
-        for token_index, token in enumerate(lab_token_text_features[:,0]):
-            scaled_numeric_features[token_index, 8:8+7] = \
-                stringmatch.capitalization_features(token)
-
-            # The -0.5 offset it applied at the end.
+        # The -0.5 offset it applied at the end.
 
         # sizes and positions (these are also numeric features)
+        docs_completed = 0
+        start = time.time()
         for json_metadata in lab_doc_metadata:
             json_metadata = json.loads(json_metadata)
 
@@ -1015,6 +1294,14 @@ def make_featurized_tokens_file(
             doc_token_count = 0
             for json_page in json_metadata["pages"]:
                 doc_token_count += int(json_page["token_count"])
+
+            # report progress
+            if (docs_completed + 1) % 100 == 0:
+                percent_complete = 100 * doc_first_token_index / len(scaled_numeric_features)
+                logging.info(
+                    "Featurizing sizes and positions ... %.0f%% complete, %.2f dps",
+                    percent_complete,
+                    docs_completed / (time.time() - start))
 
             font_sizes_in_doc = \
                 lab_token_numeric_features[doc_first_token_index:doc_first_token_index + doc_token_count, 4]
@@ -1061,6 +1348,20 @@ def make_featurized_tokens_file(
                     font_size_percentiles_in_doc(numeric_features[:,4])
                 scaled_numeric_features[first_token_index:one_past_last_token_index,7] = \
                     space_width_percentiles_in_doc(numeric_features[:,5])
+
+                # font sizes and space widths relative to page
+                font_sizes_in_page = np.copy(numeric_features[:,4])
+                font_sizes_in_page.sort()
+                font_size_percentiles_in_page = percentile_function_from_values(font_sizes_in_page)
+
+                space_widths_in_page = np.copy(numeric_features[:,5])
+                space_widths_in_page.sort()
+                space_width_percentiles_in_page = percentile_function_from_values(space_widths_in_page)
+
+                scaled_numeric_features[first_token_index:one_past_last_token_index,8] = \
+                    font_size_percentiles_in_page(numeric_features[:,4])
+                scaled_numeric_features[first_token_index:one_past_last_token_index,9] = \
+                    space_width_percentiles_in_page(numeric_features[:,5])
 
                 # overlap the tokens' bounding boxes with bounding boxes from vision
                 bounding_boxes_from_vision = \
@@ -1114,12 +1415,35 @@ def make_featurized_tokens_file(
                             (compute_iofirst(coordinates, bb) for bb in author_bounding_boxes))
 
                     if best_title_iofirst > 0.1 and best_title_iofirst >= best_author_iofirst:
-                        scaled_numeric_features[first_token_index+token_index, 15] = 1.0
+                        scaled_numeric_features[first_token_index+token_index, 17] = 1.0
 
                     if best_author_iofirst > 0.1 and best_author_iofirst > best_title_iofirst:
-                        scaled_numeric_features[first_token_index+token_index, 16] = 1.0
+                        scaled_numeric_features[first_token_index+token_index, 18] = 1.0
 
-                # The -0.5 offset it applied at the end.
+            docs_completed += 1
+
+        # capitalization features (these are numeric features)
+        # 10: First letter is upper (0.5) or not (-0.5)
+        # 11: Second letter is upper (0.5) or not (-0.5)
+        # 12: Fraction of uppers
+        # 13: First letter is lower (0.5) or not (-0.5)
+        # 14: Second letter is lower (0.5) or not (-0.5)
+        # 15: Fraction of lowers
+        # 16: Fraction of numerics
+
+        # create space for the output
+        logging.info("Computing capitalization features ...")
+        # Writing to a numpy array first and then writing to h5 is faster than writing to h5
+        # directly.
+        capitalization_features = np.zeros(
+            shape=(len(lab_token_text_features), 7),
+            dtype=np.float32)
+        start = time.time()
+        for token_index, token in enumerate(lab_token_text_features[:,0]):
+            capitalization_features[token_index] = stringmatch.capitalization_features(token)
+            # The -0.5 offset is applied at the end.
+        scaled_numeric_features[:, 10:10+7] = capitalization_features
+        logging.info("Computed capitalization features in %.2f seconds", time.time() - start)
 
         # shift everything so we end up with a range of -0.5 - +0.5
         scaled_numeric_features[:,:] -= 0.5
@@ -1139,7 +1463,7 @@ def featurized_tokens_file(
     # The hash of this structure becomes part of the filename, so if it changes, we essentially
     # invalidate the cache of featurized data.
     featurizing_hash_components = (
-        model_settings.max_page_number,
+        MAX_PAGE_COUNT,
         model_settings.font_hash_size,
         model_settings.embedded_tokens_fraction,
         # Strings get a different hash every time you run python, so they are pre-hashed with mmh3.
@@ -1153,7 +1477,7 @@ def featurized_tokens_file(
         os.path.join(
             bucket_path,
             "featurized-tokens-%02x-%s.h5" %
-                (abs(hash(featurizing_hash_components)), FEATURIZED_TOKENS_VERSION))
+            (abs(hash(featurizing_hash_components)), FEATURIZED_TOKENS_VERSION))
     if os.path.exists(featurized_tokens_path):
         return h5py.File(featurized_tokens_path, "r")
 
@@ -1197,6 +1521,10 @@ DocumentBase = collections.namedtuple(
         "doc_sha",
         "gold_title",
         "gold_authors",
+        "gold_bib_titles",
+        "gold_bib_authors",
+        "gold_bib_venues",
+        "gold_bib_years",
         "pages"
     ]
 )
@@ -1216,11 +1544,30 @@ class Document(DocumentBase):
     def __repr__(self):
         return "Document('%s', ...)" % self.doc_id
 
+    def get_relevant_pages(self) -> typing.Generator[Page, None, None]:
+        """Returns first three and last three pages, but not pages that have no tokens."""
+        page_indices = {0, 1, 2, -1, -2, -3, -4, -5}
+        pages = self.pages
+        page_indices_for_this_doc = {i % len(pages) for i in page_indices}
+        pages = [pages[i] for i in page_indices_for_this_doc]
+        for page in pages:
+            if len(page.tokens) > 0:
+                yield page
+
 def documents_for_featurized_tokens(
     featurized_tokens: h5py.File,
     include_labels: bool = True,
     max_tokens_per_page: typing.Optional[int] = None
 ):
+    # read features for the whole bucket at once
+    # We do this for all but token_text_features. Tokens are probably too big.
+    token_hashed_text_features = featurized_tokens["token_hashed_text_features"][()]
+    token_numeric_features = featurized_tokens["token_numeric_features"][()]
+    token_scaled_numeric_features = featurized_tokens["token_scaled_numeric_features"][()]
+    token_labels = None
+    if include_labels:
+        token_labels = featurized_tokens["token_labels"][()]
+
     for doc_metadata in featurized_tokens["doc_metadata"]:
         doc_metadata = json.loads(doc_metadata)
         pages = []
@@ -1232,7 +1579,7 @@ def documents_for_featurized_tokens(
             last_token_index_plus_one = first_token_index + token_count
 
             if include_labels:
-                labels = featurized_tokens["token_labels"][first_token_index:last_token_index_plus_one]
+                labels = token_labels[first_token_index:last_token_index_plus_one]
             else:
                 labels = None
 
@@ -1243,28 +1590,40 @@ def documents_for_featurized_tokens(
                 tokens = \
                     featurized_tokens["token_text_features"][first_token_index:last_token_index_plus_one, 0],
                 token_hashes = \
-                    featurized_tokens["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 0],
+                    token_hashed_text_features[first_token_index:last_token_index_plus_one, 0],
                 font_hashes = \
-                    featurized_tokens["token_hashed_text_features"][first_token_index:last_token_index_plus_one, 1],
+                    token_hashed_text_features[first_token_index:last_token_index_plus_one, 1],
                 numeric_features = \
-                    featurized_tokens["token_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                    token_numeric_features[first_token_index:last_token_index_plus_one, :],
                 scaled_numeric_features = \
-                    featurized_tokens["token_scaled_numeric_features"][first_token_index:last_token_index_plus_one, :],
+                    token_scaled_numeric_features[first_token_index:last_token_index_plus_one, :],
                 labels = labels
             ))
 
         if include_labels:
             gold_title = trim_punctuation(doc_metadata["gold_title"])
             gold_authors = doc_metadata["gold_authors"]
+            gold_bib_titles = doc_metadata["gold_bib_titles"]
+            gold_bib_venues = doc_metadata["gold_bib_venues"]
+            gold_bib_years = doc_metadata["gold_bib_years"]
+            gold_bib_authors = doc_metadata["gold_bib_authors"]
         else:
             gold_title = None
             gold_authors = None
+            gold_bib_titles = None
+            gold_bib_venues = None
+            gold_bib_years = None
+            gold_bib_authors = None
 
         yield Document(
             doc_metadata["doc_id"],
             doc_metadata["doc_sha"],
             gold_title,
             gold_authors,
+            gold_bib_titles,
+            gold_bib_authors,
+            gold_bib_venues,
+            gold_bib_years,
             pages)
 
 def documents_for_bucket(
@@ -1278,8 +1637,8 @@ def documents_for_bucket(
         token_stats,
         embeddings,
         model_settings)
-        # The file has to stay open, because the document we return refers to it, and needs it
-        # to be open. Python's GC will close the file (hopefully).
+    # The file has to stay open, because the document we return refers to it, and needs it
+    # to be open. Python's GC will close the file (hopefully).
     yield from documents_for_featurized_tokens(featurized)
 
 class DocumentSet(Enum):
@@ -1288,7 +1647,7 @@ class DocumentSet(Enum):
     VALIDATE = 3
 
 def tokenstats_for_pmc_dir(pmc_dir: str) -> TokenStatistics:
-    return TokenStatistics(os.path.join(pmc_dir, "all.tokenstats3.gz"))
+    return TokenStatistics(os.path.join(pmc_dir, "tokens6.tokenstats.pickle.gz"))
 
 def documents(
     pmc_dir: str,
@@ -1333,11 +1692,11 @@ def dump_documents(
 ):
     bucket_path = os.path.join(pmc_dir, bucket_number)
     for doc in documents_for_bucket(bucket_path, token_stats, embeddings, model_settings):
-        pdf_path = os.path.join(bucket_path, "docs", doc.doc_id)
+        pdf_path = os.path.join(bucket_path, "..", doc.doc_id)
         assert pdf_path.endswith(".pdf")
         html_path = pdf_path[:-3] + "html"
         logging.info("Dumping %s", html_path)
-        with open(html_path, "w") as html_file:
+        with open(html_path, "w", encoding="UTF-8") as html_file:
             html_file.write("<html>\n"
                             "<head>\n")
             html_file.write("<title>%s</title>" % html.escape(doc.doc_sha))
@@ -1356,13 +1715,26 @@ def dump_documents(
                     html.escape(given_names),
                     html.escape(surnames)))
 
+            for bib_title, bib_venue, bib_authors, bib_year in zip(doc.gold_bib_titles, doc.gold_bib_venues, doc.gold_bib_authors, doc.gold_bib_years):
+                html_file.write("<p>Gold bib title: <b>%s</b></p>\n" % html.escape(bib_title))
+                for bib_author in bib_authors:
+                    if len(bib_author) == 2:
+                        html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0]), html.escape(bib_author[1])))
+                    else:
+                        html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0])))
+                html_file.write("<p>Gold bib year: <b>%s</b></p>\n" % html.escape(bib_year))
+                html_file.write("<p>Gold bib venue: <b>%s</b></p>\n" % html.escape(bib_venue))
+
             for page in doc.pages:
                 html_file.write("<h2>Page %d</h2>\n" % page.page_number)
                 html_file.write('<table class="table table-condensed">\n')
 
                 # get statistics for numeric features
-                numeric_features_min = np.min(page.numeric_features, axis=0)
-                numeric_features_max = np.max(page.numeric_features, axis=0)
+                if len(page.numeric_features) > 0:
+                    numeric_features_min = np.min(page.numeric_features, axis=0)
+                    numeric_features_max = np.max(page.numeric_features, axis=0)
+                else:
+                    logging.warning("no numeric features for page %s of: %s", page.page_number, html_path)
 
                 numeric_features_min[0:2] = 0.0
                 numeric_features_max[0:2] = page.width
@@ -1384,6 +1756,8 @@ def dump_documents(
                         "sw_corp",
                         "fs_doc",
                         "sw_doc",
+                        "fs_page",
+                        "sw_page",
                         "1up",
                         "2up",
                         "f_up",
@@ -1427,7 +1801,8 @@ def dump_documents(
                             html_file.write('<th>%s</th>' % subcolumn)
                 html_file.write("</tr>\n")
 
-                label2color_class = [None, "success", "info"]
+                label2color_class = \
+                    [None, "success", "info", "warning", "danger", "info", "light", "dark"]
                 # We're abusing these CSS classes from Bootstrap to color rows according to their
                 # label.
 

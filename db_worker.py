@@ -124,9 +124,9 @@ class DBTodoList:
                     """)
 
                     root_cur.execute("""
-                        CREATE INDEX ON tasks(paperid) WHERE
-                            status = 'Scheduled'::processing_status OR
-                            status = 'Processing'::processing_status;
+                        CREATE INDEX ON tasks(modelversion, attempts) WHERE
+                          status = 'Scheduled'::processing_status OR
+                          status = 'Processing'::processing_status;
                     """)
 
                     root_cur.execute("GRANT SELECT, INSERT, UPDATE ON tasks_with_status TO %s;" % user)
@@ -165,6 +165,7 @@ class DBTodoList:
                           status = 'Processing'::PROCESSING_STATUS
                         ) AND
                         effectivestatus = 'Scheduled'::processing_status AND
+                        attempts < 5 AND
                         modelversion = %s
                       LIMIT %s
                       FOR UPDATE SKIP LOCKED
@@ -241,12 +242,6 @@ def _send_all(source, dest, nbytes: int = None):
         nsent += len(buf)
     dest.flush()
 
-def _sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
-    if s is not None:
-        return s.replace("\0", "\ufffd")
-    else:
-        return None
-
 def main():
     import tempfile
     import argparse
@@ -261,11 +256,12 @@ def main():
         manhole.install()
 
     logging.getLogger().setLevel(logging.INFO)
+    logging.basicConfig(format='%(asctime)s %(thread)d %(levelname)s %(message)s', level=logging.INFO)
 
     default_password = os.environ.get("SPV2_PASSWORD")
     default_root_password = os.environ.get("SPV2_ROOT_PASSWORD")
-    default_dataprep_host = os.environ.get("SPV2_DATAPREP_SERVICE_HOST", "localhost")
-    default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_SERVICE_PORT", "8080"))
+    default_dataprep_host = os.environ.get("SPV2_DATAPREP_V2_SERVICE_HOST", "localhost")
+    default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_V2_SERVICE_PORT", "8080"))
 
     parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
     parser.add_argument(
@@ -358,111 +354,114 @@ def main():
 
     import with_labels  # Heavy import, so we do it here
     model = with_labels.model_with_labels(model_settings, embeddings)
-    model.load_weights("model/B40.h5")
-    model_version = 1
-
-    # async http stuff
-    async_event_loop = asyncio.get_event_loop()
-    connector = aiohttp.TCPConnector(loop=async_event_loop, force_close=True)
-    session = aiohttp.ClientSession(connector=connector, read_timeout=120, conn_timeout=120)
-    write_lock = asyncio.Lock()
-    async def write_json_tokens_to_file(paper_id: str, json_file):
-        url = "http://%s:%d/v1/json/paperid/%s" % (args.dataprep_host, args.dataprep_port, paper_id)
-        attempts_left = 5
-        with tempfile.NamedTemporaryFile(prefix="SPv2DBWorker-%s-" % paper_id, suffix=".json") as f:
-            f.seek(0)
-            f.truncate()
-            def write_json_to_output(json_object):
-                f.write(json.dumps(json_object).encode("utf-8"))
-            while True:
-                attempts_left -= 1
-                try:
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            # We write to a tempfile first, because we don't want to end up with
-                            # half-written json if something goes wrong while reading from the
-                            # socket.
-                            while True:
-                                chunk = await response.content.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                f.write(chunk)
-                            stats.increment(datadog_prefix + "dataprep.success")
-                            break
-                        else:
-                            stats.increment(datadog_prefix + "dataprep.failure")
-                            if attempts_left > 0:
-                                logging.error(
-                                    "Error %d from dataprep server for paper id %s. %d attempts left.",
-                                    response.status,
-                                    paper_id,
-                                    attempts_left)
-                            else:
-                                stats.increment(datadog_prefix + "dataprep.gave_up")
-                                logging.error(
-                                    "Error %d from dataprep server for paper id %s. Giving up.",
-                                    response.status,
-                                    paper_id)
-                                error = {
-                                    "error": {
-                                        "message": "Status %s from dataprep server" % response.status,
-                                        "stackTrace": None,
-                                        "docName": "%s.pdf" % paper_id
-                                    }
-                                }
-                                write_json_to_output(error)
-                                break
-                except Exception as e:
-                    stats.increment(datadog_prefix + "dataprep.failure")
-                    if attempts_left > 0:
-                        logging.error(
-                            "Error %r from dataprep server for paper id %s. %d attempts left.",
-                            e,
-                            paper_id,
-                            attempts_left)
-                    else:
-                        stats.increment(datadog_prefix + "dataprep.gave_up")
-                        logging.error(
-                            "Error %r from dataprep server for paper id %s. Giving up.",
-                            e,
-                            paper_id)
-                        error = {
-                            "error": {
-                                "message": "Error %r while contacting dataprep server" % e,
-                                "stackTrace": None,
-                                "docName": "%s.pdf" % paper_id
-                            }
-                        }
-                        write_json_to_output(error)
-                        break
-
-            # append the tempfile to the json file
-            f.flush()
-            f.seek(0)
-            with await write_lock:
-                _send_all(f, json_file)
+    model.load_weights("model/C49.h5")
+    model_version = 2
 
     logging.info("Starting to process tasks")
     total_paper_ids_processed = 0
     start_time = time.time()
     last_time_with_paper_ids = start_time
-    processing_timeout = 600
-    while True:
-        paper_ids = todo_list.get_batch_to_process(model_version)
-        logging.info("Received %d paper ids", len(paper_ids))
-        if len(paper_ids) <= 0:
-            if time.time() - last_time_with_paper_ids > processing_timeout:
-                logging.info("Saw no paper ids for more than %.0f seconds. Shutting down.", processing_timeout)
-                return
-            time.sleep(20)
-            continue
-        stats.increment(datadog_prefix + "attempts", len(paper_ids))
 
-        with tempfile.TemporaryDirectory(prefix="SPv2DBWorker-") as temp_dir:
-            # make JSON out of the papers
+    def featurized_tokens_filenames() -> typing.Generator[typing.Tuple[tempfile.TemporaryDirectory, str], None, None]:
+        # async http stuff
+        async_event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(async_event_loop)
+        connector = aiohttp.TCPConnector(loop=async_event_loop, force_close=True)
+        session = aiohttp.ClientSession(connector=connector, read_timeout=120, conn_timeout=120)
+        write_lock = asyncio.Lock()
+        async def write_json_tokens_to_file(paper_id: str, json_file):
+            url = "http://%s:%d/v1/json/paperid/%s" % (args.dataprep_host, args.dataprep_port, paper_id)
+            attempts_left = 5
+            with tempfile.NamedTemporaryFile(prefix="SPv2DBWorker-%s-" % paper_id, suffix=".json") as f:
+                f.seek(0)
+                f.truncate()
+                def write_json_to_output(json_object):
+                    f.write(json.dumps(json_object).encode("utf-8"))
+                while True:
+                    attempts_left -= 1
+                    try:
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                # We write to a tempfile first, because we don't want to end up with
+                                # half-written json if something goes wrong while reading from the
+                                # socket.
+                                while True:
+                                    chunk = await response.content.read(1024 * 1024)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                                stats.increment(datadog_prefix + "dataprep.success")
+                                break
+                            else:
+                                stats.increment(datadog_prefix + "dataprep.failure")
+                                if attempts_left > 0:
+                                    logging.error(
+                                        "Error %d from dataprep server for paper id %s. %d attempts left.",
+                                        response.status,
+                                        paper_id,
+                                        attempts_left)
+                                else:
+                                    stats.increment(datadog_prefix + "dataprep.gave_up")
+                                    logging.error(
+                                        "Error %d from dataprep server for paper id %s. Giving up.",
+                                        response.status,
+                                        paper_id)
+                                    error = {
+                                        "error": {
+                                            "message": "Status %s from dataprep server" % response.status,
+                                            "stackTrace": None,
+                                            "docName": "%s.pdf" % paper_id
+                                        }
+                                    }
+                                    write_json_to_output(error)
+                                    break
+                    except Exception as e:
+                        stats.increment(datadog_prefix + "dataprep.failure")
+                        if attempts_left > 0:
+                            logging.error(
+                                "Error %r from dataprep server for paper id %s. %d attempts left.",
+                                e,
+                                paper_id,
+                                attempts_left)
+                        else:
+                            stats.increment(datadog_prefix + "dataprep.gave_up")
+                            logging.error(
+                                "Error %r from dataprep server for paper id %s. Giving up.",
+                                e,
+                                paper_id)
+                            error = {
+                                "error": {
+                                    "message": "Error %r while contacting dataprep server" % e,
+                                    "stackTrace": None,
+                                    "docName": "%s.pdf" % paper_id
+                                }
+                            }
+                            write_json_to_output(error)
+                            break
+
+                # append the tempfile to the json file
+                f.flush()
+                f.seek(0)
+                with await write_lock:
+                    _send_all(f, json_file)
+
+        processing_timeout = 600
+        while True:
+            paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=50)
+            logging.info("Received %d paper ids", len(paper_ids))
+            if len(paper_ids) <= 0:
+                if time.time() - last_time_with_paper_ids > processing_timeout:
+                    logging.info("Saw no paper ids for more than %.0f seconds. Shutting down.", processing_timeout)
+                    return
+                time.sleep(20)
+                continue
+            stats.increment(datadog_prefix + "attempts", len(paper_ids))
+
+            temp_dir = tempfile.TemporaryDirectory(prefix="SPv2DBWorker-")
+
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
-            json_file_name = os.path.join(temp_dir, "tokens.json")
+            json_file_name = os.path.join(temp_dir.name, "tokens.json")
             with open(json_file_name, "wb") as json_file:
                 write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_ids]
                 async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
@@ -476,8 +475,8 @@ def main():
                 if not "error" in line:
                     continue
                 error = line["error"]
-                error["message"] = _sanitize_for_json(error["message"])
-                error["stackTrace"] = _sanitize_for_json(error["stackTrace"])
+                error["message"] = dataprep2.sanitize_for_json(error["message"])
+                error["stackTrace"] = dataprep2.sanitize_for_json(error["stackTrace"])
                 paper_id = error["docName"]
                 if paper_id.endswith(".pdf"):
                     paper_id = paper_id[:-4]
@@ -492,7 +491,7 @@ def main():
             # make unlabeled tokens file
             logging.info("Making unlabeled tokens ...")
             making_unlabeled_tokens_time = time.time()
-            unlabeled_tokens_file_name = os.path.join(temp_dir, "unlabeled-tokens.h5")
+            unlabeled_tokens_file_name = os.path.join(temp_dir.name, "unlabeled-tokens.h5")
             dataprep2.make_unlabeled_tokens_file(
                 json_file_name,
                 unlabeled_tokens_file_name,
@@ -506,13 +505,13 @@ def main():
             logging.info("Making featurized tokens ...")
             making_featurized_tokens_time = time.time()
             with h5py.File(unlabeled_tokens_file_name, "r") as unlabeled_tokens_file:
-                featurized_tokens_file_name = os.path.join(temp_dir, "featurized-tokens.h5")
+                featurized_tokens_file_name = os.path.join(temp_dir.name, "featurized-tokens.h5")
                 dataprep2.make_featurized_tokens_file(
                     featurized_tokens_file_name,
                     unlabeled_tokens_file,
                     token_stats,
                     embeddings,
-                    dataprep2.VisionOutput(None),   # TODO: put in real vision output
+                    dataprep2.VisionOutput(None),
                     model_settings
                 )
                 # We don't delete the unlabeled file here because the featurized one contains references
@@ -521,6 +520,10 @@ def main():
             logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
             stats.timing(datadog_prefix + "make_featurized", making_featurized_tokens_time)
 
+            yield temp_dir, featurized_tokens_file_name
+
+    for temp_dir, featurized_tokens_file_name in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
+        try:
             logging.info("Making and sending results ...")
             make_and_send_results_time = time.time()
             with h5py.File(featurized_tokens_file_name) as featurized_tokens_file:
@@ -529,23 +532,38 @@ def main():
                         featurized_tokens_file,
                         include_labels=False,
                         max_tokens_per_page=model_settings.tokens_per_batch)
-                results = with_labels.run_model(model, model_settings, get_docs)
+                results = with_labels.run_model(
+                    model,
+                    model_settings,
+                    embeddings.glove_vocab(),
+                    get_docs,
+                    enabled_modes={"predictions"})
                 results = {
                     doc.doc_sha: {
                         "docName": doc.doc_id,
                         "docSha": doc.doc_sha,
-                        "title": _sanitize_for_json(title),
-                        "authors": authors
-                    } for doc, title, authors in results
+                        "title": dataprep2.sanitize_for_json(docresults["predictions"][0]),
+                        "authors": docresults["predictions"][1],
+                        "bibs": [
+                            {
+                                "title": bibtitle,
+                                "authors": bibauthors,
+                                "venue": bibvenue,
+                                "year": bibyear
+                            } for bibtitle, bibauthors, bibvenue, bibyear in docresults["predictions"][2]
+                        ]
+                    } for doc, docresults in results
                 }
 
                 todo_list.post_results(model_version, results)
                 stats.increment(datadog_prefix + "successes", len(results))
                 total_paper_ids_processed += len(results)
+        finally:
+            temp_dir.cleanup()
 
-            make_and_send_results_time = time.time() - make_and_send_results_time
-            logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
-            stats.timing(datadog_prefix + "make_results", make_and_send_results_time)
+        make_and_send_results_time = time.time() - make_and_send_results_time
+        logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
+        stats.timing(datadog_prefix + "make_results", make_and_send_results_time)
 
         # report progress
         paper_ids_per_hour = 3600 * total_paper_ids_processed / (time.time() - start_time)

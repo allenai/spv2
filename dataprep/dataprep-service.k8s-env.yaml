@@ -1,21 +1,21 @@
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
-  name: spv2-dataprep
+  name: spv2-dataprep-v2
   labels:
-    application: spv2-dataprep
+    application: spv2-dataprep-v2
     contact: dirkg
   namespace: spv2
 spec:
-  replicas: 8
+  replicas: 12
   template:
     metadata:
       labels:
-        application: spv2-dataprep
+        application: spv2-dataprep-v2
     spec:
       containers:
-      - name: spv2-dataprep-service
-        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.5
+      - name: spv2-dataprep-service-v2
+        image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.6
         ports:
         - containerPort: 8080
           name: backend-http
@@ -35,6 +35,11 @@ spec:
                 name: spv2-secrets
                 key: aws-secret-access-key
           - name: AWS_DEFAULT_REGION
+            valueFrom:
+              secretKeyRef:
+                name: spv2-secrets
+                key: aws-default-region
+          - name: AWS_REGION
             valueFrom:
               secretKeyRef:
                 name: spv2-secrets
@@ -59,10 +64,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: spv2-dataprep
+  name: spv2-dataprep-v2
   labels:
     contact: dirkg
-    application: spv2-dataprep
+    application: spv2-dataprep-v2
   namespace: spv2
 spec:
   ports:
@@ -71,4 +76,4 @@ spec:
     name: http
     targetPort: backend-http
   selector:
-    application: spv2-dataprep
+    application: spv2-dataprep-v2
