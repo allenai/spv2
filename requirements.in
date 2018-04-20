@@ -7,7 +7,7 @@ cffi==1.11.2
 pydot_ng
 manhole==1.3.0
 git+https://github.com/keras-team/keras-contrib.git
-psycopg2==2.7.3.2
 aiohttp==2.3.3
 multiset==2.0.2
 datadog==0.17.0
+https://github.com/allenai/papertasks/releases/download/v1.0/allenai_papertasks-1.0-py3-none-any.whl
