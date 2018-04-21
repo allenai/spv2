@@ -48,4 +48,4 @@ COPY dataprep/server/target/scala-2.11/spv2-dataprep-server-assembly-*.jar /spv2
 
 EXPOSE 8081
 
-CMD ["/usr/bin/supervisord", "-n", "-e", "debug"]
+CMD ["/usr/bin/supervisord", "-n", "-e", "debug", "-c", "supervisord.conf"]
