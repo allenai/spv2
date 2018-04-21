@@ -1,9 +1,10 @@
 package org.allenai.spv2
 
 import java.nio.file.{ Files, Path, StandardCopyOption }
+import java.security.{ DigestInputStream, MessageDigest }
 import java.util.concurrent.Semaphore
-import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 
+import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 import com.amazonaws.services.s3.AmazonS3ClientBuilder
 import com.trueaccord.scalapb.json.JsonFormat
 import org.allenai.common.{ Logging, Resource }
@@ -43,6 +44,7 @@ class DataprepServer extends AbstractHandler with Logging {
   private val getRoutes: Map[String, Route] = Map(
     "/v1/k8sReadyCheck" -> Route("GET", k8sReadyCheck),
     "/v1/json/paperid/" -> Route("GET", paperIdToJsonHandler),
+    "/v1/json/pdf" -> Route("POST", pdfToJsonHandler),
     "/v1/png/paperid/" -> Route("GET", paperIdToPngHandler)
   )
 
@@ -118,6 +120,21 @@ class DataprepServer extends AbstractHandler with Logging {
         case DownloadSuccess(_, _, tempFile) => Files.deleteIfExists(tempFile)
         case _ => /* nothing */
       }
+    }
+  }
+
+  private def pdfToJsonHandler(request: HttpServletRequest, response: HttpServletResponse): Unit = {
+    val tempFile = Files.createTempFile(this.getClass.getSimpleName, ".pdf")
+    try {
+      val digest = MessageDigest.getInstance("SHA-1")
+      Resource.using(new DigestInputStream(request.getInputStream, digest)) { is =>
+        Files.copy(is, tempFile, StandardCopyOption.REPLACE_EXISTING)
+      }
+      val sha1 = Utilities.toHex(digest.digest())
+      val postedPdf = DownloadSuccess(sha1 + ".pdf", sha1, tempFile)
+      writeJsonResponse(postedPdf, response)
+    } finally {
+      Files.deleteIfExists(tempFile)
     }
   }
 
