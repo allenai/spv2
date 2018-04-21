@@ -1,9 +1,9 @@
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
-  name: spv2-dataprep-v2
+  name: spv2-dataprep
   labels:
-    application: spv2-dataprep-v2
+    application: spv2-dataprep
     contact: dirkg
   namespace: spv2
 spec:
@@ -11,10 +11,10 @@ spec:
   template:
     metadata:
       labels:
-        application: spv2-dataprep-v2
+        application: spv2-dataprep
     spec:
       containers:
-      - name: spv2-dataprep-service-v2
+      - name: spv2-dataprep-service
         image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/dataprep-server:2.6
         ports:
         - containerPort: 8080
@@ -64,10 +64,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: spv2-dataprep-v2
+  name: spv2-dataprep
   labels:
     contact: dirkg
-    application: spv2-dataprep-v2
+    application: spv2-dataprep
   namespace: spv2
 spec:
   ports:
@@ -76,4 +76,4 @@ spec:
     name: http
     targetPort: backend-http
   selector:
-    application: spv2-dataprep-v2
+    application: spv2-dataprep

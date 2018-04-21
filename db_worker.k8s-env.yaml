@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: spv2-dbworker-v2
+  name: spv2-dbworker
   namespace: spv2
   labels:
     contact: dirkg
@@ -12,7 +12,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: spv2-dbworker-v2
-          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:2.9
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:2.10
           resources:
             requests:
               cpu: 12
