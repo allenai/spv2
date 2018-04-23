@@ -37,7 +37,7 @@ object DataprepServer extends Logging {
 }
 
 class DataprepServer extends AbstractHandler with Logging {
-  private val parallelParsingPermits = new Semaphore(4) // Allow two parsing threads at the same time
+  private val parallelParsingPermits = new Semaphore(4) // Allow four parsing threads at the same time
 
   private case class Route(expectedMethod: String, f: (HttpServletRequest, HttpServletResponse) => Unit)
 
