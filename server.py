@@ -11,6 +11,7 @@ import json
 import codecs
 import time
 import re
+import typing
 
 import dataprep2
 import settings
@@ -31,15 +32,45 @@ def _send_all(source, dest, nbytes: int = None):
     dest.flush()
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
-    _url_re = re.compile("/v1/json/paperid/([a-z0-9]{40})")
-
+    _get_url_re = re.compile("/v1/json/paperid/([a-z0-9]{40})")
     def do_GET(self):
-        m = self._url_re.match(self.path)
+        m = self._get_url_re.match(self.path)
         if m is None:
             self.send_error(404)
             return
 
         paper_id = m.groups(1)
+
+    def do_PUT(self):
+        self.send_error(405)
+
+    def do_DELETE(self):
+        self.send_error(405)
+
+    def do_PATCH(self):
+        self.send_error(405)
+
+    _post_url_re = re.compile("/v1/json/pdf")
+    def do_POST(self):
+        m = self._post_url_re.match(self.path)
+        if m is None:
+            if self._get_url_re.match(self.path) is None:
+                self.send_error(404)
+            else:
+                self.send_error(405)
+            return
+
+        with tempfile.NamedTemporaryFile(prefix="SPV2Server-", suffix=".json") as jsonfile:
+            try:
+                content_length = int(self.headers['Content-Length'])
+            except (ValueError, KeyError):
+                self.send_error(400)
+                return
+            _send_all(self.rfile, jsonfile, content_length)
+            jsonfile.seek(0)
+            self.process_request(jsonfile)
+
+    def process_request(self, input: typing.Union[str, typing.BinaryIO]):
         with tempfile.TemporaryDirectory(prefix="SPV2Server-") as temp_dir:
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
@@ -47,7 +78,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             json_file_name = os.path.join(temp_dir, "tokens.json")
             with open(json_file_name, "wb") as json_file:
                 dataprep_conn = http.client.HTTPConnection("localhost", 8080, timeout=60)
-                dataprep_conn.request("GET", "/v1/json/paperid/%s" % paper_id)
+                if isinstance(input, str):
+                    paper_id = input
+                    dataprep_conn.request("GET", "/v1/json/paperid/%s" % paper_id)
+                elif hasattr(input, "read"):
+                    dataprep_conn.request("POST", "/v1/json/pdf", body=input)
+                    pass
+                else:
+                    raise ValueError("Can't interpret input %r" % input)
                 with dataprep_conn.getresponse() as dataprep_response:
                     if dataprep_response.status < 200 or dataprep_response.status >= 300:
                         raise ValueError("Error %d from dataprep server at %s" % (
@@ -144,18 +182,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             logging.info("Featurized tokens:     %.0f s", making_featurized_tokens_time)
             logging.info("Make and send results: %.0f s", make_and_send_results_time)
 
-
-    def do_PUT(self):
-        self.send_error(405)
-
-    def do_DELETE(self):
-        self.send_error(405)
-
-    def do_PATCH(self):
-        self.send_error(405)
-
-    def do_POST(self):
-        self.send_error(405)
 
 class Server(http.server.HTTPServer):
     def __init__(self, model, token_stats: dataprep2.TokenStatistics, embeddings: dataprep2.CombinedEmbeddings, model_settings):

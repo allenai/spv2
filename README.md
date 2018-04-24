@@ -5,8 +5,36 @@ out of PDFs. At the moment, we parse out
 
  * Titles
  * Authors
+ * Bibliographies, where each bibliography entry has the following fields
+   * Title
+   * Authors
+   * Venue
+   * Year
 
 Other fields are work in progress. 
+
+## How can I run this myself?
+
+The easiest way to get started is to pull down the docker image. The name of the image is
+`allenai-docker-public-docker.bintray.io/s2/spv2:2.10`. You should be able to get going with it by
+running
+```
+docker run -p 8081:8081 allenai-docker-public-docker.bintray.io/s2/spv2:2.10
+```
+Note:
+ * This will only run on a Linux host because of some optimizations in the tensorflow library.
+ * It takes a while to load the model. Don't get impatient.
+
+To get some parsed papers out, you can use `curl`:
+```
+curl -v --data-binary @paper.pdf "http://localhost:8081/v1/json/pdf"
+```
+
+In the default configuration, this server tries to balance performance and footprint. If you process
+a lot of documents, it will eventually use about 14G of memory, and you will get acceptable
+performance out of it. To get real good performance, on many thousands of documents, the documents
+have to be submitted in batches of 50 or 100. The server does not support that scenario right now.
+Feel free to file an issue, or send a pull request, if you need that functionality. 
 
 ## How does this run in production?
 
@@ -131,7 +159,7 @@ Parallel to schedule it.
 
 ### Some details about warming the buckets
 
-"Warming the buckets" is going from the `tokens3.json.bz2` files to the `.h5` files that contain the
+"Warming the buckets" is going from the `tokens6.json.bz2` files to the `.h5` files that contain the
 actual input to the model. This proceeds in three steps:
  1. Create the "unlabeled tokens" file. This is a straight translation from the json format into
     the h5 format. We do this translation because it's faster to access a file in this format, and
