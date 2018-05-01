@@ -39,7 +39,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        paper_id = m.groups(1)
+        paper_id = m.groups(1)[0]
+        self.process_request(paper_id)
 
     def do_PUT(self):
         self.send_error(405)
