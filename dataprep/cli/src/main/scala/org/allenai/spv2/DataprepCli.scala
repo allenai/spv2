@@ -21,7 +21,7 @@ object DataprepCli {
     outputFileName: String = null,
     inputNames: Seq[String] = Seq()
   ) extends CommandConfig
-  
+
   private val parser = new scopt.OptionParser[PDFRendererConfig]("PDFRenderer") {
     cmd("PDFToImage")
       .action((_, c) => c.copy(commandConfig = PDFToImageConfig()))
