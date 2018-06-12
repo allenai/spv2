@@ -10,4 +10,5 @@ git+https://github.com/keras-team/keras-contrib.git
 aiohttp==2.3.3
 multiset==2.0.2
 datadog==0.17.0
-https://github.com/allenai/papertasks/releases/download/v1.0/allenai_papertasks-1.0-py3-none-any.whl
+https://github.com/allenai/papertasks/releases/download/v4.0/allenai_papertasks-4.0-py3-none-any.whl
+mschematool

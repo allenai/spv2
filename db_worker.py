@@ -36,8 +36,7 @@ def main():
     logging.getLogger().setLevel(logging.INFO)
     logging.basicConfig(format='%(asctime)s %(thread)d %(levelname)s %(message)s', level=logging.INFO)
 
-    default_password = os.environ.get("SPV2_PASSWORD")
-    default_root_password = os.environ.get("SPV2_ROOT_PASSWORD")
+    default_password = os.environ.get("CORPUSDB_PASSWORD")
     default_dataprep_host = os.environ.get("SPV2_DATAPREP_SERVICE_HOST", "localhost")
     default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_SERVICE_PORT", "8080"))
     parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
@@ -56,31 +55,25 @@ def main():
     parser.add_argument(
         "--dbname",
         type=str,
-        default="spv2",
+        default="corpus",
         help="database name"
+    )
+    parser.add_argument(
+        "--schema",
+        type=str,
+        default="public",
+        help="schema name"
     )
     parser.add_argument(
         "--user",
         type=str,
-        default="spv2",
+        default="s2dev",
         help="database user"
     )
     parser.add_argument(
         "--password",
         type=str,
         default=default_password,
-        help="database password"
-    )
-    parser.add_argument(
-        "--root-user",
-        type=str,
-        default="root",
-        help="database user"
-    )
-    parser.add_argument(
-        "--root-password",
-        type=str,
-        default=default_root_password,
         help="database password"
     )
     parser.add_argument(
@@ -101,10 +94,9 @@ def main():
         host = args.host,
         port = args.port,
         dbname = args.dbname,
+        schema = args.schema,
         user = args.user,
-        password = args.password,
-        root_user = args.root_user,
-        root_password = args.root_password
+        password = args.password
     )
 
     # start datadog

@@ -12,7 +12,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: spv2-dbworker
-          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:2.10
+          image: 896129387501.dkr.ecr.us-west-2.amazonaws.com/spv2/db_worker:3.0
           resources:
             requests:
               cpu: 12
@@ -38,16 +38,11 @@ spec:
                 secretKeyRef:
                   name: spv2-secrets
                   key: aws-default-region
-            - name: SPV2_PASSWORD
+            - name: CORPUSDB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: spv2-secrets
                   key: rds-password
-            - name: SPV2_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: spv2-secrets
-                  key: rds-root-password
             - name: DATADOG_API_KEY
               valueFrom:
                 secretKeyRef:
