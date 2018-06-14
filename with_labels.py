@@ -369,16 +369,19 @@ def _continuous_index_sequences_taking_gap_size_into_account(indices: np.array, 
             before_token_index = index_sequence[ii]
             after_token_index = index_sequence[ii + 1]
 
-            before_left, before_right, before_top, before_bottom, _, before_space_width = \
+            before_left, before_right, before_top, before_bottom, before_font_size, before_space_width = \
                 page.numeric_features[before_token_index]
-            after_left, after_right, after_top, after_bottom, _, after_space_width = \
+            after_left, after_right, after_top, after_bottom, after_font_size, after_space_width = \
                 page.numeric_features[after_token_index]
             space_width = max(before_space_width, after_space_width)
 
-            # if the tokens are not on the same line, we keep them as they are
-            if before_top != after_top or before_bottom != after_bottom:
-                continue
-            elif before_right + 3 * space_width > after_left:
+            same_font_size = abs(before_font_size - after_font_size) <= 1.0
+            same_line = \
+                abs(before_top - after_top) <= before_font_size / 2 and \
+                abs(before_bottom - after_bottom) <= before_font_size / 2
+            big_horizontal_gap = before_right + 3 * space_width <= after_left
+
+            if same_font_size and same_line and not big_horizontal_gap:
                 continue
             else:
                 yield index_sequence[yield_from:ii + 1]
