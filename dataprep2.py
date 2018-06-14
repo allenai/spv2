@@ -1695,6 +1695,217 @@ def prepare_bucket(
     bucket_path = os.path.join(pmc_dir, bucket_number)
     featurized_tokens_file(bucket_path, token_stats, embeddings, model_settings)
 
+def dump_document(doc: Document, html_file: typing.TextIO):
+    logging.info("Dumping %s", doc.doc_sha)
+    html_file.write("<html>\n"
+                    "<head>\n")
+    html_file.write("<title>%s</title>" % html.escape(doc.doc_sha))
+    html_file.write('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">\n')
+    html_file.write('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa" crossorigin="anonymous"></script>\n')
+    html_file.write('<style> td { text-align:right; } </style>\n')
+    html_file.write("</head>\n"
+                    "<body>\n")
+    html_file.write('<h1><a href="%s">%s</a></h1>\n' % (doc.doc_sha, html.escape(doc.doc_id)))
+
+    if doc.gold_title is not None:
+        html_file.write("<p>Gold title: <b>%s</b></p>\n" % html.escape(doc.gold_title))
+    if doc.gold_authors is not None:
+        for given_names, surnames in doc.gold_authors:
+            html_file.write("<p>Gold author: <b>%s %s</b></p>\n" % (
+                html.escape(given_names),
+                html.escape(surnames)))
+
+    if all([doc.gold_bib_authors, doc.gold_bib_titles, doc.gold_bib_venues, doc.gold_bib_years]):
+        for bib_title, bib_venue, bib_authors, bib_year in zip(doc.gold_bib_titles, doc.gold_bib_venues, doc.gold_bib_authors, doc.gold_bib_years):
+            html_file.write("<p>Gold bib title: <b>%s</b></p>\n" % html.escape(bib_title))
+            for bib_author in bib_authors:
+                if len(bib_author) == 2:
+                    html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0]), html.escape(bib_author[1])))
+                else:
+                    html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0])))
+            html_file.write("<p>Gold bib year: <b>%s</b></p>\n" % html.escape(bib_year))
+            html_file.write("<p>Gold bib venue: <b>%s</b></p>\n" % html.escape(bib_venue))
+
+    for page in doc.pages:
+        html_file.write("<h2>Page %d</h2>\n" % page.page_number)
+        html_file.write('<table class="table table-condensed">\n')
+
+        # get statistics for numeric features
+        if len(page.numeric_features) > 0:
+            numeric_features_min = np.min(page.numeric_features, axis=0)
+            numeric_features_max = np.max(page.numeric_features, axis=0)
+        else:
+            logging.warning("no numeric features for page %s of: %s", page.page_number, html_path)
+
+        numeric_features_min[0:2] = 0.0
+        numeric_features_max[0:2] = page.width
+        numeric_features_min[2:4] = 0.0
+        numeric_features_max[2:4] = page.height
+
+        # first row of header
+        columns = [
+            ("token", page.tokens, None),
+            ("token_hash", page.token_hashes, None),
+            ("label", page.labels, None),
+            ("font_hash", page.font_hashes, None),
+            ("scaled_numeric_features", page.scaled_numeric_features, [
+                "left",
+                "right",
+                "top",
+                "bottom",
+                "fs_corp",
+                "sw_corp",
+                "fs_doc",
+                "sw_doc",
+                "fs_page",
+                "sw_page",
+                "1up",
+                "2up",
+                "f_up",
+                "1low",
+                "2low",
+                "f_low",
+                "f_num",
+                "v_title",
+                "v_auth"
+            ]),
+            ("numeric_features", page.numeric_features, [
+                "left",
+                "right",
+                "top",
+                "bottom",
+                "fs",
+                "sw"
+            ])
+        ]
+
+        html_file.write("<tr><th>index</th>")
+        for column_name, array, subcolumns in columns:
+            array_width = 1
+            if array is not None:   # happens when we don't have labels
+                if len(array.shape) > 1:
+                    array_width = array.shape[1]
+            html_file.write('<th colspan="%d">%s</th>' % (array_width, column_name))
+        html_file.write("</tr>\n")
+
+        # second row of header
+        html_file.write("<tr><th></th>")
+        for column_name, array, subcolumns in columns:
+            array_width = 1
+            if array is not None:   # happens when we don't have labels
+                if len(array.shape) > 1:
+                    array_width = array.shape[1]
+            if subcolumns is None:
+                assert array_width == 1
+                html_file.write("<th></th>")
+            else:
+                assert array_width == len(subcolumns)
+                for subcolumn in subcolumns:
+                    html_file.write('<th>%s</th>' % subcolumn)
+        html_file.write("</tr>\n")
+
+        label2color_class = \
+            [None, "success", "info", "warning", "danger", "info", "light", "dark"]
+        # We're abusing these CSS classes from Bootstrap to color rows according to their
+        # label.
+
+        for token_index in range(len(page.tokens)):
+            if page.labels is not None:
+                label = page.labels[token_index]
+            else:
+                label = 0
+
+            color_class = label2color_class[label]
+            if color_class is None:
+                html_file.write("<tr>")
+            else:
+                html_file.write('<tr class="%s">' % color_class)
+
+            html_file.write("<td>%d</td>" % token_index)
+
+            for column_name, array, subcolumns in columns:
+                if array is not None:   # happens when we don't have labels
+                    values = array[token_index]
+                    if len(array.shape) == 1:
+                        values = [values]
+                else:
+                    values = [0]
+
+                def formatter_fn(v, i: int):
+                    return str(v)
+                color_fn = lambda v, i: None
+                color_class_fn = lambda v, i: None
+                if column_name == "scaled_numeric_features":
+                    formatter_fn = lambda v, i: "%.3f" % v
+                    def color_fn(v, i: int) -> str:
+                        top = (255, 255, 170)
+                        bottom = (128, 170, 255)
+                        v = v + 0.5
+
+                        color = (
+                            int(top[0] * v + bottom[0] * (1 - v)),
+                            int(top[1] * v + bottom[1] * (1 - v)),
+                            int(top[2] * v + bottom[2] * (1 - v)),
+                        )
+                        # You're not supposed to scale colors like this, but it's good
+                        # enough.
+                        return "rgb(%d, %d, %d)" % color
+                elif column_name == "token_hash":
+                    def color_class_fn(v, i: int):
+                        if v == 0:  # masking value, should never happen
+                            return "danger"
+                        elif v == 1:  # oov token
+                            return "warning"
+                        else:
+                            return None
+                elif column_name == "numeric_features":
+                    def formatter_fn(v, i: int) -> str:
+                        if i == 5: # space width
+                            return "%.3f" % v
+                        else:
+                            return str(v)
+                    def color_fn(v, i: int) -> str:
+                        top = (255, 170, 170)
+                        bottom = (170, 255, 192)
+
+                        if numeric_features_min[i] == numeric_features_max[i]:
+                            color = bottom
+                        else:
+                            v -= numeric_features_min[i]
+                            v /= (numeric_features_max[i] - numeric_features_min[i])
+
+                            color = (
+                                int(top[0] * v + bottom[0] * (1 - v)),
+                                int(top[1] * v + bottom[1] * (1 - v)),
+                                int(top[2] * v + bottom[2] * (1 - v)),
+                            )
+                            # You're not supposed to scale colors like this, but it's good
+                            # enough.
+                        return "rgb(%d, %d, %d)" % color
+
+                for i, value in enumerate(values):
+                    color = color_fn(value, i)
+                    color_class = color_class_fn(value, i)
+
+                    # start the open the tag
+                    html_file.write('<td')
+                    if color_class is not None:
+                        html_file.write(' class="%s"' % color_class)
+                    if color is not None:
+                        html_file.write(' style="background-color: %s"' % color)
+                    # end the open tag
+                    html_file.write(">")
+
+                    html_file.write(html.escape(formatter_fn(value, i)))
+                    html_file.write("</td>")
+            html_file.write("</tr>\n")
+
+        html_file.write('</table>\n')
+
+    html_file.write("</body>\n")
+    html_file.write("</html>\n")
+
+
 def dump_documents(
     bucket_number: str,
     pmc_dir: str,
@@ -1707,206 +1918,8 @@ def dump_documents(
         pdf_path = os.path.join(bucket_path, "..", doc.doc_id)
         assert pdf_path.endswith(".pdf")
         html_path = pdf_path[:-3] + "html"
-        logging.info("Dumping %s", html_path)
         with open(html_path, "w", encoding="UTF-8") as html_file:
-            html_file.write("<html>\n"
-                            "<head>\n")
-            html_file.write("<title>%s</title>" % html.escape(doc.doc_sha))
-            html_file.write('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">\n')
-            html_file.write('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa" crossorigin="anonymous"></script>\n')
-            html_file.write('<style> td { text-align:right; } </style>\n')
-            html_file.write("</head>\n"
-                            "<body>\n")
-            html_file.write('<h1><a href="%s">%s</a></h1>\n' % (
-                os.path.basename(pdf_path),
-                html.escape(doc.doc_id)))
-
-            html_file.write("<p>Gold title: <b>%s</b></p>\n" % html.escape(doc.gold_title))
-            for given_names, surnames in doc.gold_authors:
-                html_file.write("<p>Gold author: <b>%s %s</b></p>\n" % (
-                    html.escape(given_names),
-                    html.escape(surnames)))
-
-            for bib_title, bib_venue, bib_authors, bib_year in zip(doc.gold_bib_titles, doc.gold_bib_venues, doc.gold_bib_authors, doc.gold_bib_years):
-                html_file.write("<p>Gold bib title: <b>%s</b></p>\n" % html.escape(bib_title))
-                for bib_author in bib_authors:
-                    if len(bib_author) == 2:
-                        html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0]), html.escape(bib_author[1])))
-                    else:
-                        html_file.write("<p>Gold bib author: <b>%s %s</b></p>\n" % (html.escape(bib_author[0])))
-                html_file.write("<p>Gold bib year: <b>%s</b></p>\n" % html.escape(bib_year))
-                html_file.write("<p>Gold bib venue: <b>%s</b></p>\n" % html.escape(bib_venue))
-
-            for page in doc.pages:
-                html_file.write("<h2>Page %d</h2>\n" % page.page_number)
-                html_file.write('<table class="table table-condensed">\n')
-
-                # get statistics for numeric features
-                if len(page.numeric_features) > 0:
-                    numeric_features_min = np.min(page.numeric_features, axis=0)
-                    numeric_features_max = np.max(page.numeric_features, axis=0)
-                else:
-                    logging.warning("no numeric features for page %s of: %s", page.page_number, html_path)
-
-                numeric_features_min[0:2] = 0.0
-                numeric_features_max[0:2] = page.width
-                numeric_features_min[2:4] = 0.0
-                numeric_features_max[2:4] = page.height
-
-                # first row of header
-                columns = [
-                    ("token", page.tokens, None),
-                    ("token_hash", page.token_hashes, None),
-                    ("label", page.labels, None),
-                    ("font_hash", page.font_hashes, None),
-                    ("scaled_numeric_features", page.scaled_numeric_features, [
-                        "left",
-                        "right",
-                        "top",
-                        "bottom",
-                        "fs_corp",
-                        "sw_corp",
-                        "fs_doc",
-                        "sw_doc",
-                        "fs_page",
-                        "sw_page",
-                        "1up",
-                        "2up",
-                        "f_up",
-                        "1low",
-                        "2low",
-                        "f_low",
-                        "f_num",
-                        "v_title",
-                        "v_auth"
-                    ]),
-                    ("numeric_features", page.numeric_features, [
-                        "left",
-                        "right",
-                        "top",
-                        "bottom",
-                        "fs",
-                        "sw"
-                    ])
-                ]
-
-                html_file.write("<tr><th>index</th>")
-                for column_name, array, subcolumns in columns:
-                    array_width = 1
-                    if len(array.shape) > 1:
-                        array_width = array.shape[1]
-                    html_file.write('<th colspan="%d">%s</th>' % (array_width, column_name))
-                html_file.write("</tr>\n")
-
-                # second row of header
-                html_file.write("<tr><th></th>")
-                for column_name, array, subcolumns in columns:
-                    array_width = 1
-                    if len(array.shape) > 1:
-                        array_width = array.shape[1]
-                    if subcolumns is None:
-                        assert array_width == 1
-                        html_file.write("<th></th>")
-                    else:
-                        assert array_width == len(subcolumns)
-                        for subcolumn in subcolumns:
-                            html_file.write('<th>%s</th>' % subcolumn)
-                html_file.write("</tr>\n")
-
-                label2color_class = \
-                    [None, "success", "info", "warning", "danger", "info", "light", "dark"]
-                # We're abusing these CSS classes from Bootstrap to color rows according to their
-                # label.
-
-                for token_index in range(len(page.tokens)):
-                    label = page.labels[token_index]
-
-                    color_class = label2color_class[label]
-                    if color_class is None:
-                        html_file.write("<tr>")
-                    else:
-                        html_file.write('<tr class="%s">' % color_class)
-
-                    html_file.write("<td>%d</td>" % token_index)
-
-                    for column_name, array, subcolumns in columns:
-                        values = array[token_index]
-                        if len(array.shape) == 1:
-                            values = [values]
-
-                        def formatter_fn(v, i: int):
-                            return str(v)
-                        color_fn = lambda v, i: None
-                        color_class_fn = lambda v, i: None
-                        if column_name == "scaled_numeric_features":
-                            formatter_fn = lambda v, i: "%.3f" % v
-                            def color_fn(v, i: int) -> str:
-                                top = (255, 255, 170)
-                                bottom = (128, 170, 255)
-                                v = v + 0.5
-
-                                color = (
-                                    int(top[0] * v + bottom[0] * (1 - v)),
-                                    int(top[1] * v + bottom[1] * (1 - v)),
-                                    int(top[2] * v + bottom[2] * (1 - v)),
-                                )
-                                # You're not supposed to scale colors like this, but it's good
-                                # enough.
-                                return "rgb(%d, %d, %d)" % color
-                        elif column_name == "token_hash":
-                            def color_class_fn(v, i: int):
-                                if v == 0:  # masking value, should never happen
-                                    return "danger"
-                                elif v == 1:  # oov token
-                                    return "warning"
-                                else:
-                                    return None
-                        elif column_name == "numeric_features":
-                            def formatter_fn(v, i: int) -> str:
-                                if i == 5: # space width
-                                    return "%.3f" % v
-                                else:
-                                    return str(v)
-                            def color_fn(v, i: int) -> str:
-                                top = (255, 170, 170)
-                                bottom = (170, 255, 192)
-
-                                if numeric_features_min[i] == numeric_features_max[i]:
-                                    color = bottom
-                                else:
-                                    v -= numeric_features_min[i]
-                                    v /= (numeric_features_max[i] - numeric_features_min[i])
-
-                                    color = (
-                                        int(top[0] * v + bottom[0] * (1 - v)),
-                                        int(top[1] * v + bottom[1] * (1 - v)),
-                                        int(top[2] * v + bottom[2] * (1 - v)),
-                                    )
-                                    # You're not supposed to scale colors like this, but it's good
-                                    # enough.
-                                return "rgb(%d, %d, %d)" % color
-
-                        for i, value in enumerate(values):
-                            color = color_fn(value, i)
-                            color_class = color_class_fn(value, i)
-
-                            # start the open the tag
-                            html_file.write('<td')
-                            if color_class is not None:
-                                html_file.write(' class="%s"' % color_class)
-                            if color is not None:
-                                html_file.write(' style="background-color: %s"' % color)
-                            # end the open tag
-                            html_file.write(">")
-
-                            html_file.write(html.escape(formatter_fn(value, i)))
-                            html_file.write("</td>")
-                    html_file.write("</tr>\n")
-
-                html_file.write('</table>\n')
-
-            html_file.write("</body>\n")
-            html_file.write("</html>\n")
+            dump_document(doc, html_file)
 
 
 def main():
