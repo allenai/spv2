@@ -74,6 +74,7 @@ def sanitize_for_json(s: typing.Optional[str]) -> typing.Optional[str]:
     else:
         return None
 
+
 #
 # Classes 🏫
 #
