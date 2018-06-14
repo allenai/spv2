@@ -531,6 +531,17 @@ def make_unlabeled_tokens_file(
                         float(json_token["fontSpaceWidth"])
                     ) for json_token in json_tokens]
 
+                # If we're missing font size or space width, fill in from the other value.
+                # This happens on a few PDFs. Especially some that Oren authored.
+                font_sizes = h5_token_numeric_features[first_token_index:first_token_index+len(json_tokens), numeric_fields.index("fontSize")]
+                space_widths = h5_token_numeric_features[first_token_index:first_token_index+len(json_tokens), numeric_fields.index("fontSpaceWidth")]
+                if np.all(font_sizes == 0):
+                    h5_token_numeric_features[first_token_index:first_token_index+len(json_tokens), numeric_fields.index("fontSize")] = \
+                        space_widths
+                if np.all(space_widths == 0):
+                    h5_token_numeric_features[first_token_index:first_token_index+len(json_tokens), numeric_fields.index("fontSpaceWidth")] = \
+                        font_sizes
+
                 pages_in_h5.append(page_in_h5)
             doc_in_h5["pages"] = pages_in_h5
 
