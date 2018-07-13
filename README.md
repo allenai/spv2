@@ -16,10 +16,10 @@ Other fields are work in progress.
 ## How can I run this myself?
 
 The easiest way to get started is to pull down the docker image. The name of the image is
-`allenai-docker-public-docker.bintray.io/s2/spv2:2.10`. You should be able to get going with it by
+`allenai/spv2:2.10`. You should be able to get going with it by
 running
 ```
-docker run -p 8081:8081 allenai-docker-public-docker.bintray.io/s2/spv2:2.10
+docker run -p 8081:8081 allenai/spv2:2.10
 ```
 Note:
  * This will only run on a Linux host because of some optimizations in the tensorflow library.
