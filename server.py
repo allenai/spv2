@@ -32,15 +32,20 @@ def _send_all(source, dest, nbytes: int = None):
     dest.flush()
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
-    _get_url_re = re.compile("/v1/json/paperid/([a-z0-9]{40})")
+    _get_url_json_re = re.compile("/v1/json/paperid/([a-z0-9]{40})")
+    _get_url_html_re = re.compile("/v1/html/paperid/([a-z0-9]{40})")
     def do_GET(self):
-        m = self._get_url_re.match(self.path)
+        m = self._get_url_json_re.match(self.path)
+        output_type = "json"
+        if m is None:
+            m = self._get_url_html_re.match(self.path)
+            output_type = "html"
         if m is None:
             self.send_error(404)
             return
 
         paper_id = m.groups(1)[0]
-        self.process_request(paper_id)
+        self.process_request(paper_id, output_type)
 
     def do_PUT(self):
         self.send_error(405)
@@ -55,7 +60,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         m = self._post_url_re.match(self.path)
         if m is None:
-            if self._get_url_re.match(self.path) is None:
+            if self._get_url_json_re.match(self.path) is None:
                 self.send_error(404)
             else:
                 self.send_error(405)
@@ -71,7 +76,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             jsonfile.seek(0)
             self.process_request(jsonfile)
 
-    def process_request(self, input: typing.Union[str, typing.BinaryIO]):
+    def process_request(self, input: typing.Union[str, typing.BinaryIO], output_type="json"):
         with tempfile.TemporaryDirectory(prefix="SPV2Server-") as temp_dir:
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
@@ -135,40 +140,52 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                         featurized_tokens_file,
                         include_labels=False,
                         max_tokens_per_page=self.server.model_settings.tokens_per_batch)
-                results = with_labels.run_model(
-                    self.server.model,
-                    self.server.model_settings,
-                    self.server.embeddings.glove_vocab(),
-                    get_docs,
-                    enabled_modes={"predictions"})
-
-                started_sending = False
                 response_body = codecs.getwriter("UTF-8")(self.wfile, "UTF-8")
-                for doc, docresults in results:
-                    result_json = {
-                        "docName": doc.doc_id,
-                        "docSha": doc.doc_sha,
-                        "title": dataprep2.sanitize_for_json(docresults["predictions"][0]),
-                        "authors": docresults["predictions"][1],
-                        "bibs": [
-                            {
-                                "title": bibtitle,
-                                "authors": bibauthors,
-                                "venue": bibvenue,
-                                "year": bibyear
-                            } for bibtitle, bibauthors, bibvenue, bibyear in docresults["predictions"][2]
-                        ]
-                    }
-                    result_json = {"doc": result_json}
 
-                    if not started_sending:
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        started_sending = True
+                if output_type == "json":
+                    results = with_labels.run_model(
+                        self.server.model,
+                        self.server.model_settings,
+                        self.server.embeddings.glove_vocab(),
+                        get_docs,
+                        enabled_modes={"predictions"})
 
-                    json.dump(result_json, response_body)
-                    response_body.write("\n")
+                    started_sending = False
+                    for doc, docresults in results:
+                        result_json = {
+                            "docName": doc.doc_id,
+                            "docSha": doc.doc_sha,
+                            "title": dataprep2.sanitize_for_json(docresults["predictions"][0]),
+                            "authors": docresults["predictions"][1],
+                            "bibs": [
+                                {
+                                    "title": bibtitle,
+                                    "authors": bibauthors,
+                                    "venue": bibvenue,
+                                    "year": bibyear
+                                } for bibtitle, bibauthors, bibvenue, bibyear in docresults["predictions"][2]
+                            ]
+                        }
+                        result_json = {"doc": result_json}
+
+                        if not started_sending:
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            started_sending = True
+
+                        json.dump(result_json, response_body)
+                        response_body.write("\n")
+                elif output_type == "html":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.end_headers()
+
+                    for doc in get_docs():
+                        dataprep2.dump_document(doc, response_body)
+                        response_body.write("\n")
+                else:
+                    raise NotImplementedError("The only output types I understand are html and json.")
                 for error in errors:
                     json.dump(error, response_body)
                     response_body.write("\n")
