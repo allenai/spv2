@@ -42,27 +42,27 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: spv2-secrets
-                  key: db-host
+                  key: host
             - name: SPV2_DB_NAME
               valueFrom:
                 secretKeyRef:
                   name: spv2-secrets
-                  key: db-name
+                  key: dbname
             - name: SPV2_DB_SCHEMA
               valueFrom:
                 secretKeyRef:
                   name: spv2-secrets
-                  key: db-schema
+                  key: schema
             - name: SPV2_DB_USER
               valueFrom:
                 secretKeyRef:
                   name: spv2-secrets
-                  key: db-user
+                  key: user
             - name: SPV2_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: spv2-secrets
-                  key: db-password
+                  key: password
             - name: DATADOG_API_KEY
               valueFrom:
                 secretKeyRef:
