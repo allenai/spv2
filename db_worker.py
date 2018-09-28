@@ -36,14 +36,18 @@ def main():
     logging.getLogger().setLevel(logging.INFO)
     logging.basicConfig(format='%(asctime)s %(thread)d %(levelname)s %(message)s', level=logging.INFO)
 
-    default_password = os.environ.get("CORPUSDB_PASSWORD")
+    default_host = os.environ.get("SPV2_DB_HOST", "localhost")
+    default_dbname = os.environ.get("SPV2_DB_DBNAME", "postgres")
+    default_schema = os.environ.get("SPV2_DB_SCHEMA", "public")
+    default_user = os.environ.get("SPV2_DB_USER", "s2dev")
+    default_password = os.environ.get("SPV2_DB_PASSWORD")
     default_dataprep_host = os.environ.get("SPV2_DATAPREP_SERVICE_HOST", "localhost")
     default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_SERVICE_PORT", "8080"))
     parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
     parser.add_argument(
         "--host",
         type=str,
-        default="localhost",
+        default=default_host,
         help="database host"
     )
     parser.add_argument(
@@ -55,19 +59,19 @@ def main():
     parser.add_argument(
         "--dbname",
         type=str,
-        default="corpus",
+        default=default_dbname,
         help="database name"
     )
     parser.add_argument(
         "--schema",
         type=str,
-        default="public",
+        default=default_schema,
         help="schema name"
     )
     parser.add_argument(
         "--user",
         type=str,
-        default="s2dev",
+        default=default_user,
         help="database user"
     )
     parser.add_argument(
