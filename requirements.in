@@ -6,7 +6,7 @@ sklearn
 cffi==1.11.2
 pydot_ng
 manhole==1.3.0
-git+https://github.com/keras-team/keras-contrib.git
+git+https://github.com/keras-team/keras-contrib.git@f25c26665e990cfdf1da61a3de10a34d67f74b37
 aiohttp==2.3.3
 multiset==2.0.2
 datadog==0.17.0
