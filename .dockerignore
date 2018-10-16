@@ -1,3 +1,4 @@
 .git
 __pycache__
 dataprep/target
+.idea

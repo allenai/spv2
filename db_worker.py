@@ -101,7 +101,7 @@ def main():
         schema=args.schema,
         user=args.user,
     )
-    logging.info("Task db config: ")
+    logging.info("Task db config: %s", taskdb_kwargs)
     todo_list = papertasks.TaskDB(
         password=args.password,
         **taskdb_kwargs
