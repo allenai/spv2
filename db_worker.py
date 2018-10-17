@@ -94,13 +94,17 @@ def main():
     )
     args = parser.parse_args()
 
+    taskdb_kwargs = dict(
+        host=args.host,
+        port=args.port,
+        dbname=args.dbname,
+        schema=args.schema,
+        user=args.user,
+    )
+    logging.info("Task db config: %s", taskdb_kwargs)
     todo_list = papertasks.TaskDB(
-        host = args.host,
-        port = args.port,
-        dbname = args.dbname,
-        schema = args.schema,
-        user = args.user,
-        password = args.password
+        password=args.password,
+        **taskdb_kwargs
     )
 
     # start datadog
