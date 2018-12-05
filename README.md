@@ -13,6 +13,12 @@ out of PDFs. At the moment, we parse out
 
 Other fields are work in progress. 
 
+## Old version: SPv1
+
+There is an old version of the science-parse project at https://github.com/allenai/science-parse.
+That version works differently, and does generally worse, but it's faster, and has more features
+than this one.
+
 ## How can I run this myself?
 
 The easiest way to get started is to pull down the docker image. The name of the image is
