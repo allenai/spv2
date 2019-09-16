@@ -1,4 +1,6 @@
-FROM andreptb/oracle-java:8
+FROM ubuntu:18.04
+
+RUN apt-get update -y && apt-get install openjdk-8-jdk -y
 
 WORKDIR /spv2-dataprep
 
