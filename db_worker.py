@@ -6,6 +6,14 @@ import asyncio
 import aiohttp
 import json
 import papertasks
+from papertasks.events.event import Event
+import boto3
+
+SLEEP_SECONDS = 10
+MODEL_VERSION = 2
+MAX_NUMBER_OF_MESSAGES = 10  # upper limit for SQS
+VISIBILITY_TIMEOUT = 600  # time till messages become visible in queue again, in seconds
+POLL_TIMEOUT = 20  # timeout for SQS long polling, in seconds
 
 def _send_all(source, dest, nbytes: int = None):
     nsent = 0
@@ -19,6 +27,57 @@ def _send_all(source, dest, nbytes: int = None):
         dest.write(buf)
         nsent += len(buf)
     dest.flush()
+    
+def parse_event(message):
+    try:
+        event = Event(**json.loads(message['Body']))
+        return event
+    except (json.decoder.JSONDecodeError, KeyError):
+        logging.exception('Failed parsing message from queue. Message: %s', str(message))
+        return None
+    
+def delete_batch(queue_client, queue_url, messages_to_delete):
+    if messages_to_delete:
+        queue_client.delete_message_batch(
+            QueueUrl=queue_url,
+            Entries=[{
+                'Id': message['MessageId'],
+                'ReceiptHandle': message['ReceiptHandle']
+            } for message in messages_to_delete]
+        )
+
+def get_paper_shas_to_process(queue_client, queue_url):
+    while True:
+        messages = queue_client.receive_message(
+            QueueUrl=queue_url,
+            VisibilityTimeout=VISIBILITY_TIMEOUT,
+            MaxNumberOfMessages=MAX_NUMBER_OF_MESSAGES,
+            WaitTimeSeconds=POLL_TIMEOUT
+        ).get('Messages', [])
+        messages_to_delete = []
+        paper_id_to_messages = dict()
+        for m in messages:
+            event = parse_event(m)
+            if not event or (event.type, event.action) != ('SourcedPaper', 'modified'):
+                messages_to_delete.append(m)
+            else:
+                # This is needed because we're processing in batch downstream and we lose paper id to message id
+                # correspondence. We need message ids to delete success events from queue.
+                if event.id in paper_id_to_messages:
+                    paper_id_to_messages[event.id].append(m)
+                else:
+                    paper_id_to_messages[event.id] = [m]
+
+        delete_batch(queue_client, queue_url, messages_to_delete)
+        num_paper_to_process = len(paper_id_to_messages)
+
+        if num_paper_to_process > 0:
+            logging.info("Received %d paper shas to process", num_paper_to_process)
+            return paper_id_to_messages
+        else:
+            logging.info("No papers to process. Sleeping for %s", str(SLEEP_SECONDS))
+            time.sleep(SLEEP_SECONDS)
+            continue
 
 def main():
     import tempfile
@@ -132,13 +191,15 @@ def main():
     import with_labels  # Heavy import, so we do it here
     model = with_labels.model_with_labels(model_settings, embeddings)
     model.load_weights("model/C49.h5")
-    model_version = 2
+
+    queue_name = os.environ['SQS_QUEUE_NAME']
+    queue_client = boto3.client('sqs', region_name='us-west-2')
+    queue_url = queue_client.get_queue_url(QueueName=queue_name)['QueueUrl']
 
     logging.info("Starting to process tasks")
     total_paper_ids_processed = 0
     start_time = time.time()
-    last_time_with_paper_ids = start_time
-
+    
     def featurized_tokens_filenames() -> typing.Generator[typing.Tuple[tempfile.TemporaryDirectory, str], None, None]:
         # async http stuff
         async_event_loop = asyncio.new_event_loop()
@@ -222,25 +283,19 @@ def main():
                 with await write_lock:
                     _send_all(f, json_file)
 
-        processing_timeout = 600
         while True:
-            paper_ids = todo_list.get_batch_to_process(model_version, max_batch_size=50)
-            logging.info("Received %d paper ids", len(paper_ids))
-            if len(paper_ids) <= 0:
-                if time.time() - last_time_with_paper_ids > processing_timeout:
-                    logging.info("Saw no paper ids for more than %.0f seconds. Shutting down.", processing_timeout)
-                    return
-                time.sleep(20)
-                continue
-            stats.increment(datadog_prefix + "attempts", len(paper_ids))
+            paper_shas_to_messages = get_paper_shas_to_process(queue_client, queue_url)
+            paper_shas_to_process = list(paper_shas_to_messages.keys())
+            num_paper_to_process = len(paper_shas_to_process)
 
+            stats.increment(datadog_prefix + "attempts", num_paper_to_process)
             temp_dir = tempfile.TemporaryDirectory(prefix="SPv2DBWorker-")
 
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
             json_file_name = os.path.join(temp_dir.name, "tokens.json")
             with open(json_file_name, "wb") as json_file:
-                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_ids]
+                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_shas_to_process]
                 async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
@@ -259,9 +314,8 @@ def main():
                     paper_id = paper_id[:-4]
                 paper_id_to_error[paper_id] = error
                 logging.info("Paper %s has error %s", paper_id, error["message"])
-            if len(paper_id_to_error) > len(paper_ids) / 2:
-                raise ValueError("More than half of the batch failed to preprocess. Something is afoot. We're giving up.")
-            todo_list.post_errors(model_version, paper_id_to_error)
+
+            todo_list.post_errors(MODEL_VERSION, paper_id_to_error)
             stats.increment(datadog_prefix + "errors", len(paper_id_to_error))
             logging.info("Wrote %d errors to database", len(paper_id_to_error))
 
@@ -297,9 +351,9 @@ def main():
             logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
             stats.timing(datadog_prefix + "make_featurized", making_featurized_tokens_time)
 
-            yield temp_dir, featurized_tokens_file_name
+            yield temp_dir, featurized_tokens_file_name, paper_shas_to_messages
 
-    for temp_dir, featurized_tokens_file_name in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
+    for temp_dir, featurized_tokens_file_name, paper_id_to_messages in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
         try:
             logging.info("Making and sending results ...")
             make_and_send_results_time = time.time()
@@ -309,12 +363,14 @@ def main():
                         featurized_tokens_file,
                         include_labels=False,
                         max_tokens_per_page=model_settings.tokens_per_batch)
+
                 results = with_labels.run_model(
                     model,
                     model_settings,
                     embeddings.glove_vocab(),
                     get_docs,
                     enabled_modes={"predictions"})
+
                 results = {
                     doc.doc_sha: {
                         "docName": doc.doc_id,
@@ -332,9 +388,12 @@ def main():
                     } for doc, docresults in results
                 }
 
-                todo_list.post_results(model_version, results)
+                todo_list.post_results(MODEL_VERSION, results)
                 stats.increment(datadog_prefix + "successes", len(results))
                 total_paper_ids_processed += len(results)
+
+                messages_to_delete = [paper_id_to_messages[sha] for sha in list(results.keys())]
+                delete_batch(queue_client, queue_url, messages_to_delete)
         finally:
             temp_dir.cleanup()
 
@@ -345,8 +404,6 @@ def main():
         # report progress
         paper_ids_per_hour = 3600 * total_paper_ids_processed / (time.time() - start_time)
         logging.info("This worker is processing %.0f paper ids per hour." % paper_ids_per_hour)
-
-        last_time_with_paper_ids = time.time()
 
 if __name__ == "__main__":
     main()
