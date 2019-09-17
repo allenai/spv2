@@ -27,11 +27,11 @@ COPY stringmatch/ stringmatch/
 RUN cd stringmatch && python3 stringmatch_builder.py && cd ..
 
 # Copy the code itself
+COPY db_worker/ db_worker/
 COPY *.py ./
-COPY *.sh ./
 
 # Install an optimized version of tensorflow
 COPY tensorflow-cpu/ tensorflow-cpu/
 RUN pip3 uninstall -y tensorflow && pip3 install tensorflow-cpu/tensorflow-1.3.1-cp35-cp35m-linux_x86_64.whl
 
-CMD python3 db_worker.py
+CMD python3 db_worker/db_worker.py

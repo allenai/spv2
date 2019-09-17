@@ -108,6 +108,11 @@ def main():
     )
     env = os.environ["SPV2_ENV"]
 
+    queue_name = os.environ['SQS_QUEUE_NAME']
+    queue_client = boto3.client('sqs', region_name='us-west-2')
+    queue_url = queue_client.get_queue_url(QueueName=queue_name)['QueueUrl']
+    logging.info("SQS queue name: %s", queue_name)
+
     # start datadog
     datadog.initialize(api_key=os.environ.get("DATADOG_API_KEY"))
     dd_stats = datadog.ThreadStats()
@@ -130,10 +135,6 @@ def main():
     import with_labels  # Heavy import, so we do it here
     model = with_labels.model_with_labels(model_settings, embeddings)
     model.load_weights("model/C49.h5")
-
-    queue_name = os.environ['SQS_QUEUE_NAME']
-    queue_client = boto3.client('sqs', region_name='us-west-2')
-    queue_url = queue_client.get_queue_url(QueueName=queue_name)['QueueUrl']
 
     def featurized_tokens_filenames() -> typing.Generator[typing.Tuple[tempfile.TemporaryDirectory, str], None, None]:
         # async http stuff
