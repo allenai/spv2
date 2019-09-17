@@ -13,3 +13,4 @@ datadog==0.17.0
 -e git+git@github.com:allenai/papertasks.git@python-v5.3.2#egg=papertasks
 mschematool
 boto3
+psycopg2

@@ -5,9 +5,14 @@ import typing
 import asyncio
 import aiohttp
 import json
-import papertasks
+from db_worker.corpus_db import CorpusDB
 from papertasks.events.event import Event
+import h5py
+import datadog
+import settings
+import dataprep2
 import boto3
+import tempfile
 
 SLEEP_SECONDS = 10
 MODEL_VERSION = 2
@@ -46,7 +51,7 @@ def delete_batch(queue_client, queue_url, messages_to_delete):
             } for message in messages_to_delete]
         )
 
-def get_paper_shas_to_process(queue_client, queue_url):
+def get_paper_sha_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix):
     while True:
         messages = queue_client.receive_message(
             QueueUrl=queue_url,
@@ -61,18 +66,19 @@ def get_paper_shas_to_process(queue_client, queue_url):
             if not event or (event.type, event.action) != ('SourcedPaper', 'modified'):
                 messages_to_delete.append(m)
             else:
-                # This is needed because we're processing in batch downstream and we lose paper id to message id
+                # This is needed because of downstream batch processing and we lose paper id to message id
                 # correspondence. We need message ids to delete success events from queue.
-                if event.id in paper_id_to_messages:
-                    paper_id_to_messages[event.id].append(m)
+                sha = corpus_db.get_paper_sha(event.id)
+                if sha in paper_id_to_messages:
+                    paper_id_to_messages[sha].append(m)
                 else:
-                    paper_id_to_messages[event.id] = [m]
+                    paper_id_to_messages[sha] = [m]
 
         delete_batch(queue_client, queue_url, messages_to_delete)
-        num_paper_to_process = len(paper_id_to_messages)
+        num_to_process = len(paper_id_to_messages)
 
-        if num_paper_to_process > 0:
-            logging.info("Received %d paper shas to process", num_paper_to_process)
+        if num_to_process > 0:
+            dd_stats.increment(dd_prefix + "attempts", num_to_process)
             return paper_id_to_messages
         else:
             logging.info("No papers to process. Sleeping for %s", str(SLEEP_SECONDS))
@@ -80,14 +86,6 @@ def get_paper_shas_to_process(queue_client, queue_url):
             continue
 
 def main():
-    import tempfile
-    import argparse
-    import h5py
-    import datadog
-
-    import settings
-    import dataprep2
-
     if os.name != 'nt':
         import manhole
         manhole.install()
@@ -95,85 +93,26 @@ def main():
     logging.getLogger().setLevel(logging.INFO)
     logging.basicConfig(format='%(asctime)s %(thread)d %(levelname)s %(message)s', level=logging.INFO)
 
-    default_host = os.environ.get("SPV2_DB_HOST", "localhost")
-    default_dbname = os.environ.get("SPV2_DB_DBNAME", "postgres")
-    default_schema = os.environ.get("SPV2_DB_SCHEMA", "public")
-    default_user = os.environ.get("SPV2_DB_USER", "s2dev")
-    default_password = os.environ.get("SPV2_DB_PASSWORD")
-    default_dataprep_host = os.environ.get("SPV2_DATAPREP_SERVICE_HOST", "localhost")
-    default_dataprep_port = int(os.environ.get("SPV2_DATAPREP_SERVICE_PORT", "8080"))
-    parser = argparse.ArgumentParser(description="Trains a classifier for PDF Tokens")
-    parser.add_argument(
-        "--host",
-        type=str,
-        default=default_host,
-        help="database host"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=5432,
-        help="database port"
-    )
-    parser.add_argument(
-        "--dbname",
-        type=str,
-        default=default_dbname,
-        help="database name"
-    )
-    parser.add_argument(
-        "--schema",
-        type=str,
-        default=default_schema,
-        help="schema name"
-    )
-    parser.add_argument(
-        "--user",
-        type=str,
-        default=default_user,
-        help="database user"
-    )
-    parser.add_argument(
-        "--password",
-        type=str,
-        default=default_password,
-        help="database password"
-    )
-    parser.add_argument(
-        "--dataprep-host",
-        type=str,
-        default=default_dataprep_host,
-        help="Host where the dataprep service is running"
-    )
-    parser.add_argument(
-        "--dataprep-port",
-        type=str,
-        default=default_dataprep_port,
-        help="Port where the dataprep service is running"
-    )
-    args = parser.parse_args()
+    dataprep_host = os.environ["DATAPREP_HOST"]
+    dataprep_port = int(os.environ["DATAPREP_PORT"])
+    logging.info("Dataprep host: %s, port: %d", dataprep_host, dataprep_port)
 
-    taskdb_kwargs = dict(
-        host=args.host,
-        port=args.port,
-        dbname=args.dbname,
-        schema=args.schema,
-        user=args.user,
+    corpusdb_kwargs = dict(
+        host=os.environ["CORPUS_DB_HOST"],
+        user=os.environ["CORPUS_DB_USER"]
     )
-    logging.info("Task db config: %s", taskdb_kwargs)
-    todo_list = papertasks.TaskDB(
-        password=args.password,
-        **taskdb_kwargs
+    logging.info("Corpus DB config: %s", corpusdb_kwargs)
+    corpus_db = CorpusDB(
+        password=os.environ["CORPUS_DB_PASSWORD"],
+        **corpusdb_kwargs
     )
+    env = os.environ["SPV2_ENV"]
 
     # start datadog
     datadog.initialize(api_key=os.environ.get("DATADOG_API_KEY"))
-    stats = datadog.ThreadStats()
-    stats.start()
-    datadog_prefix = args.host.split(".")[0]
-    if datadog_prefix.startswith("spv2-"):
-        datadog_prefix = datadog_prefix[5:]
-    datadog_prefix = "spv2.%s." % datadog_prefix
+    dd_stats = datadog.ThreadStats()
+    dd_stats.start()
+    dd_prefix = "spv2.%s." % env
 
     logging.info("Loading model settings ...")
     model_settings = settings.default_model_settings
@@ -196,10 +135,6 @@ def main():
     queue_client = boto3.client('sqs', region_name='us-west-2')
     queue_url = queue_client.get_queue_url(QueueName=queue_name)['QueueUrl']
 
-    logging.info("Starting to process tasks")
-    total_paper_ids_processed = 0
-    start_time = time.time()
-    
     def featurized_tokens_filenames() -> typing.Generator[typing.Tuple[tempfile.TemporaryDirectory, str], None, None]:
         # async http stuff
         async_event_loop = asyncio.new_event_loop()
@@ -208,7 +143,7 @@ def main():
         session = aiohttp.ClientSession(connector=connector, read_timeout=120, conn_timeout=120)
         write_lock = asyncio.Lock()
         async def write_json_tokens_to_file(paper_id: str, json_file):
-            url = "http://%s:%d/v1/json/paperid/%s" % (args.dataprep_host, args.dataprep_port, paper_id)
+            url = "http://%s:%d/v1/json/paperid/%s" % (dataprep_host, dataprep_port, paper_id)
             attempts_left = 5
             with tempfile.NamedTemporaryFile(prefix="SPv2DBWorker-%s-" % paper_id, suffix=".json") as f:
                 f.seek(0)
@@ -228,10 +163,10 @@ def main():
                                     if not chunk:
                                         break
                                     f.write(chunk)
-                                stats.increment(datadog_prefix + "dataprep.success")
+                                dd_stats.increment(dd_prefix + "dataprep.success")
                                 break
                             else:
-                                stats.increment(datadog_prefix + "dataprep.failure")
+                                dd_stats.increment(dd_prefix + "dataprep.failure")
                                 if attempts_left > 0:
                                     logging.error(
                                         "Error %d from dataprep server for paper id %s. %d attempts left.",
@@ -239,7 +174,7 @@ def main():
                                         paper_id,
                                         attempts_left)
                                 else:
-                                    stats.increment(datadog_prefix + "dataprep.gave_up")
+                                    dd_stats.increment(dd_prefix + "dataprep.gave_up")
                                     logging.error(
                                         "Error %d from dataprep server for paper id %s. Giving up.",
                                         response.status,
@@ -254,7 +189,7 @@ def main():
                                     write_json_to_output(error)
                                     break
                     except Exception as e:
-                        stats.increment(datadog_prefix + "dataprep.failure")
+                        dd_stats.increment(dd_prefix + "dataprep.failure")
                         if attempts_left > 0:
                             logging.error(
                                 "Error %r from dataprep server for paper id %s. %d attempts left.",
@@ -262,7 +197,7 @@ def main():
                                 paper_id,
                                 attempts_left)
                         else:
-                            stats.increment(datadog_prefix + "dataprep.gave_up")
+                            dd_stats.increment(dd_prefix + "dataprep.gave_up")
                             logging.error(
                                 "Error %r from dataprep server for paper id %s. Giving up.",
                                 e,
@@ -284,22 +219,20 @@ def main():
                     _send_all(f, json_file)
 
         while True:
-            paper_shas_to_messages = get_paper_shas_to_process(queue_client, queue_url)
-            paper_shas_to_process = list(paper_shas_to_messages.keys())
-            num_paper_to_process = len(paper_shas_to_process)
+            paper_sha_to_messages = get_paper_sha_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix)
+            paper_shas = list(paper_sha_to_messages.keys())
 
-            stats.increment(datadog_prefix + "attempts", num_paper_to_process)
             temp_dir = tempfile.TemporaryDirectory(prefix="SPv2DBWorker-")
 
             logging.info("Getting JSON ...")
             getting_json_time = time.time()
             json_file_name = os.path.join(temp_dir.name, "tokens.json")
             with open(json_file_name, "wb") as json_file:
-                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_shas_to_process]
+                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_shas]
                 async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
-            stats.timing(datadog_prefix + "get_json", getting_json_time)
+            dd_stats.timing(dd_prefix + "get_json", getting_json_time)
 
             # pick out errors and write them to the DB
             paper_id_to_error = {}
@@ -315,8 +248,7 @@ def main():
                 paper_id_to_error[paper_id] = error
                 logging.info("Paper %s has error %s", paper_id, error["message"])
 
-            todo_list.post_errors(MODEL_VERSION, paper_id_to_error)
-            stats.increment(datadog_prefix + "errors", len(paper_id_to_error))
+            dd_stats.increment(dd_prefix + "errors", len(paper_id_to_error))
             logging.info("Wrote %d errors to database", len(paper_id_to_error))
 
             # make unlabeled tokens file
@@ -330,7 +262,7 @@ def main():
             os.remove(json_file_name)
             making_unlabeled_tokens_time = time.time() - making_unlabeled_tokens_time
             logging.info("Made unlabeled tokens in %.2f seconds", making_unlabeled_tokens_time)
-            stats.timing(datadog_prefix + "make_unlabeled", making_unlabeled_tokens_time)
+            dd_stats.timing(dd_prefix + "make_unlabeled", making_unlabeled_tokens_time)
 
             # make featurized tokens file
             logging.info("Making featurized tokens ...")
@@ -349,11 +281,12 @@ def main():
                 # to it.
             making_featurized_tokens_time = time.time() - making_featurized_tokens_time
             logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
-            stats.timing(datadog_prefix + "make_featurized", making_featurized_tokens_time)
+            dd_stats.timing(dd_prefix + "make_featurized", making_featurized_tokens_time)
 
-            yield temp_dir, featurized_tokens_file_name, paper_shas_to_messages
+            yield temp_dir, featurized_tokens_file_name, paper_sha_to_messages
 
-    for temp_dir, featurized_tokens_file_name, paper_id_to_messages in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
+    logging.info("Starting to process tasks")
+    for temp_dir, featurized_tokens_file_name, paper_sha_to_messages in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
         try:
             logging.info("Making and sending results ...")
             make_and_send_results_time = time.time()
@@ -387,23 +320,17 @@ def main():
                         ]
                     } for doc, docresults in results
                 }
+                dd_stats.increment(dd_prefix + "successes", len(results))
 
-                todo_list.post_results(MODEL_VERSION, results)
-                stats.increment(datadog_prefix + "successes", len(results))
-                total_paper_ids_processed += len(results)
-
-                messages_to_delete = [paper_id_to_messages[sha] for sha in list(results.keys())]
+                # Delete successfully processed messages from queue
+                messages_to_delete = [paper_sha_to_messages[sha] for sha in list(results.keys())]
                 delete_batch(queue_client, queue_url, messages_to_delete)
         finally:
             temp_dir.cleanup()
 
         make_and_send_results_time = time.time() - make_and_send_results_time
         logging.info("Made and sent results in %.2f seconds", make_and_send_results_time)
-        stats.timing(datadog_prefix + "make_results", make_and_send_results_time)
-
-        # report progress
-        paper_ids_per_hour = 3600 * total_paper_ids_processed / (time.time() - start_time)
-        logging.info("This worker is processing %.0f paper ids per hour." % paper_ids_per_hour)
+        dd_stats.timing(dd_prefix + "make_results", make_and_send_results_time)
 
 if __name__ == "__main__":
     main()
