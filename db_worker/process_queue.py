@@ -52,7 +52,7 @@ def delete_batch(queue_client, queue_url, messages_to_delete):
             } for message in messages_to_delete]
         )
 
-def get_paper_sha_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix):
+def get_pdf_hash_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix):
     while True:
         messages = queue_client.receive_message(
             QueueUrl=queue_url,
@@ -61,32 +61,36 @@ def get_paper_sha_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_p
             WaitTimeSeconds=POLL_TIMEOUT
         ).get('Messages', [])
 
+        if len(messages) == 0:
+            logging.info("No papers to process. Sleeping for %s", str(SLEEP_SECONDS))
+            time.sleep(SLEEP_SECONDS)
+            continue
+
         messages_to_delete = []
-        paper_id_to_messages = dict()
+        # Need this mapping because of downstream batch processing and we lose paper id to message id
+        # correspondence. We need message ids to delete success events from queue.
+        pdf_hash_to_messages = dict()
         for m in messages:
             event = parse_event(m)
             if not event or (event.type, event.action) != ('SourcedPaper', 'modified'):
                 messages_to_delete.append(m)
             else:
-                # This is needed because of downstream batch processing and we lose paper id to message id
-                # correspondence. We need message ids to delete success events from queue.
-                sha = corpus_db.get_sourced_paper_sha(event.id)
-
-                if sha in paper_id_to_messages:
-                    paper_id_to_messages[sha].append(m)
+                sha = corpus_db.get_sourced_paper_pdf_hash(event.id)
+                if sha:
+                    # TODO check ParseStore and skip if (PDF hash, model version, SP version) already exists
+                    if sha in pdf_hash_to_messages:
+                        pdf_hash_to_messages[sha].append(m)
+                    else:
+                        pdf_hash_to_messages[sha] = [m]
                 else:
-                    paper_id_to_messages[sha] = [m]
+                    messages_to_delete.append(m)
 
         delete_batch(queue_client, queue_url, messages_to_delete)
-        num_to_process = len(paper_id_to_messages)
+        num_to_process = len(pdf_hash_to_messages)
 
         if num_to_process > 0:
             dd_stats.increment(dd_prefix + "attempts", num_to_process)
-            return paper_id_to_messages
-        else:
-            logging.info("No papers to process. Sleeping for %s", str(SLEEP_SECONDS))
-            time.sleep(SLEEP_SECONDS)
-            continue
+            return pdf_hash_to_messages
 
 def main():
     if os.name != 'nt':
@@ -219,11 +223,11 @@ def main():
                 # append the tempfile to the json file
                 f.flush()
                 f.seek(0)
-                with await write_lock:
+                async with write_lock:
                     _send_all(f, json_file)
 
         while True:
-            paper_sha_to_messages = get_paper_sha_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix)
+            paper_sha_to_messages = get_pdf_hash_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix)
             paper_shas = list(paper_sha_to_messages.keys())
 
             temp_dir = tempfile.TemporaryDirectory(prefix="SPv2DBWorker-")
@@ -250,10 +254,9 @@ def main():
                 if paper_id.endswith(".pdf"):
                     paper_id = paper_id[:-4]
                 paper_id_to_error[paper_id] = error
-                logging.info("Paper %s has error %s", paper_id, error["message"])
+                logging.error("Paper %s has error: %s", paper_id, error["message"])
 
             dd_stats.increment(dd_prefix + "errors", len(paper_id_to_error))
-            logging.info("Wrote %d errors to database", len(paper_id_to_error))
 
             # # make unlabeled tokens file
             # logging.info("Making unlabeled tokens ...")
@@ -326,9 +329,11 @@ def main():
                 # }
                 results = [{'foo': 'bar'}]
                 dd_stats.increment(dd_prefix + "successes", len(results))
+                # TODO send (pdf hash, model version, sp version, result) to ParseStore
 
                 # Delete successfully processed messages from queue
                 messages_to_delete = [paper_sha_to_messages[sha] for sha in list(results.keys())]
+                logging.info('Deleting messages')
                 delete_batch(queue_client, queue_url, messages_to_delete)
         finally:
             temp_dir.cleanup()

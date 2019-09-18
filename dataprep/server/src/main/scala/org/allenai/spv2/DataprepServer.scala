@@ -214,7 +214,7 @@ class DataprepServer extends AbstractHandler with Logging {
           }
         } catch {
           case NonFatal(e) =>
-            logger.info(s"Download of $paperId failed with ${e.getMessage}")
+            logger.error(s"Download of $paperId failed with ${e.getMessage}")
             DownloadFailure(docName, e)
         }
       }

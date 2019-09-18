@@ -38,7 +38,7 @@ class CorpusDB:
         finally:
             self.pool.putconn(conn)
 
-    def get_sourced_paper_sha(self, paper_id):
+    def get_sourced_paper_pdf_hash(self, paper_id):
         logging.info('Paper ID %s', paper_id)
         for attempt_number in range(1, self.MAX_ATTEMPTS + 1):
             try:
@@ -48,7 +48,7 @@ class CorpusDB:
                     logging.info('Row %s', row)
                     return row[0] if row else None
             except psycopg2.DatabaseError:
-                logging.exception('Exception when getting SHA for paper ID %s.', paper_id)
+                logging.exception('Exception when getting pdf hash for paper ID %s.', paper_id)
                 if attempt_number == self.MAX_ATTEMPTS:
                     raise
 
