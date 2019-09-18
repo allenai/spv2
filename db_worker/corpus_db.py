@@ -39,13 +39,11 @@ class CorpusDB:
             self.pool.putconn(conn)
 
     def get_sourced_paper_pdf_hash(self, paper_id):
-        logging.info('Paper ID %s', paper_id)
         for attempt_number in range(1, self.MAX_ATTEMPTS + 1):
             try:
                 with self._get_cursor() as cur:
                     cur.execute('SELECT pdf_hash FROM sourced_paper WHERE id = %s' % paper_id)
                     row = cur.fetchone()
-                    logging.info('Row %s', row)
                     return row[0] if row else None
             except psycopg2.DatabaseError:
                 logging.exception('Exception when getting pdf hash for paper ID %s.', paper_id)

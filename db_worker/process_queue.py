@@ -115,33 +115,33 @@ def main():
     )
     env = os.environ["SPV2_ENV"]
 
-    queue_name = os.environ['SQS_QUEUE_NAME']
-    queue_client = boto3.client('sqs', region_name='us-west-2')
-    queue_url = queue_client.get_queue_url(QueueName=queue_name)['QueueUrl']
+    queue_name = os.environ["SQS_QUEUE_NAME"]
+    queue_client = boto3.client("sqs", region_name="us-west-2")
+    queue_url = queue_client.get_queue_url(QueueName=queue_name)["QueueUrl"]
     logging.info("SQS queue name: %s", queue_name)
 
     # start datadog
-    datadog.initialize(api_key=os.environ.get("DATADOG_API_KEY"))
+    datadog.initialize(api_key=os.environ["DATADOG_API_KEY"])
     dd_stats = datadog.ThreadStats()
     dd_stats.start()
     dd_prefix = "spv2.%s." % env
 
-    # logging.info("Loading model settings ...")
-    # model_settings = settings.default_model_settings
-    #
-    # logging.info("Loading token statistics ...")
-    # token_stats = dataprep2.TokenStatistics("model/all.tokenstats3.gz")
-    #
-    # logging.info("Loading embeddings ...")
-    # embeddings = dataprep2.CombinedEmbeddings(
-    #     token_stats,
-    #     dataprep2.GloveVectors(model_settings.glove_vectors),
-    #     model_settings.embedded_tokens_fraction
-    # )
-    #
-    # import with_labels  # Heavy import, so we do it here
-    # model = with_labels.model_with_labels(model_settings, embeddings)
-    # model.load_weights("model/C49.h5")
+    logging.info("Loading model settings ...")
+    model_settings = settings.default_model_settings
+
+    logging.info("Loading token statistics ...")
+    token_stats = dataprep2.TokenStatistics("model/all.tokenstats3.gz")
+
+    logging.info("Loading embeddings ...")
+    embeddings = dataprep2.CombinedEmbeddings(
+        token_stats,
+        dataprep2.GloveVectors(model_settings.glove_vectors),
+        model_settings.embedded_tokens_fraction
+    )
+
+    import with_labels  # Heavy import, so we do it here
+    model = with_labels.model_with_labels(model_settings, embeddings)
+    model.load_weights("model/C49.h5")
 
     def featurized_tokens_filenames():
         # async http stuff
@@ -227,8 +227,8 @@ def main():
                     _send_all(f, json_file)
 
         while True:
-            paper_sha_to_messages = get_pdf_hash_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix)
-            paper_shas = list(paper_sha_to_messages.keys())
+            pdf_hash_to_messages = get_pdf_hash_to_messages(queue_client, queue_url, corpus_db, dd_stats, dd_prefix)
+            pdf_hashes = list(pdf_hash_to_messages.keys())
 
             temp_dir = tempfile.TemporaryDirectory(prefix="SPv2DBWorker-")
 
@@ -236,7 +236,7 @@ def main():
             getting_json_time = time.time()
             json_file_name = os.path.join(temp_dir.name, "tokens.json")
             with open(json_file_name, "wb") as json_file:
-                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in paper_shas]
+                write_json_futures = [write_json_tokens_to_file(p, json_file) for p in pdf_hashes]
                 async_event_loop.run_until_complete(asyncio.wait(write_json_futures))
             getting_json_time = time.time() - getting_json_time
             logging.info("Got JSON in %.2f seconds", getting_json_time)
@@ -258,81 +258,81 @@ def main():
 
             dd_stats.increment(dd_prefix + "errors", len(paper_id_to_error))
 
-            # # make unlabeled tokens file
-            # logging.info("Making unlabeled tokens ...")
-            # making_unlabeled_tokens_time = time.time()
-            # unlabeled_tokens_file_name = os.path.join(temp_dir.name, "unlabeled-tokens.h5")
-            # dataprep2.make_unlabeled_tokens_file(
-            #     json_file_name,
-            #     unlabeled_tokens_file_name,
-            #     ignore_errors=True)
-            # os.remove(json_file_name)
-            # making_unlabeled_tokens_time = time.time() - making_unlabeled_tokens_time
-            # logging.info("Made unlabeled tokens in %.2f seconds", making_unlabeled_tokens_time)
-            # dd_stats.timing(dd_prefix + "make_unlabeled", making_unlabeled_tokens_time)
-            #
-            # # make featurized tokens file
-            # logging.info("Making featurized tokens ...")
-            # making_featurized_tokens_time = time.time()
-            # with h5py.File(unlabeled_tokens_file_name, "r") as unlabeled_tokens_file:
-            #     featurized_tokens_file_name = os.path.join(temp_dir.name, "featurized-tokens.h5")
-            #     dataprep2.make_featurized_tokens_file(
-            #         featurized_tokens_file_name,
-            #         unlabeled_tokens_file,
-            #         token_stats,
-            #         embeddings,
-            #         dataprep2.VisionOutput(None),
-            #         model_settings
-            #     )
-            #     # We don't delete the unlabeled file here because the featurized one contains references
-            #     # to it.
-            # making_featurized_tokens_time = time.time() - making_featurized_tokens_time
-            # logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
-            # dd_stats.timing(dd_prefix + "make_featurized", making_featurized_tokens_time)
+            # make unlabeled tokens file
+            logging.info("Making unlabeled tokens ...")
+            making_unlabeled_tokens_time = time.time()
+            unlabeled_tokens_file_name = os.path.join(temp_dir.name, "unlabeled-tokens.h5")
+            dataprep2.make_unlabeled_tokens_file(
+                json_file_name,
+                unlabeled_tokens_file_name,
+                ignore_errors=True)
+            os.remove(json_file_name)
+            making_unlabeled_tokens_time = time.time() - making_unlabeled_tokens_time
+            logging.info("Made unlabeled tokens in %.2f seconds", making_unlabeled_tokens_time)
+            dd_stats.timing(dd_prefix + "make_unlabeled", making_unlabeled_tokens_time)
 
-            yield temp_dir, featurized_tokens_file_name, paper_sha_to_messages
+            # make featurized tokens file
+            logging.info("Making featurized tokens ...")
+            making_featurized_tokens_time = time.time()
+            with h5py.File(unlabeled_tokens_file_name, "r") as unlabeled_tokens_file:
+                featurized_tokens_file_name = os.path.join(temp_dir.name, "featurized-tokens.h5")
+                dataprep2.make_featurized_tokens_file(
+                    featurized_tokens_file_name,
+                    unlabeled_tokens_file,
+                    token_stats,
+                    embeddings,
+                    dataprep2.VisionOutput(None),
+                    model_settings
+                )
+            # We don't delete the unlabeled file here because the featurized one contains references to it.
+            making_featurized_tokens_time = time.time() - making_featurized_tokens_time
+            logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
+            dd_stats.timing(dd_prefix + "make_featurized", making_featurized_tokens_time)
+
+            yield temp_dir, featurized_tokens_file_name, pdf_hash_to_messages
 
     logging.info("Starting to process tasks")
-    for temp_dir, featurized_tokens_file_name, paper_sha_to_messages in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
+    for temp_dir, featurized_tokens_file_name, pdf_hash_to_messages in dataprep2.threaded_generator(featurized_tokens_filenames(), 1):
         try:
             logging.info("Making and sending results ...")
             make_and_send_results_time = time.time()
             with h5py.File(featurized_tokens_file_name) as featurized_tokens_file:
-                # def get_docs():
-                #     return dataprep2.documents_for_featurized_tokens(
-                #         featurized_tokens_file,
-                #         include_labels=False,
-                #         max_tokens_per_page=model_settings.tokens_per_batch)
-                #
-                # model_results = with_labels.run_model(
-                #     model,
-                #     model_settings,
-                #     embeddings.glove_vocab(),
-                #     get_docs,
-                #     enabled_modes={"predictions"})
-                #
-                # results = {
-                #     doc.doc_sha: {
-                #         "docName": doc.doc_id,
-                #         "docSha": doc.doc_sha,
-                #         "title": dataprep2.sanitize_for_json(docresults["predictions"][0]),
-                #         "authors": docresults["predictions"][1],
-                #         "bibs": [
-                #             {
-                #                 "title": bibtitle,
-                #                 "authors": bibauthors,
-                #                 "venue": bibvenue,
-                #                 "year": bibyear
-                #             } for bibtitle, bibauthors, bibvenue, bibyear in docresults["predictions"][2]
-                #         ]
-                #     } for doc, docresults in model_results
-                # }
-                results = [{'foo': 'bar'}]
+                def get_docs():
+                    return dataprep2.documents_for_featurized_tokens(
+                        featurized_tokens_file,
+                        include_labels=False,
+                        max_tokens_per_page=model_settings.tokens_per_batch)
+
+                model_results = with_labels.run_model(
+                    model,
+                    model_settings,
+                    embeddings.glove_vocab(),
+                    get_docs,
+                    enabled_modes={"predictions"})
+
+                results = {
+                    doc.doc_sha: {
+                        "docName": doc.doc_id,
+                        "docSha": doc.doc_sha,
+                        "title": dataprep2.sanitize_for_json(docresults["predictions"][0]),
+                        "authors": docresults["predictions"][1],
+                        "bibs": [
+                            {
+                                "title": bibtitle,
+                                "authors": bibauthors,
+                                "venue": bibvenue,
+                                "year": bibyear
+                            } for bibtitle, bibauthors, bibvenue, bibyear in docresults["predictions"][2]
+                        ]
+                    } for doc, docresults in model_results
+                }
                 dd_stats.increment(dd_prefix + "successes", len(results))
                 # TODO send (pdf hash, model version, sp version, result) to ParseStore
 
                 # Delete successfully processed messages from queue
-                messages_to_delete = [paper_sha_to_messages[sha] for sha in list(results.keys())]
+                logging.info('paper_sha_to_messages: %s', pdf_hash_to_messages)
+                logging.info('results.keys(): %s', list(results.keys()))
+                messages_to_delete = [m for sha in results.keys() for m in pdf_hash_to_messages[sha]]
                 logging.info('Deleting messages')
                 delete_batch(queue_client, queue_url, messages_to_delete)
         finally:
