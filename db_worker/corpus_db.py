@@ -38,12 +38,14 @@ class CorpusDB:
         finally:
             self.pool.putconn(conn)
 
-    def get_paper_sha(self, paper_id):
+    def get_sourced_paper_sha(self, paper_id):
+        logging.info('Paper ID %s', paper_id)
         for attempt_number in range(1, self.MAX_ATTEMPTS + 1):
             try:
                 with self._get_cursor() as cur:
-                    cur.execute('SELECT sha FROM legacy_paper_ids WHERE paper_id = %s', paper_id)
+                    cur.execute('SELECT pdf_hash FROM sourced_paper WHERE id = %s' % paper_id)
                     row = cur.fetchone()
+                    logging.info('Row %s', row)
                     return row[0] if row else None
             except psycopg2.DatabaseError:
                 logging.exception('Exception when getting SHA for paper ID %s.', paper_id)
