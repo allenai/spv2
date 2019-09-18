@@ -31,9 +31,9 @@ COPY tensorflow-cpu/ tensorflow-cpu/
 RUN pip3 uninstall -y tensorflow && pip3 install tensorflow-cpu/tensorflow-1.3.1-cp35-cp35m-linux_x86_64.whl
 
 # Copy the code itself
-COPY db_worker/ db_worker/
+COPY queue_worker/ queue_worker/
 COPY *.py ./
 
 ENV PYTHONPATH "/spv2${PYTHONPATH:+:${PYTHONPATH}}"
 
-CMD python3 -u db_worker/process_queue.py
+CMD python3 -u queue_worker/process_queue.py
