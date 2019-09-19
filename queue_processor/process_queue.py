@@ -3,14 +3,8 @@ import os
 
 import dataprep2
 import settings
-from queue_worker.corpus_db import CorpusDB
-from queue_worker.queue_worker import QueueWorker
-
-SLEEP_SECONDS = 10
-MODEL_VERSION = 2
-MAX_NUMBER_OF_MESSAGES = 10  # upper limit for SQS
-VISIBILITY_TIMEOUT = 600  # time till messages become visible in queue again, in seconds
-POLL_TIMEOUT = 20  # timeout for SQS long polling, in seconds
+from queue_processor.corpus_db import CorpusDB
+from queue_processor.queue_worker import QueueWorker
 
 
 if __name__ == "__main__":
