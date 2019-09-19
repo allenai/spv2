@@ -4,6 +4,7 @@ import logging
 import os
 import tempfile
 import time
+from datetime import datetime
 
 import aiohttp
 import boto3
@@ -29,9 +30,11 @@ class QueueWorker:
     VISIBILITY_TIMEOUT = 600  # time till messages become visible in queue again, in seconds
     POLL_TIMEOUT = 20  # timeout for SQS long polling, in seconds
 
-    def __init__(self, env, queue_name, dataprep_host, dataprep_port, corpus_db, dd_api_key, sns_topic):
-        self.queue_client = boto3.client("sqs", region_name="us-west-2")
-        self.queue_url = self.queue_client.get_queue_url(QueueName=queue_name)["QueueUrl"]
+    def __init__(self, env, upstream_queue_name, dataprep_host, dataprep_port,
+                 corpus_db, dd_api_key, downstream_queue_name):
+        sqs = boto3.resource('sqs')
+        self.upstream_queue = sqs.get_queue_by_name(QueueName=upstream_queue_name)
+        self.downstream_queue = sqs.get_queue_by_name(QueueName=downstream_queue_name)
 
         self.dataprep_host = dataprep_host
         self.dataprep_port = dataprep_port
@@ -43,22 +46,44 @@ class QueueWorker:
         self.dd_stats.start()
         self.dd_prefix = "spv2.%s." % env
 
-        self.sns_topic = sns_topic
+    def publish_event(self, paper_ids):
+        if paper_ids:
+            entries = []
+            for paper_id in paper_ids:
+                assert len(paper_id) < 40, 'SQS/SNS message should use canonical paper_id instead of sha.'
+                message_body = json.dumps(dict(
+                    type='SourcedPaper',
+                    id=paper_id,
+                    timestamp=datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                    action='modified',
+                    publisher='spv2'
+                ))
+                entry = dict(
+                    Id=paper_id,
+                    MessageBody=message_body
+                )
+                entries.append(entry)
+            self.downstream_queue.send_messages(Entries=entries)
+
 
     def process_queue(self, model_settings, token_stats, embeddings, model):
         feat_token_filenames = dataprep2.threaded_generator(self._generate_featurized_tokens_filenames(token_stats, embeddings, model_settings), 1)
-        for temp_dir, featurized_tokens_filename, pdf_hash_to_messages in feat_token_filenames:
+        for temp_dir, featurized_tokens_filename, sha_to_paper_id_and_messages in feat_token_filenames:
             try:
                 logging.info("Making and sending results ...")
                 make_and_send_results_time = time.time()
                 parse_results = self.parse_featurized_tokens_file(featurized_tokens_filename, model_settings, model, embeddings)
+
                 self.dd_stats.increment(self.dd_prefix + "successes", len(parse_results))
                 # TODO send (pdf hash, model version, sp version, result) to ParseStore
+                logging.info('results: %s', parse_results)
+                # Publish event downstream
+                paper_ids = [v[0] for v in sha_to_paper_id_and_messages.values()]
+                self.publish_event(paper_ids)
 
                 # Delete successfully processed messages from queue
-                logging.info('results: %s', parse_results)
-                messages_to_delete = [m for sha in parse_results.keys() for m in pdf_hash_to_messages[sha]]
-                self.delete_batch(self.queue_client, self.queue_url, messages_to_delete)
+                messages_to_delete = [m for sha in parse_results.keys() for m in sha_to_paper_id_and_messages[sha][1]]
+                self.delete_batch(messages_to_delete)
             finally:
                 temp_dir.cleanup()
 
@@ -109,8 +134,8 @@ class QueueWorker:
         write_lock = asyncio.Lock()
 
         while True:
-            pdf_hash_to_messages = self._get_pdf_hash_to_queue_messages()
-            pdf_hashes = list(pdf_hash_to_messages.keys())
+            sha_to_paper_id_and_messages = self._get_sha_to_paper_id_and_messages()
+            pdf_hashes = list(sha_to_paper_id_and_messages.keys())
 
             temp_dir = tempfile.TemporaryDirectory(prefix="SPv2QueueWorker-")
 
@@ -171,47 +196,46 @@ class QueueWorker:
             logging.info("Made featurized tokens in %.2f seconds", making_featurized_tokens_time)
             self.dd_stats.timing(self.dd_prefix + "make_featurized", making_featurized_tokens_time)
 
-            yield temp_dir, featurized_tokens_file_name, pdf_hash_to_messages
+            yield temp_dir, featurized_tokens_file_name, sha_to_paper_id_and_messages
 
-    def _get_pdf_hash_to_queue_messages(self):
+    def _get_sha_to_paper_id_and_messages(self):
         while True:
-            messages = self.queue_client.receive_message(
-                QueueUrl=self.queue_url,
+            messages = self.upstream_queue.receive_messages(
                 VisibilityTimeout=self.VISIBILITY_TIMEOUT,
                 MaxNumberOfMessages=self.MAX_NUMBER_OF_MESSAGES,
                 WaitTimeSeconds=self.POLL_TIMEOUT
-            ).get('Messages', [])
-
+            )
             if len(messages) == 0:
                 logging.info("No papers to process. Sleeping for %s", str(self.SLEEP_SECONDS))
                 time.sleep(self.SLEEP_SECONDS)
                 continue
 
             messages_to_delete = []
-            # Need this mapping because of downstream batch processing and we lose paper id to message id
+            # Need this mapping because of downstream batch processing and we lose paper id to queue message
             # correspondence. We need message ids to delete success events from queue.
-            pdf_hash_to_messages = dict()
+            # { pdf_hash: (paper_id, [queue_messages]) }
+            sha_to_paper_id_and_messages = dict()
             for m in messages:
                 event = self.parse_event(m)
                 if not event or (event.type, event.action) != ('SourcedPaper', 'modified'):
                     messages_to_delete.append(m)
                 else:
-                    sha = self.corpus_db.get_sourced_paper_pdf_hash(event.id)
+                    paper_id = event.id
+                    sha = self.corpus_db.get_sourced_paper_pdf_hash(paper_id)
                     if sha:
                         # TODO check ParseStore and skip if (PDF hash, model version, SP version) already exists
-                        if sha in pdf_hash_to_messages:
-                            pdf_hash_to_messages[sha].append(m)
+                        if sha in sha_to_paper_id_and_messages:
+                            sha_to_paper_id_and_messages[sha][1].append(m)
                         else:
-                            pdf_hash_to_messages[sha] = [m]
+                            sha_to_paper_id_and_messages[sha] = (paper_id, [m])
                     else:
                         messages_to_delete.append(m)
-
-            self.delete_batch(self.queue_client, self.queue_url, messages_to_delete)
-            num_to_process = len(pdf_hash_to_messages)
+            self.delete_batch(messages_to_delete)
+            num_to_process = len(sha_to_paper_id_and_messages)
 
             if num_to_process > 0:
                 self.dd_stats.increment(self.dd_prefix + "attempts", num_to_process)
-                return pdf_hash_to_messages
+                return sha_to_paper_id_and_messages
 
     async def _write_json_tokens_to_file(self, paper_id: str, json_file, session, write_lock):
         url = "http://%s:%d/v1/json/paperid/%s" % (self.dataprep_host, self.dataprep_port, paper_id)
@@ -308,19 +332,17 @@ class QueueWorker:
     @staticmethod
     def parse_event(message):
         try:
-            event = Event(**json.loads(message['Body']))
+            event = Event(**json.loads(message.body))
             return event
         except Exception:
             logging.exception('Failed parsing message from queue. Message: %s', str(message))
             return None
 
-    @staticmethod
-    def delete_batch(queue_client, queue_url, messages_to_delete):
+    def delete_batch(self, messages_to_delete):
         if messages_to_delete:
-            queue_client.delete_message_batch(
-                QueueUrl=queue_url,
+            self.upstream_queue.delete_messages(
                 Entries=[{
-                    'Id': message['MessageId'],
-                    'ReceiptHandle': message['ReceiptHandle']
+                    'Id': message.message_id,
+                    'ReceiptHandle': message.receipt_handle
                 } for message in messages_to_delete]
             )

@@ -31,21 +31,21 @@ if __name__ == "__main__":
     env = os.environ["SPV2_ENV"]
     logging.info("Env: %s", env)
 
-    queue_name = os.environ["SQS_QUEUE_NAME"]
-    logging.info("SQS queue name: %s", queue_name)
+    upstream_queue_name = os.environ["UPSTREAM_QUEUE_NAME"]
+    logging.info("Upstream SQS queue name: %s", upstream_queue_name)
 
     dd_api_key = os.environ["DATADOG_API_KEY"]
-    sns_topic = "foo"
-    logging.info("SNS topic: %s", sns_topic)
+    downstream_queue_name = os.environ["DOWNSTREAM_QUEUE_NAME"]
+    logging.info("Downstream SQS queue name: %s", downstream_queue_name)
 
     queue_worker = QueueWorker(
         env=env,
-        queue_name=queue_name,
+        upstream_queue_name=upstream_queue_name,
         dataprep_host=dataprep_host,
         dataprep_port=dataprep_port,
         corpus_db=corpus_db,
         dd_api_key=dd_api_key,
-        sns_topic=sns_topic
+        downstream_queue_name=downstream_queue_name
     )
     logging.info("Loading model settings ...")
     model_settings = settings.default_model_settings
