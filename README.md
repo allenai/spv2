@@ -1,5 +1,9 @@
 # SPv2
 
+## **THIS PROJECT IS NO LONGER BEING MAINTAINED**
+
+---
+
 SPv2 is Science-parse, version 2. It uses a multi-layer, bidirectional LSTM to parse structured data
 out of PDFs. At the moment, we parse out
 
